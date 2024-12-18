@@ -134,7 +134,7 @@ impl ExecuteUnit {
             writeback.rd_data = decoded.imm32 as u32;
         }
         if writeback.rd_addr > 0 {
-            info!("normal writeback to x{} value 0x{:08x}", writeback.rd_addr, writeback.rd_data);
+            // info!("normal writeback to x{} value 0x{:08x}", writeback.rd_addr, writeback.rd_data);
         }
 
         writeback

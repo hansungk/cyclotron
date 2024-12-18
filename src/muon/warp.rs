@@ -187,7 +187,7 @@ component!(Warp, WarpState, MuonConfig,
                     ..*config
                 });
                 Lane {
-                    reg_file: RegFile::new(Arc::new(())),
+                    reg_file: RegFile::new(lane_config.clone()),
                     csr_file: CSRFile::new(lane_config.clone()),
                     decode_unit: DecodeUnit,
                     execute_unit: ExecuteUnit::new(lane_config.clone()),

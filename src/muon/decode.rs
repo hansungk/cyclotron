@@ -4,6 +4,7 @@ use std::fmt::Formatter;
 use std::sync::Arc;
 use crate::base::behavior::*;
 use crate::base::component::{component, ComponentBase, IsComponent};
+use crate::muon::config::MuonConfig;
 use crate::utils::*;
 
 #[derive(Default, Copy, Clone)]
@@ -52,7 +53,7 @@ impl Default for RegFileState {
 
 #[derive(Default)]
 pub struct RegFile {
-    base: ComponentBase<RegFileState, ()>,
+    base: ComponentBase<RegFileState, MuonConfig>,
 }
 
 // TODO: implement timing behavior for the regfile
@@ -62,13 +63,18 @@ impl ComponentBehaviors for RegFile {
     fn reset(&mut self) {
         self.base.state.gpr.fill(0u32);
         self.base.state.fpr.fill(0f32);
-        self.base.state.gpr[2] = 0xffff0000u32; // sp
+        let config = self.conf().clone();
+        let gtid = config.num_warps * config.lane_config.core_id +
+            config.num_lanes * config.lane_config.warp_id + config.lane_config.lane_id;
+        self.base.state.gpr[2] = 0xffff0000u32 - (0x100000u32 * gtid as u32); // sp
     }
 }
 
-component!(RegFile, RegFileState, (),
-    fn new(_: Arc<()>) -> RegFile {
-        RegFile::default()
+component!(RegFile, RegFileState, MuonConfig,
+    fn new(config: Arc<MuonConfig>) -> RegFile {
+        let mut me = RegFile::default();
+        me.init_conf(config);
+        me
     }
 );
 
