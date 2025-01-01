@@ -1,4 +1,4 @@
-pub mod core_cytron;
+pub mod core;
 mod execute;
 mod decode;
 mod isa;

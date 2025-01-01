@@ -4,7 +4,7 @@ use lazy_static::lazy_static;
 use crate::base::mem::*;
 use crate::base::behavior::*;
 use crate::base::component::IsComponent;
-use crate::muon::core_cytron::MuonCoreCytron;
+use crate::muon::core::MuonCore;
 use crate::muon::config::MuonConfig;
 use crate::sim::elf::{ElfBackedMem, ElfBackedMemConfig};
 use crate::sim::toy_mem::{ToyMemory};
@@ -22,7 +22,7 @@ pub struct CyclotronTopConfig {
 
 pub struct CyclotronTop {
     pub imem: Arc<RwLock<ElfBackedMem>>,
-    pub muon: MuonCoreCytron,
+    pub muon: MuonCore,
 
     pub timeout: u64
 }
@@ -36,7 +36,7 @@ impl CyclotronTop {
         ));
         let me = CyclotronTop {
             imem: imem.clone(),
-            muon: MuonCoreCytron::new(Arc::new(config.muon_config)),
+            muon: MuonCore::new(Arc::new(config.muon_config)),
             timeout: config.timeout,
         };
         GMEM.write().expect("gmem poisoned").set_fallthrough(imem.clone());

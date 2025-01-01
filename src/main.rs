@@ -9,7 +9,7 @@ use cyclotron::sim::top::{CyclotronTop, CyclotronTopConfig};
 pub fn main() -> Result<(), Box<dyn Error>> {
     env_logger::init();
 
-    let mut cytron_top = CyclotronTop::new(Arc::new(CyclotronTopConfig {
+    let mut top = CyclotronTop::new(Arc::new(CyclotronTopConfig {
         timeout: 50000,
         elf_path: "test/gemm.elf".into(),
         muon_config: MuonConfig {
@@ -20,9 +20,9 @@ pub fn main() -> Result<(), Box<dyn Error>> {
         },
     }));
 
-    cytron_top.muon.reset();
-    for _ in 0..cytron_top.timeout {
-        cytron_top.tick_one()
+    top.muon.reset();
+    for _ in 0..top.timeout {
+        top.tick_one()
     }
     Ok(())
 }

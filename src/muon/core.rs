@@ -12,7 +12,7 @@ use crate::utils::fill;
 pub struct MuonState {}
 
 #[derive(Default)]
-pub struct MuonCoreCytron {
+pub struct MuonCore {
     pub base: ComponentBase<MuonState, MuonConfig>,
     pub scheduler: Scheduler,
     pub warps: Vec<Warp>,
@@ -20,10 +20,10 @@ pub struct MuonCoreCytron {
     pub imem_resp: Vec<Port<InputPort, MemResponse>>,
 }
 
-component!(MuonCoreCytron, MuonState, MuonConfig,
-    fn new(config: Arc<MuonConfig>) -> MuonCoreCytron {
+component!(MuonCore, MuonState, MuonConfig,
+    fn new(config: Arc<MuonConfig>) -> MuonCore {
         let num_warps = config.num_warps;
-        let mut me = MuonCoreCytron {
+        let mut me = MuonCore {
             base: Default::default(),
             scheduler: Scheduler::new(config.clone()),
             warps: (0..num_warps).map(|warp_id| Warp::new(Arc::new(MuonConfig {
@@ -64,7 +64,7 @@ component!(MuonCoreCytron, MuonState, MuonConfig,
     }
 );
 
-impl ComponentBehaviors for MuonCoreCytron {
+impl ComponentBehaviors for MuonCore {
     fn tick_one(&mut self) {
         self.scheduler.tick_one();
         if let Some(sched) = self.scheduler.schedule[0].peek() {
@@ -83,7 +83,7 @@ impl ComponentBehaviors for MuonCoreCytron {
     }
 }
 
-impl MuonCoreCytron {
+impl MuonCore {
     pub fn time(&self) -> u64 {
         self.base.cycle
     }
