@@ -26,15 +26,15 @@ static CONFIG_CELL: OnceLock<Config> = OnceLock::new();
 static CELL: RwLock<Option<DpiContext>> = RwLock::new(None);
 
 struct ReqBundle {
-    ready: bool,
     valid: bool,
-    address: u64,
     size: u32,
+    address: u64,
 }
 
 struct RespBundle {
     valid: bool,
     size: u32,
+    data: [u8; 8],
 }
 
 #[no_mangle]
@@ -73,19 +73,23 @@ pub fn emulator_tick_rs(
     raw_d_valid: *const u8,
     _raw_d_is_store: *const u8,
     raw_d_size: *const u32,
+    raw_d_data: *const u64,
 ) {
     let conf = CONFIG_CELL.get().unwrap();
 
     let vec_d_ready = unsafe { std::slice::from_raw_parts_mut(raw_d_ready, conf.num_lanes) };
     let vec_d_valid = unsafe { std::slice::from_raw_parts(raw_d_valid, conf.num_lanes) };
     let vec_d_size = unsafe { std::slice::from_raw_parts(raw_d_size, conf.num_lanes) };
+    let vec_d_data = unsafe { std::slice::from_raw_parts(raw_d_data, conf.num_lanes) };
 
     // FIXME: work with 1 lane for now
     let mut resp_bundles = Vec::with_capacity(1);
     for i in 0..1 {
+        vec_d_ready[i] = 1; // bogus?
         resp_bundles.push(RespBundle {
             valid: (vec_d_valid[i] != 0),
             size: vec_d_size[i],
+            data: vec_d_data[i].to_le_bytes(),
         });
     }
 
@@ -101,25 +105,10 @@ pub fn emulator_tick_rs(
     // push_mem_resp(fsm, &resp_bundles[0]);
     // fsm.tick_one();
 
-    let muon = &mut context.muon;
-    muon.tick_one();
-
     println!("emulator_tick_rs()");
 
-    // for (ireq, iresp) in &mut muon.imem_req.iter_mut().zip(&mut muon.imem_resp) {
-    //     if let Some(req) = ireq.get() {
-    //         println!("imem req detected!");
-    //         assert_eq!(req.size, 8, "imem read request is not 8 bytes");
-    //         let succ = iresp.put(&mem::MemResponse {
-    //             op: mem::MemRespOp::Ack,
-    //             data: Some(Arc::new([0, 0, 0, 0, 0, 0, 0, 0])),
-    //         });
-    //         assert!(succ, "muon asserted fetch pressure, not implemented");
-    //     }
-    // }
-
+    let muon = &mut context.muon;
     push_mem_resp(&mut muon.imem_resp[0], &resp_bundles[0]);
-
     muon.tick_one();
 }
 
@@ -180,7 +169,7 @@ fn push_mem_resp(resp_port: &mut Port<InputPort, mem::MemResponse>, resp: &RespB
     println!("RTL mem response pushed");
     resp_port.put(&mem::MemResponse {
         op: mem::MemRespOp::Ack,
-        data: Some(Arc::new([0, 0, 0, 0, 0, 0, 0, 0])),
+        data: Some(Arc::new(resp.data)),
     });
 }
 
@@ -202,7 +191,6 @@ fn get_mem_req(
             valid: true,
             address: data.address as u64,
             size: 2 as u32, // FIXME: RTL doesn't support 256B yet
-            ready: true,
         }
     });
     req
