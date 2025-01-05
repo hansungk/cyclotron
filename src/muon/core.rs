@@ -72,7 +72,7 @@ impl ComponentBehaviors for MuonCore {
             assert_eq!(self.warps[0].schedule.peek().unwrap().pc, sched.pc);
         }
 
-        self.warps.iter_mut().for_each(ComponentBehaviors::tick_one);
+        self.warps.iter_mut().for_each(Warp::tick_one);
 
         self.base.cycle += 1;
     }
