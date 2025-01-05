@@ -154,6 +154,7 @@ pub fn emulator_generate_rs(
     let vec_d_ready = unsafe { std::slice::from_raw_parts_mut(raw_d_ready, conf.num_lanes) };
     let _finished = unsafe { std::slice::from_raw_parts_mut(raw_finished, 1) };
 
+    // FIXME: only warp 0 is fed
     let mut req_bundles = Vec::with_capacity(1);
     match get_mem_req(&mut muon.imem_req[0], vec_a_ready[0] == 1) {
         Some(bundle) => {
@@ -183,18 +184,27 @@ fn push_mem_resp(resp_port: &mut Port<InputPort, mem::MemResponse>, resp: &RespB
     });
 }
 
-fn get_mem_req(req_port: &mut Port<OutputPort, mem::MemRequest>, ready: bool) -> Option<ReqBundle> {
+fn get_mem_req(
+    req_port: &mut Port<OutputPort, mem::MemRequest>,
+    mem_req_ready: bool,
+) -> Option<ReqBundle> {
+    if !mem_req_ready {
+        return None;
+    }
+
     let front = req_port.get();
     let req = front.map(|data| {
-        println!("imem req detected");
+        println!(
+            "imem req detected: address=0x{:x}, size={}",
+            data.address, data.size
+        );
         ReqBundle {
             valid: true,
             address: data.address as u64,
-            size: data.size as u32,
+            size: 2 as u32, // FIXME: RTL doesn't support 256B yet
             ready: true,
         }
     });
-    assert!(ready, "only ready supported");
     req
 }
 
