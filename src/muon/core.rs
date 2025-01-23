@@ -37,21 +37,21 @@ component!(MuonCore, MuonState, MuonConfig,
             imem_resp: fill!(Port::new(), num_warps),
         };
 
-        let sched_out = &mut me.scheduler.schedule.iter_mut().collect();
-        let sched_in = &mut me.warps.iter_mut().map(|w| &mut w.schedule).collect();
-        link_vec(sched_out, sched_in);
+        let sched_out = me.scheduler.schedule.iter_mut();
+        let sched_in = me.warps.iter_mut().map(|w| &mut w.schedule);
+        link_iter(sched_out, sched_in);
 
-        let sched_wb_in = &mut me.scheduler.schedule_wb.iter_mut().collect();
-        let sched_wb_out = &mut me.warps.iter_mut().map(|w| &mut w.schedule_wb).collect();
-        link_vec(sched_wb_out, sched_wb_in);
+        let sched_wb_in = me.scheduler.schedule_wb.iter_mut();
+        let sched_wb_out = me.warps.iter_mut().map(|w| &mut w.schedule_wb);
+        link_iter(sched_wb_out, sched_wb_in);
 
-        let imem_req_warps = &mut me.warps.iter_mut().map(|w| &mut w.imem_req).collect();
-        let imem_req_core = &mut me.imem_req.iter_mut().collect();
-        link_vec(imem_req_warps, imem_req_core);
+        let imem_req_warps = me.warps.iter_mut().map(|w| &mut w.imem_req);
+        let imem_req_core = me.imem_req.iter_mut();
+        link_iter(imem_req_warps, imem_req_core);
 
-        let imem_resp_warps = &mut me.warps.iter_mut().map(|w| &mut w.imem_resp).collect();
-        let imem_resp_core = &mut me.imem_resp.iter_mut().collect();
-        link_vec(imem_resp_warps, imem_resp_core);
+        let imem_resp_warps = &mut me.warps.iter_mut().map(|w| &mut w.imem_resp);
+        let imem_resp_core = me.imem_resp.iter_mut();
+        link_iter(imem_resp_warps, imem_resp_core);
 
         info!("muon core {} instantiated!", config.lane_config.core_id);
 
@@ -79,7 +79,7 @@ impl ComponentBehaviors for MuonCore {
 
     fn reset(&mut self) {
         self.scheduler.reset();
-        self.warps.iter_mut().for_each(|w| w.reset());
+        self.warps.iter_mut().for_each(Warp::reset);
     }
 }
 

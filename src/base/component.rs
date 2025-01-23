@@ -12,7 +12,7 @@ impl<T: Default, C: Default> Default for ComponentBase<T, C> {
     fn default() -> Self {
         Self {
             cycle: 0,
-            frequency: 500 << 20,
+            frequency: 500 << 20, // 524.288 MHz
             state: T::default(),
             config: OnceLock::new(),
         }

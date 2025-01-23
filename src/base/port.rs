@@ -50,7 +50,6 @@ impl<D, T: Default + Clone> Port<D, T> {
             .read()
             .expect("rw lock poisoned")
             .valid
-            .clone()
     }
 }
 
@@ -113,19 +112,28 @@ pub fn link<A, B, T: Default + Clone>(
         data: T::default(),
     }));
     a.lock
-        .set(lock.clone())
+        .set(Arc::clone(&lock))
         .map_err(|_| "")
         .expect("lock already set");
     b.lock
-        .set(lock.clone())
+        .set(Arc::clone(&lock))
         .map_err(|_| "")
         .expect("lock already set");
     lock
 }
 
+// Lifetimes are only relevant if A, B, T are references, which should never be the case
+pub fn link_iter<'a, 'b, A: 'a, B: 'b, T: Default + Clone + 'a + 'b>(
+    a: impl Iterator<Item = &'a mut Port<A, T>>,
+    b: impl Iterator<Item = &'b mut Port<B, T>>,
+) {
+    Iterator::zip(a, b)
+        .for_each(|(o, i)| _ = link(o, i));
+}
+
 pub fn link_vec<A, B, T: Default + Clone>(
-    a: &mut Vec<&mut Port<A, T>>,
-    b: &mut Vec<&mut Port<B, T>>,
+    a: &mut [Port<A, T>],
+    b: &mut [Port<B, T>],
 ) -> Vec<Arc<RwLock<PortContent<T>>>> {
     a.iter_mut()
         .zip(b.iter_mut())
