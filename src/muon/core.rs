@@ -39,19 +39,21 @@ component!(MuonCore, MuonState, MuonConfig,
 
         let sched_out = me.scheduler.schedule.iter_mut();
         let sched_in = me.warps.iter_mut().map(|w| &mut w.schedule);
-        link_iter(sched_out, sched_in);
+        link_iter(sched_in, sched_out);
 
         let sched_wb_in = me.scheduler.schedule_wb.iter_mut();
         let sched_wb_out = me.warps.iter_mut().map(|w| &mut w.schedule_wb);
-        link_iter(sched_wb_out, sched_wb_in);
+        link_iter(sched_wb_in, sched_wb_out);
 
         let imem_req_warps = me.warps.iter_mut().map(|w| &mut w.imem_req);
         let imem_req_core = me.imem_req.iter_mut();
-        link_iter(imem_req_warps, imem_req_core);
+        imem_req_warps.for_each(|w| { tie_off(w); });
+        imem_req_core.for_each(|w| { tie_off(w); });
 
         let imem_resp_warps = &mut me.warps.iter_mut().map(|w| &mut w.imem_resp);
         let imem_resp_core = me.imem_resp.iter_mut();
-        link_iter(imem_resp_warps, imem_resp_core);
+        imem_resp_core.for_each(|w| { tie_off_input(w); });
+        imem_resp_warps.for_each(|w| { tie_off_input(w); });
 
         info!("muon core {} instantiated!", config.lane_config.core_id);
 
@@ -66,6 +68,7 @@ component!(MuonCore, MuonState, MuonConfig,
 
 impl ComponentBehaviors for MuonCore {
     fn tick_one(&mut self) {
+        // println!("{}: muon tick!", self.base.cycle);
         self.scheduler.tick_one();
         if let Some(sched) = self.scheduler.schedule[0].peek() {
             info!("warp 0 schedule=0x{:08x}", sched.pc);
@@ -73,6 +76,24 @@ impl ComponentBehaviors for MuonCore {
         }
 
         self.warps.iter_mut().for_each(Warp::tick_one);
+
+        // forward output ports
+        let imem_req_warps = self.warps.iter_mut().map(|w| &mut w.imem_req);
+        let imem_req_core = self.imem_req.iter_mut();
+        for (req_warp, req_core) in imem_req_warps.zip(imem_req_core) {
+            if let Some(req) = req_warp.get() {
+                req_core.put(&req);
+            }
+        }
+
+        // forward input ports
+        let imem_resp_warps = self.warps.iter_mut().map(|w| &mut w.imem_resp);
+        let imem_resp_core = self.imem_resp.iter_mut();
+        for (resp_warp, resp_core) in imem_resp_warps.zip(imem_resp_core) {
+            if let Some(resp) = resp_core.get() {
+                resp_warp.put(&resp);
+            }
+        }
 
         self.base.cycle += 1;
     }
