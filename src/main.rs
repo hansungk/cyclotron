@@ -1,5 +1,3 @@
-extern crate lazy_static;
-
 use std::env::args;
 use std::sync::Arc;
 use cyclotron::base::behavior::*;
