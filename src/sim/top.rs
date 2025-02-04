@@ -1,4 +1,5 @@
 use std::iter::Iterator;
+use std::path::PathBuf;
 use std::sync::{Arc, LazyLock, RwLock};
 use crate::base::mem::*;
 use crate::base::behavior::*;
@@ -14,7 +15,7 @@ pub static GMEM: LazyLock<RwLock<ToyMemory>> = LazyLock::new(|| RwLock::new(ToyM
 #[derive(Default, Clone)]
 pub struct CyclotronTopConfig {
     pub timeout: u64,
-    pub elf_path: String,
+    pub elf_path: PathBuf,
     pub muon_config: MuonConfig,
 }
 

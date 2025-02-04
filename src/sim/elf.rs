@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::{collections::HashMap, fs, path::Path};
 use std::sync::Arc;
 use goblin::elf::Elf;
@@ -17,7 +18,7 @@ pub struct ElfBackedMem {
 
 #[derive(Default)]
 pub struct ElfBackedMemConfig {
-    pub path: String,
+    pub path: PathBuf,
 }
 
 component!(ElfBackedMem, ElfBackedMemState, ElfBackedMemConfig,
