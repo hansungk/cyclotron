@@ -105,10 +105,10 @@ impl ComponentBehaviors for Warp {
 
             // update the scheduler
             writebacks[0].set_pc.map(|pc| {
-                if pc == 0 {
-                    println!("simulation has probably finished, main has returned");
-                    std::process::exit(0);
-                }
+                // if pc == 0 {
+                //     println!("simulation has probably finished, main has returned");
+                //     std::process::exit(0);
+                // }
                 self.state().stalled = true;
                 ScheduleWriteback {
                     insts: writebacks.iter().map(|w| w.inst).collect(),

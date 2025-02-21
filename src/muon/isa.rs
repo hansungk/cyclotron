@@ -62,6 +62,7 @@ pub enum SFUType {
     JOIN   = 3,
     BAR    = 4,
     PRED   = 5,
+    KILL   = 6,
 }
 
 #[derive(FromPrimitive, Clone, Copy, PartialEq)]
