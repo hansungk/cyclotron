@@ -51,7 +51,7 @@ impl<D> Port<D, MemRequest> {
 #[derive(Default, Clone)]
 pub struct MemResponse {
     pub op: MemRespOp,
-    pub data: Option<Arc<[u8]>>
+    pub data: Option<Arc<[u8]>> // why should this be an Arc?
 }
 
 pub trait HasMemoryPorts {

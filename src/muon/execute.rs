@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use log::{info};
+use log::info;
 use num_traits::FromPrimitive;
 use crate::base::behavior::*;
 use crate::base::component::{component, ComponentBase, IsComponent};

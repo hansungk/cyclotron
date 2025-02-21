@@ -144,9 +144,8 @@ pub fn emulator_tick_rs(
     // push_mem_resp(fsm, &resp_bundles[0]);
     // fsm.tick_one();
 
-    println!("[@{}] emulator_tick_rs()", context.muon.base.cycle);
+    println!("[@{}] emulator_tick_rs()", muon.base.cycle);
 
-    let muon = &mut context.muon;
     push_mem_resp(&mut muon.imem_resp[0], &resp_bundles[0]);
     muon.tick_one();
 }
@@ -157,6 +156,9 @@ fn push_mem_resp(resp_port: &mut Port<InputPort, mem::MemResponse>, resp: &RespB
     }
 
     println!("RTL mem response pushed");
+
+    // FIXME: rather than pushing to Muon's input port, this should be pushing to DPI's own output
+    // port.
     resp_port.put(&mem::MemResponse {
         op: mem::MemRespOp::Ack,
         data: Some(Arc::new(resp.data)),

@@ -1,22 +1,21 @@
 use std::iter::Iterator;
-use std::sync::{Arc, RwLock};
-use lazy_static::lazy_static;
+use std::path::PathBuf;
+use std::sync::{Arc, LazyLock, RwLock};
 use crate::base::mem::*;
 use crate::base::behavior::*;
 use crate::base::component::IsComponent;
 use crate::muon::core::MuonCore;
 use crate::muon::config::MuonConfig;
 use crate::sim::elf::{ElfBackedMem, ElfBackedMemConfig};
-use crate::sim::toy_mem::{ToyMemory};
+use crate::sim::toy_mem::ToyMemory;
 
-lazy_static! {
-    pub static ref GMEM: RwLock<ToyMemory> = RwLock::new(ToyMemory::default());
-}
+
+pub static GMEM: LazyLock<RwLock<ToyMemory>> = LazyLock::new(|| RwLock::new(ToyMemory::default()));
 
 #[derive(Default, Clone)]
 pub struct CyclotronTopConfig {
     pub timeout: u64,
-    pub elf_path: String,
+    pub elf_path: PathBuf,
     pub muon_config: MuonConfig,
 }
 
