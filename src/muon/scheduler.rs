@@ -41,6 +41,10 @@ impl ComponentBehaviors for Scheduler {
                 if let Some(target_pc) = wb.branch {
                     self.base.state.pc[wid] = target_pc;
                     self.base.state.end_stall[wid] = true;
+                    if target_pc == 0 { // returned from main
+                        self.base.state.thread_masks[wid] = 0;
+                        self.base.state.active_warps.mut_bit(wid, false);
+                    }
                 }
                 if let Some(sfu) = wb.sfu {
                     // for warp-wide operations, we take lane 0 to be the truth

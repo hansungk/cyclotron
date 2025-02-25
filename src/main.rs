@@ -6,6 +6,7 @@ use std::sync::Arc;
 use toml::Table;
 use std::path::PathBuf;
 use clap::Parser;
+use log::warn;
 use cyclotron::base::behavior::*;
 use cyclotron::base::component::IsComponent;
 use cyclotron::muon::config::MuonConfig;
@@ -47,10 +48,10 @@ pub fn main() {
     muon_config.num_lanes = argv.num_lanes.unwrap_or(muon_config.num_lanes);
     muon_config.num_warps = argv.num_warps.unwrap_or(muon_config.num_warps);
     muon_config.num_cores = argv.num_cores.unwrap_or(muon_config.num_cores);
-    
+
     let mut top = CyclotronTop::new(Arc::new(CyclotronTopConfig {
         timeout: sim_config.timeout,
-        elf_path: sim_config.elf,
+        elf_path: sim_config.elf.into(),
         muon_config,
     }));
 
@@ -58,7 +59,9 @@ pub fn main() {
     for _ in 0..top.timeout {
         top.tick_one();
         if top.muon.scheduler.base().state.active_warps == 0 {
+            println!("simulation has finished");
             return;
         }
     }
+    println!("timeout after {} cycles", top.timeout);
 }
