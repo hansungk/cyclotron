@@ -1,11 +1,11 @@
 extern crate num;
 
-use std::fmt::Formatter;
-use std::sync::Arc;
 use crate::base::behavior::*;
 use crate::base::component::{component, ComponentBase, IsComponent};
 use crate::muon::config::MuonConfig;
 use crate::utils::*;
+use std::fmt::Formatter;
+use std::sync::Arc;
 
 #[derive(Default, Copy, Clone)]
 pub struct DecodedInst {
@@ -26,14 +26,26 @@ pub struct DecodedInst {
 
 impl std::fmt::Display for DecodedInst {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        let hex_string: String = self.raw.iter().rev().map(|byte| format!("{:02X}", byte)).collect::<Vec<_>>().join("");
-        write!(f, "inst 0x{} [ op: 0x{:x}, f3: {}, f7: {}, rs1: 0x{:08x}, rs2: 0x{:08x} ]",
-            hex_string, self.opcode, self.f3, self.f7, self.rs1, self.rs2)
+        let hex_string: String = self
+            .raw
+            .iter()
+            .rev()
+            .map(|byte| format!("{:02X}", byte))
+            .collect::<Vec<_>>()
+            .join("");
+        write!(
+            f,
+            "inst 0x{} [ op: 0x{:x}, f3: {}, f7: {}, rs1: 0x{:08x}, rs2: 0x{:08x} ]",
+            hex_string, self.opcode, self.f3, self.f7, self.rs1, self.rs2
+        )
     }
 }
 
 pub fn sign_ext<const W: u8>(from: u32) -> i32 {
-    assert!(W <= 32, "cannot extend a two's complement number that is more than 32 bits");
+    assert!(
+        W <= 32,
+        "cannot extend a two's complement number that is more than 32 bits"
+    );
     ((from << (32 - W)) as i32) >> (32 - W)
 }
 
@@ -46,7 +58,7 @@ impl Default for RegFileState {
     fn default() -> Self {
         Self {
             gpr: [0u32; 128],
-            fpr: [0f32; 64]
+            fpr: [0f32; 64],
         }
     }
 }
@@ -58,14 +70,14 @@ pub struct RegFile {
 
 // TODO: implement timing behavior for the regfile
 impl ComponentBehaviors for RegFile {
-    fn tick_one(&mut self) {
-    }
+    fn tick_one(&mut self) {}
     fn reset(&mut self) {
         self.base.state.gpr.fill(0u32);
         self.base.state.fpr.fill(0f32);
         let config = self.conf().clone();
-        let gtid = config.num_warps * config.lane_config.core_id +
-            config.num_lanes * config.lane_config.warp_id + config.lane_config.lane_id;
+        let gtid = config.num_warps * config.lane_config.core_id
+            + config.num_lanes * config.lane_config.warp_id
+            + config.lane_config.lane_id;
         self.base.state.gpr[2] = 0xffff0000u32 - (0x100000u32 * gtid as u32); // sp
     }
 }
@@ -79,7 +91,6 @@ component!(RegFile, RegFileState, MuonConfig,
 );
 
 impl RegFile {
-
     pub fn read_gpr(&self, addr: u8) -> u32 {
         if addr == 0 {
             0u32
@@ -128,7 +139,7 @@ impl DecodeUnit {
             imm24,
             imm8,
             pc,
-            raw: inst_data
+            raw: inst_data,
         }
     }
 }

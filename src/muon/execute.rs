@@ -1,8 +1,6 @@
 use std::sync::Arc;
 use log::info;
 use num_traits::FromPrimitive;
-use crate::base::behavior::*;
-use crate::base::component::{component, ComponentBase, IsComponent};
 use crate::base::mem::HasMemory;
 use crate::muon::config::MuonConfig;
 use crate::muon::decode::{sign_ext, DecodedInst};
@@ -34,32 +32,13 @@ impl Default for Writeback {
     }
 }
 
-
-#[derive(Default)]
-pub struct ExecuteUnitState {}
-
-#[derive(Default)]
-pub struct ExecuteUnit {
-    base: ComponentBase<ExecuteUnitState, MuonConfig>,
-    // pub dmem_req: Port<OutputPort, MemRequest>,
-    // pub dmem_resp: Port<InputPort, MemResponse>,
-}
-
-impl ComponentBehaviors for ExecuteUnit {
-    fn tick_one(&mut self) {}
-
-    fn reset(&mut self) {
-
-    }
-}
-
-component!(ExecuteUnit, ExecuteUnitState, MuonConfig,
-    fn new(_: Arc<MuonConfig>) -> Self {
-        Default::default()
-    }
-);
+pub struct ExecuteUnit;
 
 impl ExecuteUnit {
+    pub fn new(_: Arc<MuonConfig>) -> Self {
+        ExecuteUnit {}
+    }
+
     pub fn execute(&mut self, decoded: DecodedInst) -> Writeback {
         let isa = ISA::get_insts();
         let (op, alu_result, actions) = isa.iter().map(|inst_group| {

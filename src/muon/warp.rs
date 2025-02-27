@@ -155,24 +155,11 @@ impl ComponentBehaviors for Warp {
     fn reset(&mut self) {
         self.lanes.iter_mut().for_each(|lane| {
             lane.reg_file.reset();
-            lane.execute_unit.reset();
         });
     }
 }
 
 component!(Warp, WarpState, MuonConfig,
-    fn get_param_children(&mut self) -> Vec<&mut dyn Parameterizable<ConfigType=MuonConfig>> {
-        let execute_units: Vec<_> = self.lanes.iter_mut().map(|l| {
-            &mut l.execute_unit as &mut dyn Parameterizable<ConfigType=Self::ConfigType>
-        }).collect();
-
-        execute_units
-    }
-    
-    fn get_children(&mut self) -> Vec<&mut dyn ComponentBehaviors> {
-        todo!()
-    }
-
     fn new(config: Arc<MuonConfig>) -> Warp {
         let num_lanes = config.num_lanes;
         info!("warp {} instantiated!", config.lane_config.warp_id);
