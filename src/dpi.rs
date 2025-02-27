@@ -1,5 +1,4 @@
 use crate::base::behavior::*;
-use crate::base::component::IsComponent;
 use crate::base::mem;
 use crate::base::port::*;
 // use crate::fsm::{Fsm, FsmConfig};
@@ -14,8 +13,8 @@ struct Config {
 
 struct DpiContext {
     muon: MuonCore,
-    mem_req: Port<InputPort, mem::MemRequest>,
-    mem_resp: Port<OutputPort, mem::MemResponse>,
+    _mem_req: Port<InputPort, mem::MemRequest>,
+    _mem_resp: Port<OutputPort, mem::MemResponse>,
 }
 
 static CONFIG_CELL: OnceLock<Config> = OnceLock::new();
@@ -32,7 +31,7 @@ struct ReqBundle {
 
 struct RespBundle {
     valid: bool,
-    size: u32,
+    _size: u32,
     data: [u8; 8],
 }
 
@@ -53,9 +52,9 @@ pub fn emulator_init_rs(num_lanes: i32) {
     }
     let mut c = DpiContext {
         // TODO: propagate num_lanes to MuonConfig
-        muon: MuonCore::new(Arc::new(MuonConfig::default())),
-        mem_req: Port::new(),
-        mem_resp: Port::new(),
+        muon: MuonCore::new(Arc::new(MuonConfig::default()), 0 /*id*/),
+        _mem_req: Port::new(),
+        _mem_resp: Port::new(),
     };
 
     // let fsm = &mut c.fsm;
@@ -135,7 +134,7 @@ pub fn emulator_tick_rs(
         slice_d_ready[i] = 1; // bogus?
         resp_bundles.push(RespBundle {
             valid: (slice_d_valid[i] != 0),
-            size: slice_d_size[i],
+            _size: slice_d_size[i],
             data: slice_d_data[i].to_le_bytes(),
         });
     }

@@ -23,6 +23,12 @@ pub struct Stack<T, const N: usize> where T: Default {
     base: ComponentBase<StackState<T, N>, ()>,
 }
 
+impl<T: Default, const N: usize> Stack<T, N> {
+    pub fn new(_: Arc<()>) -> Self {
+        Stack::<T, N>::default()
+    }
+}
+
 impl<T: Default, const N: usize> ComponentBehaviors for Stack<T, N> {
     fn tick_one(&mut self) {}
     fn reset(&mut self) {
@@ -33,9 +39,6 @@ impl<T: Default, const N: usize> ComponentBehaviors for Stack<T, N> {
 impl<T: Default, const N: usize> IsComponent for Stack<T, N> {
     component_inner!(StackState<T, N>, ());
 
-    fn new(_: Arc<()>) -> Self {
-        Stack::<T, N>::default()
-    }
 }
 
 // TODO: add locks and stuff

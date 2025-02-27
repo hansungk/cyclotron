@@ -28,12 +28,6 @@ impl ComponentBehaviors for CSRFile {
 }
 
 component!(CSRFile, CSRState, MuonConfig,
-    fn new(config: Arc<MuonConfig>) -> Self {
-        let mut csr = CSRFile::default();
-        csr.lock = RwLock::new(());
-        csr.init_conf(config);
-        csr
-    }
 );
 
 macro_rules! get_ref_rw_match {
@@ -55,6 +49,12 @@ macro_rules! get_ro_match {
 }
 
 impl CSRFile {
+    pub fn new(config: Arc<MuonConfig>) -> Self {
+        let mut csr = CSRFile::default();
+        csr.lock = RwLock::new(());
+        csr.init_conf(config);
+        csr
+    }
 
     // these are constant values
     fn csr_ro_ref(&self, addr: u32) -> Option<u32> {

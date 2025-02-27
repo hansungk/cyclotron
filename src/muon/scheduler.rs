@@ -33,6 +33,32 @@ pub struct Scheduler {
     pub schedule_wb: Vec<Port<InputPort, ScheduleWriteback>>,
 }
 
+impl Scheduler {
+    pub fn new(config: Arc<MuonConfig>) -> Self {
+        let num_warps = config.num_warps;
+        info!("scheduler instantiated with {} warps!", num_warps);
+        let mut me = Scheduler {
+            base: ComponentBase::<SchedulerState, MuonConfig> {
+                state: SchedulerState {
+                    active_warps: 0,
+                    thread_masks: vec![0u32; num_warps],
+                    pc: vec![0x80000000u32; num_warps],
+                    _ipdom_stack: vec![0; num_warps],
+                    end_stall: vec![false; num_warps],
+                },
+                ..ComponentBase::default()
+            },
+            schedule: vec![Port::new(); num_warps],
+            schedule_wb: vec![Port::new(); num_warps],
+        };
+        me.init_conf(config);
+        me
+    }
+}
+
+component!(Scheduler, SchedulerState, MuonConfig,
+);
+
 impl ComponentBehaviors for Scheduler {
     fn tick_one(&mut self) {
         self.schedule_wb.iter_mut().enumerate().for_each(|(wid, port)| {
@@ -121,26 +147,3 @@ impl ComponentBehaviors for Scheduler {
         self.base.state.active_warps = 1;
     }
 }
-
-component!(Scheduler, SchedulerState, MuonConfig,
-    fn new(config: Arc<MuonConfig>) -> Scheduler {
-        let num_warps = config.num_warps;
-        info!("scheduler instantiated with {} warps!", num_warps);
-        let mut me = Scheduler {
-            base: ComponentBase::<SchedulerState, MuonConfig> {
-                state: SchedulerState {
-                    active_warps: 0,
-                    thread_masks: vec![0u32; num_warps],
-                    pc: vec![0x80000000u32; num_warps],
-                    _ipdom_stack: vec![0; num_warps],
-                    end_stall: vec![false; num_warps],
-                },
-                ..ComponentBase::default()
-            },
-            schedule: vec![Port::new(); num_warps],
-            schedule_wb: vec![Port::new(); num_warps],
-        };
-        me.init_conf(config);
-        me
-    }
-);

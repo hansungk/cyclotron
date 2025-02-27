@@ -31,14 +31,14 @@ impl<T: Default, const N: usize> ComponentBehaviors for Queue<T, N> {
 
 impl<T: Default, const N: usize> IsComponent for Queue<T, N> {
     component_inner!(QueueState<T, N>, ());
-
-    fn new(_: Arc<()>) -> Self {
-        Queue::<T, N>::default()
-    }
 }
 
 // TODO: add locks and stuff
 impl<T: Default + Clone, const N: usize> Queue<T, N> {
+    pub fn new(_: Arc<()>) -> Self {
+        Queue::<T, N>::default()
+    }
+
     pub fn try_enq(&mut self, data: &T) -> bool {
         let size = self.state().storage.len();
         let max_size = self.state().max_size;

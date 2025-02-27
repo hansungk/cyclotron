@@ -160,7 +160,10 @@ impl ComponentBehaviors for Warp {
 }
 
 component!(Warp, WarpState, MuonConfig,
-    fn new(config: Arc<MuonConfig>) -> Warp {
+);
+
+impl Warp {
+    pub fn new(config: Arc<MuonConfig>) -> Warp {
         let num_lanes = config.num_lanes;
         info!("warp {} instantiated!", config.lane_config.warp_id);
         let mut me = Warp {
@@ -189,7 +192,7 @@ component!(Warp, WarpState, MuonConfig,
         me.init_conf(config);
         me
     }
-);
+}
 
 pub struct Lane {
     pub reg_file: RegFile,

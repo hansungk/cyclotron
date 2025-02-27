@@ -14,17 +14,19 @@ pub struct MuonState {}
 #[derive(Default)]
 pub struct MuonCore {
     pub base: ComponentBase<MuonState, MuonConfig>,
+    pub id: usize,
     pub scheduler: Scheduler,
     pub warps: Vec<Warp>,
     pub imem_req: Vec<Port<OutputPort, MemRequest>>,
     pub imem_resp: Vec<Port<InputPort, MemResponse>>,
 }
 
-component!(MuonCore, MuonState, MuonConfig,
-    fn new(config: Arc<MuonConfig>) -> Self {
+impl MuonCore {
+    pub fn new(config: Arc<MuonConfig>, id: usize) -> Self {
         let num_warps = config.num_warps;
         let mut me = MuonCore {
             base: Default::default(),
+            id,
             scheduler: Scheduler::new(config.clone()),
             warps: (0..num_warps).map(|warp_id| Warp::new(Arc::new(MuonConfig {
                 lane_config: LaneConfig {
@@ -60,7 +62,9 @@ component!(MuonCore, MuonState, MuonConfig,
         me.init_conf(config.clone());
         me
     }
+}
 
+component!(MuonCore, MuonState, MuonConfig,
     fn get_children(&mut self) -> Vec<&mut dyn ComponentBehaviors> {
         todo!()
     }

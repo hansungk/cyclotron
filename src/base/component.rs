@@ -23,8 +23,6 @@ pub trait IsComponent: ComponentBehaviors {
     type StateType;
     type ConfigType;
 
-    fn new(config: Arc<Self::ConfigType>) -> Self;
-
     fn base(&mut self) -> &mut ComponentBase<Self::StateType, Self::ConfigType>;
 
     fn base_ref(&self) -> &ComponentBase<Self::StateType, Self::ConfigType>;

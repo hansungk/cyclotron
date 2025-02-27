@@ -83,14 +83,15 @@ impl ComponentBehaviors for RegFile {
 }
 
 component!(RegFile, RegFileState, MuonConfig,
-    fn new(config: Arc<MuonConfig>) -> RegFile {
+);
+
+impl RegFile {
+    pub fn new(config: Arc<MuonConfig>) -> RegFile {
         let mut me = RegFile::default();
         me.init_conf(config);
         me
     }
-);
 
-impl RegFile {
     pub fn read_gpr(&self, addr: u8) -> u32 {
         if addr == 0 {
             0u32
