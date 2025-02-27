@@ -21,7 +21,7 @@ pub struct MuonCore {
 }
 
 component!(MuonCore, MuonState, MuonConfig,
-    fn new(config: Arc<MuonConfig>) -> MuonCore {
+    fn new(config: Arc<MuonConfig>) -> Self {
         let num_warps = config.num_warps;
         let mut me = MuonCore {
             base: Default::default(),

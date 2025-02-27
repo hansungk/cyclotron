@@ -35,7 +35,6 @@ pub struct Scheduler {
 
 impl ComponentBehaviors for Scheduler {
     fn tick_one(&mut self) {
-
         self.schedule_wb.iter_mut().enumerate().for_each(|(wid, port)| {
             if let Some(wb) = port.get() {
                 if let Some(target_pc) = wb.branch {

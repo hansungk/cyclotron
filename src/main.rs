@@ -6,9 +6,7 @@ use std::sync::Arc;
 use toml::Table;
 use std::path::PathBuf;
 use clap::Parser;
-use log::warn;
 use cyclotron::base::behavior::*;
-use cyclotron::base::component::IsComponent;
 use cyclotron::muon::config::MuonConfig;
 use cyclotron::sim::config::{Config, SimConfig};
 use cyclotron::sim::top::{CyclotronTop, CyclotronTopConfig};
@@ -55,13 +53,13 @@ pub fn main() {
         muon_config,
     }));
 
-    top.muon.reset();
+    top.cluster.reset();
     for _ in 0..top.timeout {
         top.tick_one();
-        if top.muon.scheduler.base().state.active_warps == 0 {
-            println!("simulation has finished");
-            return;
-        }
+        // if top.muon.scheduler.base().state.active_warps == 0 {
+        //     println!("simulation has finished");
+        //     return;
+        // }
     }
     println!("timeout after {} cycles", top.timeout);
 }
