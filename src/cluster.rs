@@ -8,6 +8,7 @@ use std::sync::{Arc, RwLock};
 pub struct Cluster {
     imem: Arc<RwLock<ElfBackedMem>>,
     cores: Vec<MuonCore>,
+    scheduled_threadblocks: usize,
 }
 
 impl Cluster {
@@ -16,7 +17,26 @@ impl Cluster {
         for id in 0..1 {
             cores.push(MuonCore::new(config.clone(), id));
         }
-        Cluster { imem, cores }
+        Cluster { imem, cores, scheduled_threadblocks: 0 }
+    }
+
+    pub fn schedule_threadblock(&mut self) {
+        self.scheduled_threadblocks += 1;
+    }
+
+    pub fn retired_threadblock(&self) -> usize {
+        if self.all_retired() { 1 } else { 0 }
+    }
+
+    // TODO: This should differentiate between different threadblocks.
+    pub fn all_retired(&self) -> bool {
+        let mut all_retired = true;
+        for core in &self.cores {
+            if !core.all_retired() {
+                all_retired = false;
+            }
+        }
+        all_retired
     }
 }
 

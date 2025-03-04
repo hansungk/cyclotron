@@ -56,10 +56,10 @@ pub fn main() {
     top.cluster.reset();
     for _ in 0..top.timeout {
         top.tick_one();
-        // if top.muon.scheduler.base().state.active_warps == 0 {
-        //     println!("simulation has finished");
-        //     return;
-        // }
+        if top.finished() {
+            println!("simulation has finished");
+            return;
+        }
     }
     println!("timeout after {} cycles", top.timeout);
 }

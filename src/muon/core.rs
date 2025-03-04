@@ -61,6 +61,11 @@ impl MuonCore {
         me.init_conf(config.clone());
         me
     }
+
+    // TODO: This should differentiate between different threadblocks.
+    pub fn all_retired(&self) -> bool {
+        self.scheduler.all_retired()
+    }
 }
 
 module!(MuonCore, MuonState, MuonConfig,

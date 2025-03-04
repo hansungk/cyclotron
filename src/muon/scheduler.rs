@@ -54,6 +54,11 @@ impl Scheduler {
         me.init_conf(config);
         me
     }
+
+    // TODO: This should differentiate between different threadblocks.
+    pub fn all_retired(&self) -> bool {
+        self.base.state.active_warps == 0
+    }
 }
 
 module!(Scheduler, SchedulerState, MuonConfig,

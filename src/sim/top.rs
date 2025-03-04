@@ -1,5 +1,6 @@
 use crate::base::behavior::*;
 use crate::cluster::Cluster;
+use crate::command_proc::CommandProcessor;
 use crate::muon::config::MuonConfig;
 use crate::sim::elf::ElfBackedMem;
 use crate::sim::toy_mem::ToyMemory;
@@ -15,6 +16,7 @@ pub struct CyclotronTopConfig {
 }
 
 pub struct CyclotronTop {
+    pub cproc: CommandProcessor,
     pub cluster: Cluster,
     pub timeout: u64,
 }
@@ -22,22 +24,29 @@ pub struct CyclotronTop {
 impl CyclotronTop {
     pub fn new(config: Arc<CyclotronTopConfig>) -> CyclotronTop {
         let imem = Arc::new(RwLock::new(ElfBackedMem::new(config.elf_path.as_path())));
-
-        let me = CyclotronTop {
+        let top = CyclotronTop {
+            cproc: CommandProcessor::new(),
             cluster: Cluster::new(Arc::new(config.muon_config), imem.clone()),
             timeout: config.timeout,
         };
         GMEM.write()
             .expect("gmem poisoned")
             .set_fallthrough(imem.clone());
+        top
+    }
 
-        me
+    pub fn finished(&self) -> bool {
+        self.cluster.all_retired()
     }
 }
 
 impl ModuleBehaviors for CyclotronTop {
     fn tick_one(&mut self) {
+        self.cproc.tick_one();
+        let _scheduled_tb = self.cproc.schedule();
         self.cluster.tick_one();
+        let retired_tb = self.cluster.retired_threadblock();
+        self.cproc.retire(retired_tb);
     }
 
     fn reset(&mut self) {
