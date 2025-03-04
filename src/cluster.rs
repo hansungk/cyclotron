@@ -12,17 +12,16 @@ pub struct Cluster {
 
 impl Cluster {
     pub fn new(config: Arc<MuonConfig>, imem: Arc<RwLock<ElfBackedMem>>) -> Self {
-        let mut cores: Vec<MuonCore> = Vec::new();
+        let mut cores = Vec::new();
         for id in 0..1 {
             cores.push(MuonCore::new(config.clone(), id));
         }
-        Cluster {
-            imem,
-            cores
-        }
+        Cluster { imem, cores }
     }
+}
 
-    pub fn tick_one(&mut self) {
+impl ModuleBehaviors for Cluster {
+    fn tick_one(&mut self) {
         for core in &mut self.cores {
             for (ireq, iresp) in &mut core.imem_req.iter_mut().zip(&mut core.imem_resp) {
                 if let Some(req) = ireq.get() {
@@ -44,7 +43,7 @@ impl Cluster {
         }
     }
 
-    pub fn reset(&mut self) {
+    fn reset(&mut self) {
         for core in &mut self.cores {
             core.reset();
         }

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use crate::base::behavior::*;
-use crate::base::component::*;
+use crate::base::module::*;
 use crate::muon::config::MuonConfig;
 use crate::muon::isa::CSRType;
 
@@ -13,11 +13,11 @@ pub struct CSRState {
 // this is instantiated per lane
 #[derive(Default)]
 pub struct CSRFile {
-    base: ComponentBase<CSRState, MuonConfig>,
+    base: ModuleBase<CSRState, MuonConfig>,
     lock: RwLock<()>,
 }
 
-impl ComponentBehaviors for CSRFile {
+impl ModuleBehaviors for CSRFile {
     fn tick_one(&mut self) {
         // TODO: count cycles and stuff
     }
@@ -27,7 +27,7 @@ impl ComponentBehaviors for CSRFile {
     }
 }
 
-component!(CSRFile, CSRState, MuonConfig,
+module!(CSRFile, CSRState, MuonConfig,
 );
 
 macro_rules! get_ref_rw_match {

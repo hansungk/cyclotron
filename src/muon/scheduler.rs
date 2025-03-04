@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use log::info;
 use crate::base::behavior::*;
-use crate::base::component::{component, ComponentBase, IsComponent};
+use crate::base::module::{module, ModuleBase, IsModule};
 use crate::base::port::{InputPort, OutputPort, Port};
 use crate::muon::config::MuonConfig;
 use crate::muon::isa::SFUType;
@@ -28,7 +28,7 @@ pub struct ScheduleOut {
 // instantiated per core
 #[derive(Default)]
 pub struct Scheduler {
-    base: ComponentBase<SchedulerState, MuonConfig>,
+    base: ModuleBase<SchedulerState, MuonConfig>,
     pub schedule: Vec<Port<OutputPort, ScheduleOut>>,
     pub schedule_wb: Vec<Port<InputPort, ScheduleWriteback>>,
 }
@@ -38,7 +38,7 @@ impl Scheduler {
         let num_warps = config.num_warps;
         info!("scheduler instantiated with {} warps!", num_warps);
         let mut me = Scheduler {
-            base: ComponentBase::<SchedulerState, MuonConfig> {
+            base: ModuleBase::<SchedulerState, MuonConfig> {
                 state: SchedulerState {
                     active_warps: 0,
                     thread_masks: vec![0u32; num_warps],
@@ -46,7 +46,7 @@ impl Scheduler {
                     _ipdom_stack: vec![0; num_warps],
                     end_stall: vec![false; num_warps],
                 },
-                ..ComponentBase::default()
+                ..ModuleBase::default()
             },
             schedule: vec![Port::new(); num_warps],
             schedule_wb: vec![Port::new(); num_warps],
@@ -56,10 +56,10 @@ impl Scheduler {
     }
 }
 
-component!(Scheduler, SchedulerState, MuonConfig,
+module!(Scheduler, SchedulerState, MuonConfig,
 );
 
-impl ComponentBehaviors for Scheduler {
+impl ModuleBehaviors for Scheduler {
     fn tick_one(&mut self) {
         self.schedule_wb.iter_mut().enumerate().for_each(|(wid, port)| {
             if let Some(wb) = port.get() {

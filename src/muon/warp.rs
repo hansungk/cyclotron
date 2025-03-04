@@ -1,8 +1,7 @@
 use std::sync::Arc;
 use log::info;
 use crate::base::behavior::*;
-use crate::base::behavior::Parameterizable;
-use crate::base::component::{component, ComponentBase, IsComponent};
+use crate::base::module::{module, ModuleBase, IsModule};
 use crate::base::mem::{MemRequest, MemResponse};
 use crate::base::port::{InputPort, OutputPort, Port};
 use crate::builtin::queue::Queue;
@@ -47,7 +46,7 @@ pub struct ScheduleWriteback {
 
 #[derive(Default)]
 pub struct Warp {
-    base: ComponentBase<WarpState, MuonConfig>,
+    base: ModuleBase<WarpState, MuonConfig>,
     pub lanes: Vec<Lane>,
 
     pub fetch_queue: Queue<FetchMetadata, 4>,
@@ -59,7 +58,7 @@ pub struct Warp {
     pub schedule_wb: Port<OutputPort, ScheduleWriteback>,
 }
 
-impl ComponentBehaviors for Warp {
+impl ModuleBehaviors for Warp {
     fn tick_one(&mut self) {
         { self.base().cycle += 1; }
         // fetch
@@ -159,7 +158,7 @@ impl ComponentBehaviors for Warp {
     }
 }
 
-component!(Warp, WarpState, MuonConfig,
+module!(Warp, WarpState, MuonConfig,
 );
 
 impl Warp {
@@ -167,7 +166,7 @@ impl Warp {
         let num_lanes = config.num_lanes;
         info!("warp {} instantiated!", config.lane_config.warp_id);
         let mut me = Warp {
-            base: ComponentBase::default(),
+            base: ModuleBase::default(),
             lanes: (0..num_lanes).map(|lane_id| {
                 let lane_config = Arc::new(MuonConfig {
                     lane_config: LaneConfig {

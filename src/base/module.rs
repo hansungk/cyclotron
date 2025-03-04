@@ -1,14 +1,14 @@
 use std::sync::{Arc, OnceLock};
 use crate::base::behavior::*;
 
-pub struct ComponentBase<T, C> {
+pub struct ModuleBase<T, C> {
     pub cycle: u64,
     pub frequency: u64,
     pub state: T,
     pub config: OnceLock<Arc<C>>,
 }
 
-impl<T: Default, C: Default> Default for ComponentBase<T, C> {
+impl<T: Default, C: Default> Default for ModuleBase<T, C> {
     fn default() -> Self {
         Self {
             cycle: 0,
@@ -19,13 +19,13 @@ impl<T: Default, C: Default> Default for ComponentBase<T, C> {
     }
 }
 
-pub trait IsComponent: ComponentBehaviors {
+pub trait IsModule: ModuleBehaviors {
     type StateType;
     type ConfigType;
 
-    fn base(&mut self) -> &mut ComponentBase<Self::StateType, Self::ConfigType>;
+    fn base(&mut self) -> &mut ModuleBase<Self::StateType, Self::ConfigType>;
 
-    fn base_ref(&self) -> &ComponentBase<Self::StateType, Self::ConfigType>;
+    fn base_ref(&self) -> &ModuleBase<Self::StateType, Self::ConfigType>;
 
     fn state(&mut self) -> &mut Self::StateType{
         &mut self.base().state
@@ -36,7 +36,7 @@ pub trait IsComponent: ComponentBehaviors {
     }
 
     /// get all children, parameterizable or not
-    fn get_children(&mut self) -> Vec<&mut dyn ComponentBehaviors> {
+    fn get_children(&mut self) -> Vec<&mut dyn ModuleBehaviors> {
         vec![]
     }
 
@@ -46,7 +46,7 @@ pub trait IsComponent: ComponentBehaviors {
     }
 }
 
-impl<X> Parameterizable for X where X: IsComponent {
+impl<X> Parameterizable for X where X: IsModule {
     type ConfigType = X::ConfigType;
 
     fn conf(&self) -> &Self::ConfigType {
@@ -58,35 +58,35 @@ impl<X> Parameterizable for X where X: IsComponent {
     }
 }
 
-macro_rules! component_inner {
+macro_rules! module_inner {
     ($T:ty, $C:ty) => {
         type StateType = $T;
         type ConfigType = $C;
 
-        fn base(&mut self) -> &mut ComponentBase<$T, $C> {
+        fn base(&mut self) -> &mut ModuleBase<$T, $C> {
             &mut self.base
         }
 
-        fn base_ref(&self) -> &ComponentBase<$T, $C> {
+        fn base_ref(&self) -> &ModuleBase<$T, $C> {
             &self.base
         }
     };
 }
 
-pub(crate) use component_inner;
+pub(crate) use module_inner;
 
 /// arguments: identifier, state type, config type, additional methods
-macro_rules! component {
+macro_rules! module {
     ($comp:ident, $T:ty, $C:ty, $($method:item)*) => {
-        impl IsComponent for $comp {
+        impl IsModule for $comp {
             type StateType = $T;
             type ConfigType = $C;
 
-            fn base(&mut self) -> &mut ComponentBase<$T, $C> {
+            fn base(&mut self) -> &mut ModuleBase<$T, $C> {
                 &mut self.base
             }
 
-            fn base_ref(&self) -> &ComponentBase<$T, $C> {
+            fn base_ref(&self) -> &ModuleBase<$T, $C> {
                 &self.base
             }
 
@@ -95,4 +95,4 @@ macro_rules! component {
     };
 }
 
-pub(crate) use component;
+pub(crate) use module;

@@ -1,7 +1,7 @@
 extern crate num;
 
 use crate::base::behavior::*;
-use crate::base::component::{component, ComponentBase, IsComponent};
+use crate::base::module::{module, ModuleBase, IsModule};
 use crate::muon::config::MuonConfig;
 use crate::utils::*;
 use std::fmt::Formatter;
@@ -65,11 +65,11 @@ impl Default for RegFileState {
 
 #[derive(Default)]
 pub struct RegFile {
-    base: ComponentBase<RegFileState, MuonConfig>,
+    base: ModuleBase<RegFileState, MuonConfig>,
 }
 
 // TODO: implement timing behavior for the regfile
-impl ComponentBehaviors for RegFile {
+impl ModuleBehaviors for RegFile {
     fn tick_one(&mut self) {}
     fn reset(&mut self) {
         self.base.state.gpr.fill(0u32);
@@ -82,7 +82,7 @@ impl ComponentBehaviors for RegFile {
     }
 }
 
-component!(RegFile, RegFileState, MuonConfig,
+module!(RegFile, RegFileState, MuonConfig,
 );
 
 impl RegFile {

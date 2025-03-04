@@ -1,7 +1,6 @@
 use std::sync::Arc;
 use log::info;
-use crate::base::{behavior::*, component::*, port::*};
-use crate::base::behavior::Parameterizable;
+use crate::base::{behavior::*, module::*, port::*};
 use crate::base::mem::{MemRequest, MemResponse};
 use crate::muon::config::{LaneConfig, MuonConfig};
 use crate::muon::scheduler::Scheduler;
@@ -13,7 +12,7 @@ pub struct MuonState {}
 
 #[derive(Default)]
 pub struct MuonCore {
-    pub base: ComponentBase<MuonState, MuonConfig>,
+    pub base: ModuleBase<MuonState, MuonConfig>,
     pub id: usize,
     pub scheduler: Scheduler,
     pub warps: Vec<Warp>,
@@ -64,13 +63,13 @@ impl MuonCore {
     }
 }
 
-component!(MuonCore, MuonState, MuonConfig,
-    fn get_children(&mut self) -> Vec<&mut dyn ComponentBehaviors> {
+module!(MuonCore, MuonState, MuonConfig,
+    fn get_children(&mut self) -> Vec<&mut dyn ModuleBehaviors> {
         todo!()
     }
 );
 
-impl ComponentBehaviors for MuonCore {
+impl ModuleBehaviors for MuonCore {
     fn tick_one(&mut self) {
         // println!("{}: muon tick!", self.base.cycle);
         self.scheduler.tick_one();

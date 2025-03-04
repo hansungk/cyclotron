@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use crate::base::behavior::*;
-use crate::base::component::{component_inner, ComponentBase, IsComponent};
+use crate::base::module::{module_inner, ModuleBase, IsModule};
 
 pub struct StackState<T, const N: usize> {
     pub storage: Vec<T>,
@@ -20,7 +20,7 @@ impl<T: Default, const N: usize> Default for StackState<T, N> {
 
 #[derive(Default)]
 pub struct Stack<T, const N: usize> where T: Default {
-    base: ComponentBase<StackState<T, N>, ()>,
+    base: ModuleBase<StackState<T, N>, ()>,
 }
 
 impl<T: Default, const N: usize> Stack<T, N> {
@@ -29,15 +29,15 @@ impl<T: Default, const N: usize> Stack<T, N> {
     }
 }
 
-impl<T: Default, const N: usize> ComponentBehaviors for Stack<T, N> {
+impl<T: Default, const N: usize> ModuleBehaviors for Stack<T, N> {
     fn tick_one(&mut self) {}
     fn reset(&mut self) {
         self.state().size = 0;
     }
 }
 
-impl<T: Default, const N: usize> IsComponent for Stack<T, N> {
-    component_inner!(StackState<T, N>, ());
+impl<T: Default, const N: usize> IsModule for Stack<T, N> {
+    module_inner!(StackState<T, N>, ());
 
 }
 

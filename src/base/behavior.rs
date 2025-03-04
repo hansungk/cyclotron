@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-pub trait ComponentBehaviors {
+pub trait ModuleBehaviors {
     fn tick_one(&mut self);
     fn tick(&mut self, cycles: u64) {
         for _ in 0..cycles {
@@ -19,5 +19,3 @@ pub trait Parameterizable {
     fn conf(&self) -> &Self::ConfigType;
     fn init_conf(&mut self, conf: Arc<Self::ConfigType>);
 }
-
-pub trait FullComponentBehaviors: ComponentBehaviors + Parameterizable {}

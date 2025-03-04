@@ -1,4 +1,4 @@
-/// `Port` models an IO port to a component.
+/// `Port` models an IO port to a module.
 // TODO: having a timestamp requires this to eventually become a priority queue, to enable
 // enqueueing entries N cycles in advance
 use std::marker::PhantomData;
@@ -22,7 +22,7 @@ pub struct ChannelRef<T: Clone>(Arc<RwLock<Channel<T>>>);
 
 #[derive(Default)]
 pub struct Port<D, T: Clone> {
-    // RwLock is necessary because each component has no knowledge of when the other component will
+    // RwLock is necessary because each module has no knowledge of when the other module will
     // do concurrent access to the port.
     lock: OnceLock<ChannelRef<T>>,
     // TODO: time: u64,

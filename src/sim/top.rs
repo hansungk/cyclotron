@@ -35,7 +35,7 @@ impl CyclotronTop {
     }
 }
 
-impl ComponentBehaviors for CyclotronTop {
+impl ModuleBehaviors for CyclotronTop {
     fn tick_one(&mut self) {
         self.cluster.tick_one();
     }

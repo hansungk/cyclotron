@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
 use crate::base::behavior::*;
-use crate::base::component::{component_inner, ComponentBase, IsComponent};
+use crate::base::module::{module_inner, ModuleBase, IsModule};
 
 pub struct QueueState<T, const N: usize> {
     pub storage: VecDeque<T>,
@@ -19,18 +19,18 @@ impl<T: Default, const N: usize> Default for QueueState<T, N> {
 
 #[derive(Default)]
 pub struct Queue<T, const N: usize> where T: Default {
-    base: ComponentBase<QueueState<T, N>, ()>,
+    base: ModuleBase<QueueState<T, N>, ()>,
 }
 
-impl<T: Default, const N: usize> ComponentBehaviors for Queue<T, N> {
+impl<T: Default, const N: usize> ModuleBehaviors for Queue<T, N> {
     fn tick_one(&mut self) {}
     fn reset(&mut self) {
         self.state().storage.clear();
     }
 }
 
-impl<T: Default, const N: usize> IsComponent for Queue<T, N> {
-    component_inner!(QueueState<T, N>, ());
+impl<T: Default, const N: usize> IsModule for Queue<T, N> {
+    module_inner!(QueueState<T, N>, ());
 }
 
 // TODO: add locks and stuff
