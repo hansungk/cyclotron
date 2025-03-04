@@ -62,6 +62,12 @@ impl MuonCore {
         me
     }
 
+    /// Spawn a warp in this core.  Invoked by the command processor to schedule a threadblock to
+    /// the cluster.
+    pub fn spawn_warp(&mut self) {
+        self.scheduler.spawn_warp()
+    }
+
     // TODO: This should differentiate between different threadblocks.
     pub fn all_retired(&self) -> bool {
         self.scheduler.all_retired()

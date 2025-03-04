@@ -164,7 +164,6 @@ module!(Warp, WarpState, MuonConfig,
 impl Warp {
     pub fn new(config: Arc<MuonConfig>) -> Warp {
         let num_lanes = config.num_lanes;
-        info!("warp {} instantiated!", config.lane_config.warp_id);
         let mut me = Warp {
             base: ModuleBase::default(),
             lanes: (0..num_lanes).map(|lane_id| {

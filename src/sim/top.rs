@@ -25,7 +25,7 @@ impl CyclotronTop {
     pub fn new(config: Arc<CyclotronTopConfig>) -> CyclotronTop {
         let imem = Arc::new(RwLock::new(ElfBackedMem::new(config.elf_path.as_path())));
         let top = CyclotronTop {
-            cproc: CommandProcessor::new(),
+            cproc: CommandProcessor::new(1 /*FIXME: properly get thread dimension*/),
             cluster: Cluster::new(Arc::new(config.muon_config), imem.clone()),
             timeout: config.timeout,
         };
@@ -36,14 +36,17 @@ impl CyclotronTop {
     }
 
     pub fn finished(&self) -> bool {
-        self.cluster.all_retired()
+        self.cluster.all_cores_retired()
     }
 }
 
 impl ModuleBehaviors for CyclotronTop {
     fn tick_one(&mut self) {
         self.cproc.tick_one();
-        let _scheduled_tb = self.cproc.schedule();
+        let scheduled_tb = self.cproc.schedule();
+        if scheduled_tb {
+            self.cluster.schedule_threadblock();
+        }
         self.cluster.tick_one();
         let retired_tb = self.cluster.retired_threadblock();
         self.cproc.retire(retired_tb);

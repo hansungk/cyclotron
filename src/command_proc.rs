@@ -19,17 +19,29 @@ const SMEM_SIZE_PER_CLUSTER: isize = 64;
 
 #[derive(Default)]
 struct CommandProcessorState {
-    // TODO: these should be vectors by clusters
+    remaining_threadblocks: isize,
+    // TODO: these should be per cluster
     running_threadblocks: isize,
     regfile_usage: isize,
     smem_usage: isize,
 }
 
+impl CommandProcessorState {
+    pub fn new(num_threadblocks: usize) -> Self {
+        CommandProcessorState {
+            remaining_threadblocks: num_threadblocks as isize,
+            running_threadblocks: 0,
+            regfile_usage: 0,
+            smem_usage: 0,
+        }
+    }
+}
+
 impl CommandProcessor {
-    pub fn new() -> Self {
+    pub fn new(num_threadblocks: usize) -> Self {
         CommandProcessor {
             base: ModuleBase::<CommandProcessorState, ()> {
-                state: CommandProcessorState::default(),
+                state: CommandProcessorState::new(num_threadblocks),
                 ..ModuleBase::default()
             },
         }
@@ -39,6 +51,8 @@ impl CommandProcessor {
         let new_regfile = self.base.state.regfile_usage + REGFILE_USAGE_PER_BLOCK;
         let new_smem = self.base.state.smem_usage + SMEM_USAGE_PER_BLOCK;
         if new_regfile <= REGFILE_SIZE_PER_CLUSTER && new_smem <= SMEM_SIZE_PER_CLUSTER {
+            // TODO: schedule more than 1 block at a time
+            self.base.state.remaining_threadblocks -= 1;
             self.base.state.running_threadblocks += 1;
             self.base.state.regfile_usage = new_regfile;
             self.base.state.smem_usage = new_smem;

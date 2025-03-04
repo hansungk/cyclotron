@@ -25,11 +25,11 @@ impl Cluster {
     }
 
     pub fn retired_threadblock(&self) -> usize {
-        if self.all_retired() { 1 } else { 0 }
+        if self.all_cores_retired() { 1 } else { 0 }
     }
 
     // TODO: This should differentiate between different threadblocks.
-    pub fn all_retired(&self) -> bool {
+    pub fn all_cores_retired(&self) -> bool {
         let mut all_retired = true;
         for core in &self.cores {
             if !core.all_retired() {
@@ -43,6 +43,7 @@ impl Cluster {
 impl ModuleBehaviors for Cluster {
     fn tick_one(&mut self) {
         for core in &mut self.cores {
+            // TODO: warp spawning logic here for scheduled_threadblocks
             for (ireq, iresp) in &mut core.imem_req.iter_mut().zip(&mut core.imem_resp) {
                 if let Some(req) = ireq.get() {
                     assert_eq!(req.size, 8, "imem read request is not 8 bytes");
@@ -66,6 +67,7 @@ impl ModuleBehaviors for Cluster {
     fn reset(&mut self) {
         for core in &mut self.cores {
             core.reset();
+            core.spawn_warp();
         }
     }
 }

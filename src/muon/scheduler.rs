@@ -55,6 +55,12 @@ impl Scheduler {
         me
     }
 
+    pub fn spawn_warp(&mut self) {
+        let all_ones = u32::MAX; // 0xFFFF
+        self.state().thread_masks = [all_ones].repeat(self.conf().num_warps);
+        self.base.state.active_warps = 1;
+    }
+
     // TODO: This should differentiate between different threadblocks.
     pub fn all_retired(&self) -> bool {
         self.base.state.active_warps == 0
@@ -146,9 +152,8 @@ impl ModuleBehaviors for Scheduler {
     }
 
     fn reset(&mut self) {
-        let num_lanes = (&self.conf().num_lanes).clone();
-        let tmask = ((1u64 << num_lanes) - 1u64) as u32;
-        self.state().thread_masks = [tmask].repeat(num_lanes);
-        self.base.state.active_warps = 1;
+        let all_ones = u32::MAX; // 0xFFFF
+        self.state().thread_masks = [all_ones].repeat(self.conf().num_warps);
+        self.base.state.active_warps = 0;
     }
 }
