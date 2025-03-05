@@ -3,29 +3,48 @@ use crate::base::mem::*;
 use crate::muon::config::MuonConfig;
 use crate::muon::core::MuonCore;
 use crate::sim::elf::ElfBackedMem;
+use log::info;
 use std::sync::{Arc, RwLock};
 
 pub struct Cluster {
+    id: usize,
     imem: Arc<RwLock<ElfBackedMem>>,
     cores: Vec<MuonCore>,
     scheduled_threadblocks: usize,
 }
 
 impl Cluster {
-    pub fn new(config: Arc<MuonConfig>, imem: Arc<RwLock<ElfBackedMem>>) -> Self {
+    pub fn new(config: Arc<MuonConfig>, imem: Arc<RwLock<ElfBackedMem>>, id: usize) -> Self {
         let mut cores = Vec::new();
-        for id in 0..1 {
-            cores.push(MuonCore::new(config.clone(), id));
+        for cid in 0..1 {
+            cores.push(MuonCore::new(config.clone(), cid));
         }
-        Cluster { imem, cores, scheduled_threadblocks: 0 }
+        Cluster {
+            id,
+            imem,
+            cores,
+            scheduled_threadblocks: 0,
+        }
     }
 
     pub fn schedule_threadblock(&mut self) {
+        assert!(
+            self.scheduled_threadblocks == 0,
+            "attempted to schedule a threadblock to an already-busy cluster. TODO: support more than one outstanding threadblocks"
+        );
+        info!("cluster {}: scheduled a threadblock", self.id);
+        for core in &mut self.cores {
+            core.spawn_warp();
+        }
         self.scheduled_threadblocks += 1;
     }
 
     pub fn retired_threadblock(&self) -> usize {
-        if self.all_cores_retired() { 1 } else { 0 }
+        if self.all_cores_retired() {
+            1
+        } else {
+            0
+        }
     }
 
     // TODO: This should differentiate between different threadblocks.
@@ -43,7 +62,6 @@ impl Cluster {
 impl ModuleBehaviors for Cluster {
     fn tick_one(&mut self) {
         for core in &mut self.cores {
-            // TODO: warp spawning logic here for scheduled_threadblocks
             for (ireq, iresp) in &mut core.imem_req.iter_mut().zip(&mut core.imem_resp) {
                 if let Some(req) = ireq.get() {
                     assert_eq!(req.size, 8, "imem read request is not 8 bytes");
@@ -67,7 +85,6 @@ impl ModuleBehaviors for Cluster {
     fn reset(&mut self) {
         for core in &mut self.cores {
             core.reset();
-            core.spawn_warp();
         }
     }
 }

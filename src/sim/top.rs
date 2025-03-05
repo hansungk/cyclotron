@@ -26,7 +26,7 @@ impl CyclotronTop {
         let imem = Arc::new(RwLock::new(ElfBackedMem::new(config.elf_path.as_path())));
         let top = CyclotronTop {
             cproc: CommandProcessor::new(1 /*FIXME: properly get thread dimension*/),
-            cluster: Cluster::new(Arc::new(config.muon_config), imem.clone()),
+            cluster: Cluster::new(Arc::new(config.muon_config), imem.clone(), 0),
             timeout: config.timeout,
         };
         GMEM.write()

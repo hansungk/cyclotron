@@ -48,6 +48,10 @@ impl CommandProcessor {
     }
 
     pub fn schedule(&mut self) -> bool {
+        if self.base.state.remaining_threadblocks <= 0 {
+            assert!(self.base.state.remaining_threadblocks == 0);
+            return false;
+        }
         let new_regfile = self.base.state.regfile_usage + REGFILE_USAGE_PER_BLOCK;
         let new_smem = self.base.state.smem_usage + SMEM_USAGE_PER_BLOCK;
         if new_regfile <= REGFILE_SIZE_PER_CLUSTER && new_smem <= SMEM_SIZE_PER_CLUSTER {
