@@ -69,8 +69,8 @@ impl MuonCore {
     }
 
     // TODO: This should differentiate between different threadblocks.
-    pub fn all_retired(&self) -> bool {
-        self.scheduler.all_retired()
+    pub fn all_warps_retired(&self) -> bool {
+        self.scheduler.all_warps_retired()
     }
 }
 

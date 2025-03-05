@@ -41,14 +41,7 @@ impl CyclotronTop {
     }
 
     pub fn finished(&self) -> bool {
-        let mut all = true;
-        for cluster in &self.clusters {
-            if !cluster.all_cores_retired() {
-                all = false;
-                continue;
-            }
-        }
-        all
+        self.clusters.iter().all(|cl| cl.all_cores_retired())
     }
 }
 

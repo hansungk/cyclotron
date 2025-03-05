@@ -49,13 +49,7 @@ impl Cluster {
 
     // TODO: This should differentiate between different threadblocks.
     pub fn all_cores_retired(&self) -> bool {
-        let mut all_retired = true;
-        for core in &self.cores {
-            if !core.all_retired() {
-                all_retired = false;
-            }
-        }
-        all_retired
+        self.cores.iter().all(|core| core.all_warps_retired())
     }
 }
 

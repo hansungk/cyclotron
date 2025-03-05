@@ -62,7 +62,7 @@ impl Scheduler {
     }
 
     // TODO: This should differentiate between different threadblocks.
-    pub fn all_retired(&self) -> bool {
+    pub fn all_warps_retired(&self) -> bool {
         self.base.state.active_warps == 0
     }
 }
