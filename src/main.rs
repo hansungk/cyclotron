@@ -53,7 +53,7 @@ pub fn main() {
         muon_config,
     }));
 
-    top.cluster.reset();
+    top.reset();
     for _ in 0..top.timeout {
         top.tick_one();
         if top.finished() {
