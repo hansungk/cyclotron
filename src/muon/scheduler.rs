@@ -6,9 +6,9 @@ use crate::base::port::{InputPort, OutputPort, Port};
 use crate::muon::config::MuonConfig;
 use crate::muon::isa::SFUType;
 use crate::muon::warp::ScheduleWriteback;
-use crate::utils::{BitSlice};
+use crate::utils::BitSlice;
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct SchedulerState {
     pub active_warps: u32,
     thread_masks: Vec<u32>,
@@ -17,7 +17,7 @@ pub struct SchedulerState {
     end_stall: Vec<bool>,
 }
 
-#[derive(Default, Clone)]
+#[derive(Debug, Default, Clone)]
 pub struct ScheduleOut {
     pub pc: u32,
     pub mask: u32,
@@ -26,7 +26,7 @@ pub struct ScheduleOut {
 }
 
 // instantiated per core
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct Scheduler {
     base: ModuleBase<SchedulerState, MuonConfig>,
     pub schedule: Vec<Port<OutputPort, ScheduleOut>>,

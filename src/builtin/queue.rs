@@ -3,6 +3,7 @@ use std::sync::Arc;
 use crate::base::behavior::*;
 use crate::base::module::{module_inner, ModuleBase, IsModule};
 
+#[derive(Debug)]
 pub struct QueueState<T, const N: usize> {
     pub storage: VecDeque<T>,
     max_size: usize,
@@ -17,7 +18,7 @@ impl<T: Default, const N: usize> Default for QueueState<T, N> {
     }
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct Queue<T, const N: usize> where T: Default {
     base: ModuleBase<QueueState<T, N>, ()>,
 }

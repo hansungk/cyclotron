@@ -13,12 +13,12 @@ use crate::muon::isa::{CSRType, SFUType};
 use crate::muon::scheduler::ScheduleOut;
 use crate::utils::BitSlice;
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct WarpState {
     pub stalled: bool,
 }
 
-#[derive(Clone, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct FetchMetadata {
     pub mask: u32,
     pub pc: u32,
@@ -37,14 +37,14 @@ impl From<&ScheduleOut> for FetchMetadata {
     }
 }
 
-#[derive(Default, Clone)]
+#[derive(Debug, Default, Clone)]
 pub struct ScheduleWriteback {
     pub insts: Vec<DecodedInst>,
     pub branch: Option<u32>,
     pub sfu: Option<SFUType>,
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct Warp {
     base: ModuleBase<WarpState, MuonConfig>,
     pub lanes: Vec<Lane>,
@@ -192,6 +192,7 @@ impl Warp {
     }
 }
 
+#[derive(Debug)]
 pub struct Lane {
     pub reg_file: RegFile,
     pub csr_file: CSRFile,

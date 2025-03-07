@@ -7,10 +7,10 @@ use crate::muon::scheduler::Scheduler;
 use crate::muon::warp::Warp;
 use crate::utils::fill;
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct MuonState {}
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct MuonCore {
     pub base: ModuleBase<MuonState, MuonConfig>,
     pub id: usize,

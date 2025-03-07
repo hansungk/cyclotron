@@ -1,9 +1,11 @@
+use std::fmt::Debug;
+
 use log::error;
 use num_derive::FromPrimitive;
-pub use num_traits::{WrappingAdd};
+pub use num_traits::WrappingAdd;
 use crate::muon::decode::DecodedInst;
 
-#[derive(FromPrimitive, Clone)]
+#[derive(Debug, FromPrimitive, Clone)]
 pub enum Opcode {
     Load    = 0b0000011,
     LoadFp  = 0b0000111,
@@ -40,6 +42,7 @@ impl From<&Opcode> for u16 {
 }
 
 // TODO: use bitflags crate for this
+#[derive(Debug)]
 pub struct InstAction;
 
 impl InstAction {
@@ -55,7 +58,7 @@ impl InstAction {
     pub const CSR: u32           = 1 << 8;
 }
 
-#[derive(FromPrimitive, Clone, Copy)]
+#[derive(Debug, FromPrimitive, Clone, Copy)]
 pub enum SFUType {
     TMC    = 0,
     WSPAWN = 1,
@@ -66,7 +69,7 @@ pub enum SFUType {
     KILL   = 6,
 }
 
-#[derive(FromPrimitive, Clone, Copy, PartialEq)]
+#[derive(Debug, FromPrimitive, Clone, Copy, PartialEq)]
 pub enum CSRType {
     RW  = 1,
     RS  = 2,
@@ -76,7 +79,7 @@ pub enum CSRType {
     RCI = 7,
 }
 
-pub trait OpImp<const N: usize> {
+pub trait OpImp<const N: usize>: Debug {
     fn run(&self, operands: [u32; N]) -> u32;
 }
 
@@ -104,6 +107,7 @@ impl OpImp<3> for fn(u32, u32, u32) -> u32 {
     }
 }
 
+#[derive(Debug)]
 pub struct InstImp<const N: usize> {
     name: String,
     opcode: Opcode,
@@ -146,6 +150,8 @@ impl InstImp<0> {
         InstImp::<3> { name: name.to_string(), opcode, f3: Some(f3), f7: Some(f2), actions, op: Box::new(op) }
     }
 }
+
+#[derive(Debug)]
 pub struct InstGroupVariant<const N: usize> {
     pub insts: Vec<InstImp<N>>,
     pub get_operands: fn(&DecodedInst) -> [u32; N],
@@ -172,6 +178,7 @@ impl<const N: usize> InstGroupVariant<N> {
     }
 }
 
+#[derive(Debug)]
 pub enum InstGroup {
     Nullary(InstGroupVariant<0>),
     Unary(InstGroupVariant<1>),
@@ -191,6 +198,7 @@ impl InstGroup {
 }
 
 // TODO: make this all constant
+#[derive(Debug)]
 pub struct ISA;
 impl ISA {
 

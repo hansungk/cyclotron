@@ -1,6 +1,7 @@
 use std::sync::{Arc, OnceLock};
 use crate::base::behavior::*;
 
+#[derive(Debug)]
 pub struct ModuleBase<T, C> {
     pub cycle: u64,
     pub frequency: u64,

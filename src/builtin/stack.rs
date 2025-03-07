@@ -2,6 +2,7 @@ use std::sync::Arc;
 use crate::base::behavior::*;
 use crate::base::module::{module_inner, ModuleBase, IsModule};
 
+#[derive(Debug)]
 pub struct StackState<T, const N: usize> {
     pub storage: Vec<T>,
     size: usize,
@@ -18,7 +19,7 @@ impl<T: Default, const N: usize> Default for StackState<T, N> {
     }
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct Stack<T, const N: usize> where T: Default {
     base: ModuleBase<StackState<T, N>, ()>,
 }

@@ -5,13 +5,13 @@ use crate::base::module::*;
 use crate::muon::config::MuonConfig;
 use crate::muon::isa::CSRType;
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct CSRState {
     csr: HashMap<u32, u32>,
 }
 
 // this is instantiated per lane
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct CSRFile {
     base: ModuleBase<CSRState, MuonConfig>,
     lock: RwLock<()>,
