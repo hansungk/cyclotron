@@ -27,16 +27,16 @@ impl CyclotronTop {
         let mut clusters = Vec::new();
         let muon_config = Arc::new(config.muon_config);
         for id in 0..1 {
-            clusters.push(Cluster::new(muon_config.clone(), imem.clone(), id));
+            clusters.push(Cluster::new(Arc::clone(&muon_config), Arc::clone(&imem), id));
         }
         let top = CyclotronTop {
-            cproc: CommandProcessor::new(muon_config.clone(), 1 /*FIXME: properly get thread dimension*/),
+            cproc: CommandProcessor::new(Arc::clone(&muon_config), 1 /*FIXME: properly get thread dimension*/),
             clusters,
             timeout: config.timeout,
         };
         GMEM.write()
             .expect("gmem poisoned")
-            .set_fallthrough(imem.clone());
+            .set_fallthrough(Arc::clone(&imem));
         top
     }
 

@@ -17,7 +17,7 @@ impl Cluster {
     pub fn new(config: Arc<MuonConfig>, imem: Arc<RwLock<ElfBackedMem>>, id: usize) -> Self {
         let mut cores = Vec::new();
         for cid in 0..1 {
-            cores.push(MuonCore::new(config.clone(), cid));
+            cores.push(MuonCore::new(Arc::clone(&config), cid));
         }
         Cluster {
             id,

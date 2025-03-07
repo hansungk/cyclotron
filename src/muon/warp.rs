@@ -175,10 +175,10 @@ impl Warp {
                     ..*config
                 });
                 Lane {
-                    reg_file: RegFile::new(lane_config.clone()),
-                    csr_file: CSRFile::new(lane_config.clone()),
+                    reg_file: RegFile::new(Arc::clone(&lane_config)),
+                    csr_file: CSRFile::new(Arc::clone(&lane_config)),
                     decode_unit: DecodeUnit,
-                    execute_unit: ExecuteUnit::new(lane_config.clone()),
+                    execute_unit: ExecuteUnit::new(Arc::clone(&lane_config)),
                 }
             }).collect(),
             fetch_queue: Queue::new(Arc::new(())),

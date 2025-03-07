@@ -39,6 +39,7 @@ impl From<&Opcode> for u16 {
     }
 }
 
+// TODO: use bitflags crate for this
 pub struct InstAction;
 
 impl InstAction {

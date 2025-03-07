@@ -26,7 +26,7 @@ impl MuonCore {
         let mut me = MuonCore {
             base: Default::default(),
             id,
-            scheduler: Scheduler::new(config.clone()),
+            scheduler: Scheduler::new(Arc::clone(&config)),
             warps: (0..num_warps).map(|warp_id| Warp::new(Arc::new(MuonConfig {
                 lane_config: LaneConfig {
                     warp_id,
@@ -58,7 +58,7 @@ impl MuonCore {
 
         info!("muon core {} instantiated!", config.lane_config.core_id);
 
-        me.init_conf(config.clone());
+        me.init_conf(Arc::clone(&config));
         me
     }
 

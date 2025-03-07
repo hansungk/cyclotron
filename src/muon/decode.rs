@@ -74,7 +74,7 @@ impl ModuleBehaviors for RegFile {
     fn reset(&mut self) {
         self.base.state.gpr.fill(0u32);
         self.base.state.fpr.fill(0f32);
-        let config = self.conf().clone();
+        let config = self.conf();
         let gtid = config.num_warps * config.lane_config.core_id
             + config.num_lanes * config.lane_config.warp_id
             + config.lane_config.lane_id;
