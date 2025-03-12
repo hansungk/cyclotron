@@ -6,6 +6,7 @@ use toml::Table;
 use std::path::PathBuf;
 use clap::Parser;
 use cyclotron::base::behavior::*;
+use cyclotron::base::module::IsModule;
 use cyclotron::muon::config::MuonConfig;
 use cyclotron::sim::config::{Config, SimConfig};
 use cyclotron::sim::top::{CyclotronTop, CyclotronTopConfig};
@@ -25,7 +26,7 @@ struct CyclotronArgs {
     num_cores: Option<usize>,
 }
 
-pub fn main() {
+pub fn main() -> Result<(), u32> {
     env_logger::init();
 
     let argv = CyclotronArgs::parse();
@@ -54,8 +55,18 @@ pub fn main() {
         top.tick_one();
         if top.finished() {
             println!("simulation has finished");
-            return;
+            if let Some(mut tohost) = top.clusters[0].cores[0].scheduler.state().tohost {
+                if tohost > 0 {
+                    tohost >>= 1;
+                    println!("failed test case {}", tohost);
+                    return Err(tohost)
+                } else {
+                    println!("test passed");
+                }
+            }
+            return Ok(());
         }
     }
     println!("timeout after {} cycles", top.timeout);
+    Err(0)
 }

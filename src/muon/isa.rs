@@ -67,6 +67,7 @@ pub enum SFUType {
     BAR    = 4,
     PRED   = 5,
     KILL   = 6,
+    ECALL  = 7,
 }
 
 #[derive(Debug, FromPrimitive, Clone, Copy, PartialEq)]
@@ -165,7 +166,7 @@ impl<const N: usize> InstGroupVariant<N> {
         self.insts.iter().map(|inst| {
             match inst {
                 InstImp { opcode, f3: Some(f3), f7: Some(f7), op, .. } => {
-                    (req.opcode == opcode.into() && req.f3 == *f3 && req.f7 == *f7).then(|| op.run(operands))
+                    (req.opcode == opcode.into() && (req.f3 == *f3) && (req.f7 == *f7)).then(|| op.run(operands))
                 },
                 InstImp { opcode, f3: Some(f3), f7: _, op, .. } => {
                     (req.opcode == opcode.into() && req.f3 == *f3).then(|| op.run(operands))
@@ -218,6 +219,8 @@ impl ISA {
             InstImp::nul_f3("csrrwi", Opcode::System, 5, InstAction::CSR, || CSRType::RWI as u32),
             InstImp::nul_f3("csrrsi", Opcode::System, 6, InstAction::CSR, || CSRType::RSI as u32),
             InstImp::nul_f3("csrrci", Opcode::System, 7, InstAction::CSR, || CSRType::RCI as u32),
+            // only support test pass/fail ecall
+            InstImp::nul_f3("ecall",  Opcode::System, 0, InstAction::SFU, || SFUType::ECALL as u32),
             // sets thread mask to rs1[NT-1:0]
             InstImp::nul_f3_f7("vx_tmc",    Opcode::Custom0, 0, 0, InstAction::SFU, || SFUType::TMC as u32),
             // spawns rs1 warps, except the executing warp, and set their pc's to rs2
@@ -239,7 +242,7 @@ impl ISA {
 
         let r3_inst_imps: Vec<InstImp<2>> = vec![
             InstImp::bin_f3_f7("add",  Opcode::Op, 0,  0, InstAction::WRITE_REG, |a, b| { a.wrapping_add(b) }),
-            InstImp::bin_f3_f7("sub",  Opcode::Op, 0, 32, InstAction::WRITE_REG, |a, b| { ((a as i32) - (b as i32)) as u32 }),
+            InstImp::bin_f3_f7("sub",  Opcode::Op, 0, 32, InstAction::WRITE_REG, |a, b| { ((a as i32).wrapping_sub(b as i32)) as u32 }),
             InstImp::bin_f3_f7("sll",  Opcode::Op, 1,  0, InstAction::WRITE_REG, |a, b| { a << (b & 31) }),
             InstImp::bin_f3_f7("slt",  Opcode::Op, 2,  0, InstAction::WRITE_REG, |a, b| { if (a as i32) < (b as i32) { 1 } else { 0 } }),
             InstImp::bin_f3_f7("sltu", Opcode::Op, 3,  0, InstAction::WRITE_REG, |a, b| { if a < b { 1 } else { 0 } }),
@@ -282,7 +285,8 @@ impl ISA {
             InstImp::bin_f3("lhu", Opcode::Load, 5, InstAction::MEM_LOAD, |a, b| { a.wrapping_add(b) }),
             InstImp::bin_f3("lwu", Opcode::Load, 6, InstAction::MEM_LOAD, |a, b| { a.wrapping_add(b) }),
 
-            InstImp::bin_f3("fence", Opcode::MiscMem, 0, InstAction::FENCE, |a, b| { todo!() }),
+            InstImp::bin_f3("fence",   Opcode::MiscMem, 0, InstAction::FENCE, |a, b| { 0 }),
+            InstImp::bin_f3("fence.i", Opcode::MiscMem, 1, InstAction::FENCE, |a, b| { 1 }),
 
             InstImp::bin_f3   ("addi", Opcode::OpImm, 0,     InstAction::WRITE_REG, |a, b| { a.wrapping_add(b) }),
             InstImp::bin_f3_f7("slli", Opcode::OpImm, 1,  0, InstAction::WRITE_REG, |a, b| { a << (b & 31) }),
@@ -341,7 +345,7 @@ impl ISA {
         ];
         let lui_inst = InstGroupVariant {
             insts: lui_inst_imp,
-            get_operands: |req| [req.imm32 as u32],
+            get_operands: |req| [(req.imm32 as u32) << 12],
         };
 
         vec![

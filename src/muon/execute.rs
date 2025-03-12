@@ -61,19 +61,26 @@ impl ExecuteUnit {
             writeback.rd_data = alu_result;
         }
         if (actions & InstAction::MEM_LOAD) > 0 {
+            let load_size = writeback.inst.f3 & 3;
+            let load_addr = alu_result >> 2 << 2;
+            assert_eq!(alu_result >> 2, (alu_result + (1 << load_size) - 1) >> 2, "misaligned load");
+
             let load_data_bytes = GMEM.write().expect("lock poisoned").read::<4>(
-                alu_result as usize).expect("store failed");
+                load_addr as usize).expect("store failed");
             writeback.rd_addr = decoded.rd;
 
             let raw_load = u32::from_le_bytes(*load_data_bytes);
-            let sext = writeback.inst.f3.bit(2);
+            let offset = ((alu_result & 3) * 8) as usize;
+            let sext = !writeback.inst.f3.bit(2);
             let opt_sext = |f: fn(u32) -> i32, x: u32| { if sext { f(x) as u32 } else { x } };
-            let masked_load = match writeback.inst.f3 & 3 {
-                0 => opt_sext(sign_ext::<8>, raw_load.sel(7, 0)),
-                1 => opt_sext(sign_ext::<16>, raw_load.sel(15, 0)),
+            let masked_load = match load_size {
+                0 => opt_sext(sign_ext::<8>, raw_load.sel(7 + offset, offset)),
+                1 => opt_sext(sign_ext::<16>, raw_load.sel(15 + offset, offset)),
                 2 => raw_load,
                 _ => panic!("unimplemented load type"),
             };
+            info!("load f3={} M[0x{:08x}] -> raw 0x{:08x} masked 0x{:08x}",
+                writeback.inst.f3, load_addr, raw_load, masked_load);
             writeback.rd_data = masked_load;
         }
         if (actions & InstAction::MEM_STORE) > 0 {
@@ -104,7 +111,7 @@ impl ExecuteUnit {
             writeback.rd_data = decoded.pc + 8;
         }
         if (actions & InstAction::FENCE) > 0 {
-            todo!();
+            // todo!();
         }
         if (actions & InstAction::SFU) > 0 {
             writeback.sfu_type = Some(SFUType::from_u32(alu_result).unwrap())

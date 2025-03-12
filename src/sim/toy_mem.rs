@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
+use log::info;
 use crate::base::mem::HasMemory;
 use crate::sim::elf::ElfBackedMem;
 
@@ -20,19 +21,17 @@ impl ToyMemory {
 impl HasMemory for ToyMemory {
     fn read<const N: usize>(&mut self, addr: usize) -> Option<Arc<[u8; N]>> {
         assert!((N % 4 == 0) && N > 0, "word sized requests only");
+        assert_eq!(addr & 0x3, 0, "misaligned load across word boundary");
         let words: Vec<_> = (addr..addr + N).step_by(4).map(|a| {
-            let mut result = None;
-            if !self.mem.contains_key(&a) {
-                result = if let Some(elf) = &self.fallthrough {
+            (!self.mem.contains_key(&a)).then_some(()).and_then(|_| {
+                if let Some(elf) = &self.fallthrough {
+                    info!("fallthrough");
                     elf.write().unwrap().read::<4>(a).map(|r| u32::from_le_bytes(*r))
                 } else {
                     None
-                };
-                if result.is_none() {
-                    self.mem.insert(a, 0u32);
                 }
-            }
-            result.or(Some(*self.mem.entry(a).or_insert(0u32))).unwrap()
+            })
+            .or_else(|| Some(*self.mem.entry(a).or_insert(0u32))).unwrap()
         }).collect();
 
         let byte_array: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
@@ -41,7 +40,13 @@ impl HasMemory for ToyMemory {
 
     fn write<const N: usize>(&mut self, addr: usize, data: Arc<[u8; N]>) -> Result<(), String> {
         if N < 4 {
-            let curr = self.mem.entry(addr & !3).or_insert(0u32);
+            assert!((addr % 3) + N - 1 < 4, "misaligned store across word boundary");
+            let word_addr = addr >> 2 << 2;
+            if !self.mem.contains_key(&word_addr) {
+                let read_value = u32::from_le_bytes(*(self.read::<4>(addr >> 2 << 2).unwrap()));
+                self.mem.insert(word_addr, read_value);
+            }
+            let curr = self.mem.entry(word_addr).or_insert(0u32);
 
             for i in 0..N {
                 let shift = ((addr & 3) + i) * 8;

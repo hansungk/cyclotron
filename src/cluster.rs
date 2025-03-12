@@ -9,7 +9,7 @@ use std::sync::{Arc, RwLock};
 pub struct Cluster {
     id: usize,
     imem: Arc<RwLock<ElfBackedMem>>,
-    cores: Vec<MuonCore>,
+    pub cores: Vec<MuonCore>,
     scheduled_threadblocks: usize,
 }
 

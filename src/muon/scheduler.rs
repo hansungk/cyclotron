@@ -12,6 +12,7 @@ use crate::utils::BitSlice;
 pub struct SchedulerState {
     pub active_warps: u32,
     thread_masks: Vec<u32>,
+    pub tohost: Option<u32>,
     pc: Vec<u32>,
     _ipdom_stack: Vec<u32>,
     end_stall: Vec<bool>,
@@ -42,6 +43,7 @@ impl Scheduler {
                 state: SchedulerState {
                     active_warps: 0,
                     thread_masks: vec![0u32; num_warps],
+                    tohost: None,
                     pc: vec![0x80000000u32; num_warps],
                     _ipdom_stack: vec![0; num_warps],
                     end_stall: vec![false; num_warps],
@@ -125,15 +127,21 @@ impl ModuleBehaviors for Scheduler {
                             self.base.state.thread_masks[wid] = 0;
                             self.base.state.active_warps.mut_bit(wid, false);
                         }
+                        SFUType::ECALL => {
+                            let a0 = wb.insts[0].rs1;
+                            let a7 = wb.insts[0].rs2;
+
+                            if a7 == 93 {
+                                self.base.state.tohost = Some(a0);
+                                self.base.state.thread_masks[wid] = 0;
+                                self.base.state.active_warps.mut_bit(wid, false);
+                            }
+                        }
                     }
                     self.base.state.end_stall[wid] = true;
                 }
             }
         });
-        
-        if self.base.state.active_warps == 0 {
-            info!("simulation has ended");
-        }
 
         self.schedule.iter_mut().enumerate().for_each(|(wid, port)| {
             let ready = self.base.state.active_warps.bit(wid) && !port.blocked();
