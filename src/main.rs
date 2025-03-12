@@ -14,7 +14,7 @@ use cyclotron::sim::top::{CyclotronTop, CyclotronTopConfig};
 #[derive(Parser)]
 #[command(version, about)]
 struct CyclotronArgs {
-    binary_path: PathBuf,
+    binary_path: Option<PathBuf>,
 
     #[arg(long)]
     num_lanes: Option<usize>,
@@ -49,7 +49,7 @@ pub fn main() {
 
     let mut top = CyclotronTop::new(Arc::new(CyclotronTopConfig {
         timeout: sim_config.timeout,
-        elf_path: sim_config.elf.into(),
+        elf_path: argv.binary_path.unwrap_or(sim_config.elf.into()),
         muon_config,
     }));
 
