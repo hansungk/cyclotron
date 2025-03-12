@@ -13,12 +13,12 @@ use crate::muon::isa::{CSRType, SFUType};
 use crate::muon::scheduler::ScheduleOut;
 use crate::utils::BitSlice;
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct WarpState {
     pub stalled: bool,
 }
 
-#[derive(Clone, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct FetchMetadata {
     pub mask: u32,
     pub pc: u32,
@@ -37,14 +37,14 @@ impl From<&ScheduleOut> for FetchMetadata {
     }
 }
 
-#[derive(Default, Clone)]
+#[derive(Debug, Default, Clone)]
 pub struct ScheduleWriteback {
     pub insts: Vec<DecodedInst>,
     pub branch: Option<u32>,
     pub sfu: Option<SFUType>,
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct Warp {
     base: ModuleBase<WarpState, MuonConfig>,
     pub lanes: Vec<Lane>,
@@ -164,7 +164,6 @@ module!(Warp, WarpState, MuonConfig,
 impl Warp {
     pub fn new(config: Arc<MuonConfig>) -> Warp {
         let num_lanes = config.num_lanes;
-        info!("warp {} instantiated!", config.lane_config.warp_id);
         let mut me = Warp {
             base: ModuleBase::default(),
             lanes: (0..num_lanes).map(|lane_id| {
@@ -176,10 +175,10 @@ impl Warp {
                     ..*config
                 });
                 Lane {
-                    reg_file: RegFile::new(lane_config.clone()),
-                    csr_file: CSRFile::new(lane_config.clone()),
+                    reg_file: RegFile::new(Arc::clone(&lane_config)),
+                    csr_file: CSRFile::new(Arc::clone(&lane_config)),
                     decode_unit: DecodeUnit,
-                    execute_unit: ExecuteUnit::new(lane_config.clone()),
+                    execute_unit: ExecuteUnit::new(Arc::clone(&lane_config)),
                 }
             }).collect(),
             fetch_queue: Queue::new(Arc::new(())),
@@ -193,6 +192,7 @@ impl Warp {
     }
 }
 
+#[derive(Debug)]
 pub struct Lane {
     pub reg_file: RegFile,
     pub csr_file: CSRFile,

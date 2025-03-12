@@ -8,6 +8,7 @@ use crate::muon::isa::{CSRType, InstAction, SFUType, ISA};
 use crate::sim::top::GMEM;
 use crate::utils::BitSlice;
 
+#[derive(Debug)]
 pub struct Writeback {
     pub inst: DecodedInst,
     pub rd_addr: u8,
@@ -32,6 +33,7 @@ impl Default for Writeback {
     }
 }
 
+#[derive(Debug)]
 pub struct ExecuteUnit;
 
 impl ExecuteUnit {

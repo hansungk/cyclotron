@@ -4,13 +4,13 @@
 use std::marker::PhantomData;
 use std::sync::{Arc, OnceLock, RwLock};
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct InputPort {}
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct OutputPort {}
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct Channel<T: Clone> {
     valid: bool,
     data: T,
@@ -18,9 +18,10 @@ pub struct Channel<T: Clone> {
 
 /// Wrapper type of a reference to a channel.  Newtype is necessary to implement get/put methods at
 /// the reference type.
+#[derive(Debug)]
 pub struct ChannelRef<T: Clone>(Arc<RwLock<Channel<T>>>);
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct Port<D, T: Clone> {
     // RwLock is necessary because each module has no knowledge of when the other module will
     // do concurrent access to the port.

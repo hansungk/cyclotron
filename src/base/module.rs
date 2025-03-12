@@ -1,6 +1,7 @@
 use std::sync::{Arc, OnceLock};
 use crate::base::behavior::*;
 
+#[derive(Debug)]
 pub struct ModuleBase<T, C> {
     pub cycle: u64,
     pub frequency: u64,
@@ -54,7 +55,7 @@ impl<X> Parameterizable for X where X: IsModule {
     }
 
     fn init_conf(&mut self, conf: Arc<Self::ConfigType>) {
-        self.base().config.set(conf.clone()).map_err(|_| "config already set").unwrap();
+        self.base().config.set(Arc::clone(&conf)).map_err(|_| "config already set").unwrap();
     }
 }
 

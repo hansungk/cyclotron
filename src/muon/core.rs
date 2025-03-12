@@ -7,10 +7,10 @@ use crate::muon::scheduler::Scheduler;
 use crate::muon::warp::Warp;
 use crate::utils::fill;
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct MuonState {}
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct MuonCore {
     pub base: ModuleBase<MuonState, MuonConfig>,
     pub id: usize,
@@ -26,7 +26,7 @@ impl MuonCore {
         let mut me = MuonCore {
             base: Default::default(),
             id,
-            scheduler: Scheduler::new(config.clone()),
+            scheduler: Scheduler::new(Arc::clone(&config)),
             warps: (0..num_warps).map(|warp_id| Warp::new(Arc::new(MuonConfig {
                 lane_config: LaneConfig {
                     warp_id,
@@ -58,8 +58,19 @@ impl MuonCore {
 
         info!("muon core {} instantiated!", config.lane_config.core_id);
 
-        me.init_conf(config.clone());
+        me.init_conf(Arc::clone(&config));
         me
+    }
+
+    /// Spawn a warp in this core.  Invoked by the command processor to schedule a threadblock to
+    /// the cluster.
+    pub fn spawn_warp(&mut self) {
+        self.scheduler.spawn_warp()
+    }
+
+    // TODO: This should differentiate between different threadblocks.
+    pub fn all_warps_retired(&self) -> bool {
+        self.scheduler.all_warps_retired()
     }
 }
 

@@ -6,9 +6,9 @@ use crate::base::port::{InputPort, OutputPort, Port};
 use crate::muon::config::MuonConfig;
 use crate::muon::isa::SFUType;
 use crate::muon::warp::ScheduleWriteback;
-use crate::utils::{BitSlice};
+use crate::utils::BitSlice;
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct SchedulerState {
     pub active_warps: u32,
     thread_masks: Vec<u32>,
@@ -17,7 +17,7 @@ pub struct SchedulerState {
     end_stall: Vec<bool>,
 }
 
-#[derive(Default, Clone)]
+#[derive(Debug, Default, Clone)]
 pub struct ScheduleOut {
     pub pc: u32,
     pub mask: u32,
@@ -26,7 +26,7 @@ pub struct ScheduleOut {
 }
 
 // instantiated per core
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct Scheduler {
     base: ModuleBase<SchedulerState, MuonConfig>,
     pub schedule: Vec<Port<OutputPort, ScheduleOut>>,
@@ -53,6 +53,17 @@ impl Scheduler {
         };
         me.init_conf(config);
         me
+    }
+
+    pub fn spawn_warp(&mut self) {
+        let all_ones = u32::MAX; // 0xFFFF
+        self.state().thread_masks = [all_ones].repeat(self.conf().num_warps);
+        self.base.state.active_warps = 1;
+    }
+
+    // TODO: This should differentiate between different threadblocks.
+    pub fn all_warps_retired(&self) -> bool {
+        self.base.state.active_warps == 0
     }
 }
 
@@ -141,9 +152,8 @@ impl ModuleBehaviors for Scheduler {
     }
 
     fn reset(&mut self) {
-        let num_lanes = (&self.conf().num_lanes).clone();
-        let tmask = ((1u64 << num_lanes) - 1u64) as u32;
-        self.state().thread_masks = [tmask].repeat(num_lanes);
-        self.base.state.active_warps = 1;
+        let all_ones = u32::MAX; // 0xFFFF
+        self.state().thread_masks = [all_ones].repeat(self.conf().num_warps);
+        self.base.state.active_warps = 0;
     }
 }

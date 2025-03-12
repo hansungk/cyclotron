@@ -1,6 +1,5 @@
 extern crate lazy_static;
 
-use std::env::args;
 use std::fs;
 use std::sync::Arc;
 use toml::Table;
@@ -14,35 +13,32 @@ use cyclotron::sim::top::{CyclotronTop, CyclotronTopConfig};
 #[derive(Parser)]
 #[command(version, about)]
 struct CyclotronArgs {
+    #[arg(help="Path to config.toml")]
+    config_path: PathBuf,
+    #[arg(long, help="Override binary path")]
     binary_path: Option<PathBuf>,
-
-    #[arg(long)]
+    #[arg(long, help="Override number of lanes per warp")]
     num_lanes: Option<usize>,
-    #[arg(long)]
+    #[arg(long, help="Override number of warps per core")]
     num_warps: Option<usize>,
-    #[arg(long)]
+    #[arg(long, help="Override number of cores per cluster")]
     num_cores: Option<usize>,
 }
 
 pub fn main() {
     env_logger::init();
-    let argv: Vec<_> = args().collect();
-    if argv.len() < 2 {
-        println!("usage: {} <config>", argv[0]);
-        return;
-    }
 
-    let config = fs::read_to_string(&argv[1].clone()).unwrap_or_else(|err| {
+    let argv = CyclotronArgs::parse();
+    let config = fs::read_to_string(&argv.config_path).unwrap_or_else(|err| {
         eprintln!("failed to read config file: {}", err);
         std::process::exit(1);
     });
 
-    let config_table: Table = toml::from_str(&config).expect(&"cannot parse config toml");
+    let config_table: Table = toml::from_str(&config).expect("cannot parse config toml");
     let sim_config = SimConfig::from_section(config_table.get("sim"));
     let mut muon_config = MuonConfig::from_section(config_table.get("muon"));
 
     // optionally override config.toml
-    let argv = CyclotronArgs::parse();
     muon_config.num_lanes = argv.num_lanes.unwrap_or(muon_config.num_lanes);
     muon_config.num_warps = argv.num_warps.unwrap_or(muon_config.num_warps);
     muon_config.num_cores = argv.num_cores.unwrap_or(muon_config.num_cores);
@@ -53,13 +49,13 @@ pub fn main() {
         muon_config,
     }));
 
-    top.cluster.reset();
+    top.reset();
     for _ in 0..top.timeout {
         top.tick_one();
-        // if top.muon.scheduler.base().state.active_warps == 0 {
-        //     println!("simulation has finished");
-        //     return;
-        // }
+        if top.finished() {
+            println!("simulation has finished");
+            return;
+        }
     }
     println!("timeout after {} cycles", top.timeout);
 }

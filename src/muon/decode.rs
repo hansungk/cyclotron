@@ -7,7 +7,7 @@ use crate::utils::*;
 use std::fmt::Formatter;
 use std::sync::Arc;
 
-#[derive(Default, Copy, Clone)]
+#[derive(Debug, Default, Copy, Clone)]
 pub struct DecodedInst {
     pub opcode: u16,
     pub rd: u8,
@@ -49,6 +49,7 @@ pub fn sign_ext<const W: u8>(from: u32) -> i32 {
     ((from << (32 - W)) as i32) >> (32 - W)
 }
 
+#[derive(Debug)]
 pub struct RegFileState {
     gpr: [u32; 128],
     fpr: [f32; 64],
@@ -63,7 +64,7 @@ impl Default for RegFileState {
     }
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct RegFile {
     base: ModuleBase<RegFileState, MuonConfig>,
 }
@@ -74,7 +75,7 @@ impl ModuleBehaviors for RegFile {
     fn reset(&mut self) {
         self.base.state.gpr.fill(0u32);
         self.base.state.fpr.fill(0f32);
-        let config = self.conf().clone();
+        let config = self.conf();
         let gtid = config.num_warps * config.lane_config.core_id
             + config.num_lanes * config.lane_config.warp_id
             + config.lane_config.lane_id;
@@ -108,6 +109,7 @@ impl RegFile {
     }
 }
 
+#[derive(Debug)]
 pub struct DecodeUnit;
 
 impl DecodeUnit {

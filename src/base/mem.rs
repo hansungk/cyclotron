@@ -7,20 +7,20 @@ pub trait HasMemory {
     fn write<const N: usize>(&mut self, addr: usize, data: Arc<[u8; N]>) -> Result<(), String>;
 }
 
-#[derive(Default, Clone)]
+#[derive(Debug, Default, Clone)]
 pub enum MemReqOp {
     #[default]
     Get,
     Put,
 }
 
-#[derive(Default, Clone)]
+#[derive(Debug, Default, Clone)]
 pub enum MemRespOp {
     #[default]
     Ack
 }
 
-#[derive(Default, Clone)]
+#[derive(Debug, Default, Clone)]
 pub struct MemRequest {
     pub address: usize,
     pub size: usize,
@@ -48,7 +48,7 @@ impl<D> Port<D, MemRequest> {
     }
 }
 
-#[derive(Default, Clone)]
+#[derive(Debug, Default, Clone)]
 pub struct MemResponse {
     pub op: MemRespOp,
     pub data: Option<Arc<[u8]>> // why should this be an Arc?
