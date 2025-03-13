@@ -203,11 +203,21 @@ impl InstGroup {
 pub struct ISA;
 impl ISA {
 
-    fn check_zero(x: u32) -> u32 {
-        if x == 0 {
-            error!("divide by zero")
+    fn check_zero(b: u32) -> bool {
+        if b == 0 {
+            error!("divide by zero");
+            true
+        } else {
+            false
         }
-        x
+    }
+
+    fn check_overflow(a: u32, b: i32) -> i32 {
+        if (a == 0x8000_0000u32) && (b == -1) {
+            1
+        } else {
+            b
+        }
     }
 
     #[allow(unused_variables)]
@@ -256,10 +266,10 @@ impl ISA {
             InstImp::bin_f3_f7("mulh",   Opcode::Op, 1, 1, InstAction::WRITE_REG, |a, b| { ((((a as i32) as i64).wrapping_mul((b as i32) as i64)) >> 32) as u32 }),
             InstImp::bin_f3_f7("mulhsu", Opcode::Op, 2, 1, InstAction::WRITE_REG, |a, b| { ((((a as i32) as i64).wrapping_mul((b as u64) as i64)) >> 32) as u32 }),
             InstImp::bin_f3_f7("mulhu",  Opcode::Op, 3, 1, InstAction::WRITE_REG, |a, b| { (((a as u64).wrapping_mul(b as u64)) >> 32) as u32 }),
-            InstImp::bin_f3_f7("div",    Opcode::Op, 4, 1, InstAction::WRITE_REG, |a, b| { ((a as i32) / (Self::check_zero(b) as i32)) as u32 }),
-            InstImp::bin_f3_f7("divu",   Opcode::Op, 5, 1, InstAction::WRITE_REG, |a, b| { a / Self::check_zero(b) }),
-            InstImp::bin_f3_f7("rem",    Opcode::Op, 6, 1, InstAction::WRITE_REG, |a, b| { ((a as i32) % (Self::check_zero(b) as i32)) as u32 }),
-            InstImp::bin_f3_f7("remu",   Opcode::Op, 7, 1, InstAction::WRITE_REG, |a, b| { a % Self::check_zero(b) }),
+            InstImp::bin_f3_f7("div",    Opcode::Op, 4, 1, InstAction::WRITE_REG, |a, b| { if Self::check_zero(b) { u32::MAX } else { ((a as i32) / Self::check_overflow(a, b as i32)) as u32 } }),
+            InstImp::bin_f3_f7("divu",   Opcode::Op, 5, 1, InstAction::WRITE_REG, |a, b| { if Self::check_zero(b) { u32::MAX } else { a / b } }),
+            InstImp::bin_f3_f7("rem",    Opcode::Op, 6, 1, InstAction::WRITE_REG, |a, b| { if Self::check_zero(b) { a } else { ((a as i32) % Self::check_overflow(a, b as i32)) as u32 } }),
+            InstImp::bin_f3_f7("remu",   Opcode::Op, 7, 1, InstAction::WRITE_REG, |a, b| { if Self::check_zero(b) { a } else { a % b } }),
         ];
         let r3_insts = InstGroupVariant {
             insts: r3_inst_imps,

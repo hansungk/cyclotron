@@ -5,6 +5,7 @@ use crate::muon::core::MuonCore;
 use crate::sim::elf::ElfBackedMem;
 use log::info;
 use std::sync::{Arc, RwLock};
+use crate::sim::top::GMEM;
 
 pub struct Cluster {
     id: usize,
@@ -28,8 +29,8 @@ impl Cluster {
     }
 
     pub fn schedule_threadblock(&mut self) {
-        assert!(
-            self.scheduled_threadblocks == 0,
+        assert_eq!(
+            self.scheduled_threadblocks, 0,
             "attempted to schedule a threadblock to an already-busy cluster. TODO: support more than one outstanding threadblocks"
         );
         info!("cluster {}: scheduled a threadblock", self.id);
@@ -59,15 +60,10 @@ impl ModuleBehaviors for Cluster {
             for (ireq, iresp) in &mut core.imem_req.iter_mut().zip(&mut core.imem_resp) {
                 if let Some(req) = ireq.get() {
                     assert_eq!(req.size, 8, "imem read request is not 8 bytes");
-                    let inst = self
-                        .imem
-                        .write()
-                        .expect("lock poisoned")
-                        .read_inst(req.address)
-                        .expect(&format!("invalid pc: 0x{:x}", req.address));
+                    let inst = GMEM.write().unwrap().read::<8>(req.address).unwrap();
                     let succ = iresp.put(&MemResponse {
                         op: MemRespOp::Ack,
-                        data: Some(Arc::new(inst.to_le_bytes())),
+                        data: Some(inst.clone()),
                     });
                     assert!(succ, "muon asserted fetch pressure, not implemented");
                 }
