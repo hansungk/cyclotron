@@ -1,9 +1,12 @@
 use std::fmt::Debug;
 
-use log::error;
+use log::{error, info};
 use num_derive::FromPrimitive;
+use num_traits::real::Real;
+use num_traits::ToPrimitive;
 pub use num_traits::WrappingAdd;
 use crate::muon::decode::DecodedInst;
+use crate::utils::BitSlice;
 
 #[derive(Debug, FromPrimitive, Clone)]
 pub enum Opcode {
@@ -21,10 +24,10 @@ pub enum Opcode {
     Op      = 0b0110011,
     Lui     = 0b0110111,
     Op32    = 0b0111011,
-//  Madd    = 0b1000011,
-//  Msub    = 0b1000111,
-//  NmSub   = 0b1001011,
-//  NmAdd   = 0b1001111,
+    Madd    = 0b1000011,
+    Msub    = 0b1000111,
+    NmSub   = 0b1001011,
+    NmAdd   = 0b1001111,
     OpFp    = 0b1010011,
 //  OpV     = 0b1010111,
     Custom2 = 0b1011011,
@@ -139,6 +142,10 @@ impl InstImp<0> {
         InstImp::<2> { name: name.to_string(), opcode, f3: Some(f3), f7: None, actions, op: Box::new(op) }
     }
 
+    pub fn bin_f7(name: &str, opcode: Opcode, f7: u8, actions: u32, op: fn(u32, u32) -> u32) -> InstImp<2> {
+        InstImp::<2> { name: name.to_string(), opcode, f3: None, f7: Some(f7), actions, op: Box::new(op) }
+    }
+
     pub fn bin(name: &str, opcode: Opcode, actions: u32, op: fn(u32, u32) -> u32) -> InstImp<2> {
         InstImp::<2> { name: name.to_string(), opcode, f3: None, f7: None, actions, op: Box::new(op) }
     }
@@ -149,6 +156,10 @@ impl InstImp<0> {
 
     pub fn ter_f3_f2(name: &str, opcode: Opcode, f3: u8, f2: u8, actions: u32, op: fn(u32, u32, u32) -> u32) -> InstImp<3> {
         InstImp::<3> { name: name.to_string(), opcode, f3: Some(f3), f7: Some(f2), actions, op: Box::new(op) }
+    }
+
+    pub fn ter(name: &str, opcode: Opcode, actions: u32, op: fn(u32, u32, u32) -> u32) -> InstImp<3> {
+        InstImp::<3> { name: name.to_string(), opcode, f3: None, f7: None, actions, op: Box::new(op) }
     }
 }
 
@@ -170,6 +181,9 @@ impl<const N: usize> InstGroupVariant<N> {
                 },
                 InstImp { opcode, f3: Some(f3), f7: _, op, .. } => {
                     (req.opcode == opcode.into() && req.f3 == *f3).then(|| op.run(operands))
+                },
+                InstImp { opcode, f3: _, f7: Some(f7), op, .. } => {
+                    (req.opcode == opcode.into() && req.f7 == *f7).then(|| op.run(operands))
                 },
                 InstImp { opcode, f3: _, f7: _, op, .. } => {
                     (req.opcode == opcode.into()).then(|| op.run(operands))
@@ -248,6 +262,130 @@ impl ISA {
         let sfu_insts = InstGroupVariant {
             insts: sfu_inst_imps,
             get_operands: |_| [],
+        };
+
+        fn fp_op(a: u32, b: u32, op: fn(f32, f32) -> f32) -> u32 {
+            let result = op(f32::from_bits(a), f32::from_bits(b)).to_bits();
+            info!("result of the fp operation is {:08x}", result);
+            if [0xffc00000, 0x7fffffff, 0xffffffff].contains(&result) {
+                0x7fc00000 // risc-v only ever generates this qNaNf
+            } else {
+                result
+            }
+        }
+
+        fn fcmp_op(a: u32, b: u32, op: fn(f32, f32) -> bool) -> u32 {
+            op(f32::from_bits(a), f32::from_bits(b)) as u32
+        }
+
+        fn fsgn_op(a: u32, b: u32, op: fn(f32, u32) -> f32) -> u32 {
+            op(f32::from_bits(a), b).to_bits()
+        }
+
+        // NOTE: this really should just be the f32::minimum/maximum functions, but
+        // they are unstable. we should swap that in when that goes into stable.
+        fn fminmax(a: f32, b: f32, min: bool) -> f32 {
+            if a.is_nan() { return b; }
+            if b.is_nan() { return a; }
+            if (a == 0f32) && (b == 0f32) {
+                if (min && a.is_sign_negative()) || (!min && a.is_sign_positive()) {
+                    a
+                } else {
+                    b
+                }
+            } else {
+                if (min) {
+                    a.min(b)
+                } else {
+                    a.max(b)
+                }
+            }
+        }
+
+        fn fcvt_saturate(a: u32, unsigned: bool) -> u32 {
+            let f = f32::from_bits(a);
+            if unsigned {
+                f.to_u32().unwrap_or_else(|| {
+                    if f < 0f32 {
+                        0u32
+                    } else {
+                        u32::MAX
+                    }
+                })
+            } else {
+                f.to_i32().unwrap_or_else(|| {
+                    if f < i32::MIN as f32 {
+                        i32::MIN
+                    } else {
+                        i32::MAX
+                    }
+                }) as u32
+            }
+        }
+
+        fn fclass(a: u32) -> u32 {
+            let f = f32::from_bits(a);
+            let conds = [
+                f == f32::NEG_INFINITY,             // 0
+                f  < 0f32 && f.is_normal(),         // 1
+                f  < 0f32 && f.is_subnormal(),      // 2
+                f == 0f32 && f.is_sign_negative(),  // 3
+                f == 0f32 && f.is_sign_positive(),  // 4
+                f  > 0f32 && f.is_subnormal(),      // 5
+                f  > 0f32 && f.is_normal(),         // 6
+                f == f32::INFINITY,                 // 7
+                a == 0x7f800001, // sNaNf           // 8
+                a == 0x7fc00000, // qNaNf           // 9
+            ];
+            (1 << conds.iter().position(|&c| c).unwrap()) as u32
+        }
+
+        let fpu_inst_imps: Vec<InstImp<2>> = vec![
+            InstImp::bin_f7("fadd.s",  Opcode::OpFp,  0, InstAction::WRITE_REG, |a, b| { fp_op(a, b, |x, y| { x + y }) }),
+            InstImp::bin_f7("fsub.s",  Opcode::OpFp,  4, InstAction::WRITE_REG, |a, b| { fp_op(a, b, |x, y| { x - y }) }),
+            InstImp::bin_f7("fmul.s",  Opcode::OpFp,  8, InstAction::WRITE_REG, |a, b| { fp_op(a, b, |x, y| { x * y }) }),
+            InstImp::bin_f7("fdiv.s",  Opcode::OpFp, 12, InstAction::WRITE_REG, |a, b| { fp_op(a, b, |x, y| { x / y }) }),
+            InstImp::bin_f7("fsqrt.s", Opcode::OpFp, 44, InstAction::WRITE_REG, |a, b| { fp_op(a, b, |x, y| { x.sqrt() }) }),
+
+            InstImp::bin_f3_f7("fsgnj.s",   Opcode::OpFp, 0,  16, InstAction::WRITE_REG, |a, b| { fsgn_op(a, b, |x, y| { if y.bit(31) { -x.abs() } else { x.abs() } }) }),
+            InstImp::bin_f3_f7("fsgnjn.s",  Opcode::OpFp, 1,  16, InstAction::WRITE_REG, |a, b| { fsgn_op(a, b, |x, y| { if y.bit(31) { x.abs() } else { -x.abs() } }) }),
+            InstImp::bin_f3_f7("fsgnjx.s",  Opcode::OpFp, 2,  16, InstAction::WRITE_REG, |a, b| { fsgn_op(a, b, |x, y| { if y.bit(31) { -1.0 * x } else { x } }) }),
+            InstImp::bin_f3_f7("fmin.s",    Opcode::OpFp, 0,  20, InstAction::WRITE_REG, |a, b| { fp_op(a, b, |x, y| { fminmax(x, y, true) }) }),
+            InstImp::bin_f3_f7("fmax.s",    Opcode::OpFp, 1,  20, InstAction::WRITE_REG, |a, b| { fp_op(a, b, |x, y| { fminmax(x, y, false) }) }),
+            InstImp::bin_f3_f7("feq.s",     Opcode::OpFp, 2,  80, InstAction::WRITE_REG, |a, b| { fcmp_op(a, b, |x, y| { x == y }) }),
+            InstImp::bin_f3_f7("flt.s",     Opcode::OpFp, 1,  80, InstAction::WRITE_REG, |a, b| { fcmp_op(a, b, |x, y| { x < y }) }),
+            InstImp::bin_f3_f7("fle.s",     Opcode::OpFp, 0,  80, InstAction::WRITE_REG, |a, b| { fcmp_op(a, b, |x, y| { x <= y }) }),
+
+            InstImp::bin_f3_f7("fclass.s",  Opcode::OpFp, 1, 112, InstAction::WRITE_REG, |a, b| { fclass(a) }),
+            // these are just regular mv's, shouldn't be compiled
+            InstImp::bin_f3_f7("fmv.x.w",   Opcode::OpFp, 0, 112, InstAction::WRITE_REG, |a, b| { todo!() }),
+            InstImp::bin_f3_f7("fmv.w.x",   Opcode::OpFp, 0, 120, InstAction::WRITE_REG, |a, b| { todo!() }),
+        ];
+        let fpu_insts = InstGroupVariant {
+            insts: fpu_inst_imps,
+            get_operands: |req| [req.rs1, req.rs2],
+        };
+
+        let fcvt_inst_imps: Vec<InstImp<2>> = vec![
+            InstImp::bin_f7("fcvt.*.s",     Opcode::OpFp,     96, InstAction::WRITE_REG, |a, b| { fcvt_saturate(a, b > 0) }),
+            InstImp::bin_f7("fcvt.s.*",     Opcode::OpFp,    104, InstAction::WRITE_REG, |a, b| { if b > 0 { f32::to_bits(a as f32) } else { f32::to_bits(a as i32 as f32) } }),
+        ];
+
+        let fcvt_insts = InstGroupVariant {
+            insts: fcvt_inst_imps,
+            get_operands: |req| [req.rs1, req.rs2_addr as u32],
+        };
+
+        let fm_inst_imps: Vec<InstImp<3>> = vec![
+            InstImp::ter("fmadd.s",   Opcode::Madd,  InstAction::WRITE_REG, |a, b, c| { fp_op(fp_op(a, b, |x, y| { x * y }), c, |x, y| {x + y}) }),
+            InstImp::ter("fmsub.s",   Opcode::Msub,  InstAction::WRITE_REG, |a, b, c| { fp_op(fp_op(a, b, |x, y| { x * y }), c, |x, y| {x - y}) }),
+            InstImp::ter("fnmadd.s",  Opcode::NmAdd, InstAction::WRITE_REG, |a, b, c| { fp_op(fp_op(a, b, |x, y| { x * y }), c, |x, y| {-x - y}) }),
+            InstImp::ter("fnmsub.s",  Opcode::NmSub, InstAction::WRITE_REG, |a, b, c| { fp_op(fp_op(a, b, |x, y| { x * y }), c, |x, y| {-x + y}) }),
+        ];
+
+        let fm_insts = InstGroupVariant {
+            insts: fm_inst_imps,
+            get_operands: |req| [req.rs1, req.rs2, req.rs3],
         };
 
         let r3_inst_imps: Vec<InstImp<2>> = vec![
@@ -364,9 +502,12 @@ impl ISA {
             Box::new(InstGroup::Binary(r3_insts)),
             Box::new(InstGroup::Binary(i2_insts)),
             Box::new(InstGroup::Binary(s_insts)),
+            Box::new(InstGroup::Binary(fpu_insts)),
+            Box::new(InstGroup::Binary(fcvt_insts)),
             Box::new(InstGroup::Binary(pcrel_insts)),
             Box::new(InstGroup::Ternary(r4_insts)),
             Box::new(InstGroup::Ternary(sb_insts)),
+            Box::new(InstGroup::Ternary(fm_insts)),
         ]
     }
 }

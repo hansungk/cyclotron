@@ -20,6 +20,7 @@ pub struct DecodedInst {
     pub imm32: i32,
     pub imm24: i32,
     pub imm8: i32,
+    pub rs2_addr: u8,
     pub pc: u32,
     pub raw: [u8; 8],
 }
@@ -52,14 +53,12 @@ pub fn sign_ext<const W: u8>(from: u32) -> i32 {
 #[derive(Debug)]
 pub struct RegFileState {
     gpr: [u32; 128],
-    fpr: [f32; 64],
 }
 
 impl Default for RegFileState {
     fn default() -> Self {
         Self {
             gpr: [0u32; 128],
-            fpr: [0f32; 64],
         }
     }
 }
@@ -74,7 +73,6 @@ impl ModuleBehaviors for RegFile {
     fn tick_one(&mut self) {}
     fn reset(&mut self) {
         self.base.state.gpr.fill(0u32);
-        self.base.state.fpr.fill(0f32);
         let config = self.conf();
         let gtid = config.num_warps * config.lane_config.core_id
             + config.num_lanes * config.lane_config.warp_id
@@ -141,6 +139,7 @@ impl DecodeUnit {
             imm32: uimm32 as i32,
             imm24,
             imm8,
+            rs2_addr,
             pc,
             raw: inst_data,
         }

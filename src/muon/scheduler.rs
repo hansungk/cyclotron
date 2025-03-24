@@ -86,11 +86,11 @@ impl ModuleBehaviors for Scheduler {
                 }
                 if let Some(sfu) = wb.sfu {
                     // for warp-wide operations, we take lane 0 to be the truth
-                    self.base.state.pc[wid] = wb.insts[0].pc + 8; // flush
-                    info!("resetting next pc to 0x{:08x}", wb.insts[0].pc + 8);
+                    self.base.state.pc[wid] = wb.first_inst.pc + 8; // flush
+                    info!("resetting next pc to 0x{:08x}", wb.first_inst.pc + 8);
                     match sfu {
                         SFUType::TMC => {
-                            let tmask = wb.insts[0].rs1;
+                            let tmask = wb.first_inst.rs1;
                             info!("tmc value {}", tmask);
                             self.base.state.thread_masks[wid] = tmask;
                             if tmask == 0 {
@@ -98,9 +98,9 @@ impl ModuleBehaviors for Scheduler {
                             }
                         }
                         SFUType::WSPAWN => {
-                            let start_pc = wb.insts[0].rs2;
-                            info!("wspawn {} warps @pc={:08x}", wb.insts[0].rs1, start_pc);
-                            for i in 0..wb.insts[0].rs1 as usize {
+                            let start_pc = wb.first_inst.rs2;
+                            info!("wspawn {} warps @pc={:08x}", wb.first_inst.rs1, start_pc);
+                            for i in 0..wb.first_inst.rs1 as usize {
                                 if !self.base.state.active_warps.bit(i) {
                                     self.base.state.pc[i] = start_pc;
                                 }
@@ -109,8 +109,10 @@ impl ModuleBehaviors for Scheduler {
                             info!("new active warps: {:b}", self.base.state.active_warps);
                         }
                         SFUType::SPLIT => {
-                            let then_mask: Vec<_> = wb.insts.iter().map(|d| d.rs1.bit(0)).collect();
-                            let else_mask: Vec<_> = then_mask.iter().map(|d| !d).collect();
+                            let then_mask: Vec<_> = wb.insts.iter()
+                                .map(|d| d.is_some_and(|dd| dd.rs1.bit(0))).collect();
+                            let else_mask: Vec<_> = wb.insts.iter()
+                                .map(|d| d.is_some_and(|dd| !dd.rs1.bit(0))).collect();
                             let _sup = else_mask;
                             todo!()
                         }
@@ -128,8 +130,8 @@ impl ModuleBehaviors for Scheduler {
                             self.base.state.active_warps.mut_bit(wid, false);
                         }
                         SFUType::ECALL => {
-                            let a0 = wb.insts[0].rs1;
-                            let a7 = wb.insts[0].rs2;
+                            let a0 = wb.first_inst.rs1;
+                            let a7 = wb.first_inst.rs2;
 
                             if a7 == 93 {
                                 self.base.state.tohost = Some(a0);

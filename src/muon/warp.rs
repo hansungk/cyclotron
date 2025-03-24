@@ -39,7 +39,8 @@ impl From<&ScheduleOut> for FetchMetadata {
 
 #[derive(Debug, Default, Clone)]
 pub struct ScheduleWriteback {
-    pub insts: Vec<DecodedInst>,
+    pub first_inst: DecodedInst,
+    pub insts: Vec<Option<DecodedInst>>,
     pub branch: Option<u32>,
     pub sfu: Option<SFUType>,
 }
@@ -88,65 +89,69 @@ impl ModuleBehaviors for Warp {
                 self.lanes[lane_id].csr_file.emu_access(0xcc4, metadata.mask);
 
                 if !metadata.mask.bit(lane_id) {
-                    return Writeback::default();
+                    return None;
                 }
 
                 let rf = &self.lanes[lane_id].reg_file;
                 let decoded = self.lanes[lane_id].decode_unit.decode(inst_data, metadata.pc, rf);
-                let writeback = self.lanes[lane_id].execute_unit.execute(decoded.clone());
+                let writeback = self.lanes[lane_id].execute_unit.execute(decoded);
 
                 let rf_mut = &mut self.lanes[lane_id].reg_file;
 
-                // TODO: this will get clobbered for CSR insts, counts may be inaccurate
                 rf_mut.write_gpr(writeback.rd_addr, writeback.rd_data);
-                writeback
+                Some(writeback)
             }).collect();
 
+            let first_wb = writebacks.iter().find(|&wb| wb.is_some()).unwrap().as_ref().unwrap();
+            let wb_insts = writebacks.iter().map(|w| w.as_ref().and_then(|ww| Some(ww.inst))).collect();
+            let base_sched_wb = ScheduleWriteback {
+                first_inst: first_wb.inst,
+                insts: wb_insts,
+                branch: None,
+                sfu: None
+            };
             // update the scheduler
-            writebacks[0].set_pc.map(|pc| {
+            first_wb.set_pc.map(|pc| {
                 // if pc == 0 {
                 //     println!("simulation has probably finished, main has returned");
                 //     std::process::exit(0);
                 // }
                 self.state().stalled = true;
                 ScheduleWriteback {
-                    insts: writebacks.iter().map(|w| w.inst).collect(),
                     branch: Some(pc),
-                    sfu: None,
+                    ..base_sched_wb.clone()
                 }
-            }).or(writebacks[0].csr_type.map(|csr| {
-                writebacks.iter().enumerate().for_each(|(lane_id, writeback)| {
-                    let csr_mut = &mut self.lanes[lane_id].csr_file;
-                    let csrr = (csr == CSRType::RS) && writeback.inst.rs1 == 0;
-                    if [0xcc3, 0xcc4].contains(&writeback.rd_data) && !csrr {
-                        panic!("unimplemented mask write using csr");
+            }).or(first_wb.csr_type.map(|csr| {
+                writebacks.iter().enumerate().for_each(|(lane_id, writeback_opt)| {
+                    if let Some(writeback) = writeback_opt {
+                        let csr_mut = &mut self.lanes[lane_id].csr_file;
+                        let csrr = (csr == CSRType::RS) && writeback.inst.rs1 == 0;
+                        if [0xcc3, 0xcc4].contains(&writeback.rd_data) && !csrr {
+                            panic!("unimplemented mask write using csr");
+                        }
+                        info!("csr read address {}", writeback.rd_data);
+                        let old_val = csr_mut.user_access(writeback.rd_data, match csr {
+                            CSRType::RW | CSRType::RS | CSRType::RC => {
+                                writeback.inst.rs1
+                            }
+                            CSRType::RWI | CSRType::RSI | CSRType::RCI => {
+                                writeback.inst.imm8 as u32
+                            }
+                        }, csr);
+                        let rf_mut = &mut self.lanes[lane_id].reg_file;
+                        rf_mut.write_gpr(writeback.rd_addr, old_val);
+                        info!("csr read value {}", old_val);
                     }
-                    let old_val = csr_mut.user_access(writeback.rd_data, match csr {
-                        CSRType::RW | CSRType::RS | CSRType::RC => {
-                            writeback.inst.rs1
-                        }
-                        CSRType::RWI | CSRType::RSI | CSRType::RCI => {
-                            writeback.inst.imm8 as u32
-                        }
-                    }, csr);
-                    let rf_mut = &mut self.lanes[lane_id].reg_file;
-                    rf_mut.write_gpr(writeback.rd_addr, old_val);
-                    info!("csr read value {}", old_val);
                 });
-                ScheduleWriteback {
-                    insts: writebacks.iter().map(|w| w.inst).collect(),
-                    branch: None,
-                    sfu: None,
-                }
-            })).or(writebacks[0].sfu_type.map(|sfu| {
+                base_sched_wb.clone()
+            })).or(first_wb.sfu_type.map(|sfu| {
                 self.state().stalled = true;
                 ScheduleWriteback {
-                    insts: writebacks.iter().map(|w| w.inst).collect(),
-                    branch: None,
                     sfu: Some(sfu),
+                    ..base_sched_wb.clone()
                 }
-            })).map(|wb| {
-                assert!(self.schedule_wb.put(&wb));
+            })).iter().for_each(|wb| {
+                assert!(self.schedule_wb.put(wb));
             });
         }
     }
