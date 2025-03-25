@@ -57,17 +57,6 @@ impl Cluster {
 impl ModuleBehaviors for Cluster {
     fn tick_one(&mut self) {
         for core in &mut self.cores {
-            for (ireq, iresp) in &mut core.imem_req.iter_mut().zip(&mut core.imem_resp) {
-                if let Some(req) = ireq.get() {
-                    assert_eq!(req.size, 8, "imem read request is not 8 bytes");
-                    let inst = GMEM.write().unwrap().read::<8>(req.address).unwrap();
-                    let succ = iresp.put(&MemResponse {
-                        op: MemRespOp::Ack,
-                        data: Some(inst.clone()),
-                    });
-                    assert!(succ, "muon asserted fetch pressure, not implemented");
-                }
-            }
             core.tick_one();
         }
     }

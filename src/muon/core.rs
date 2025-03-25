@@ -16,8 +16,6 @@ pub struct MuonCore {
     pub id: usize,
     pub scheduler: Scheduler,
     pub warps: Vec<Warp>,
-    pub imem_req: Vec<Port<OutputPort, MemRequest>>,
-    pub imem_resp: Vec<Port<InputPort, MemResponse>>,
 }
 
 impl MuonCore {
@@ -34,27 +32,7 @@ impl MuonCore {
                 },
                 ..*config
             }))).collect(),
-            imem_req: fill!(Port::new(), num_warps),
-            imem_resp: fill!(Port::new(), num_warps),
         };
-
-        let sched_out = me.scheduler.schedule.iter_mut();
-        let sched_in = me.warps.iter_mut().map(|w| &mut w.schedule);
-        link_iter(sched_in, sched_out);
-
-        let sched_wb_in = me.scheduler.schedule_wb.iter_mut();
-        let sched_wb_out = me.warps.iter_mut().map(|w| &mut w.schedule_wb);
-        link_iter(sched_wb_in, sched_wb_out);
-
-        let imem_req_warps = me.warps.iter_mut().map(|w| &mut w.imem_req);
-        let imem_req_core = me.imem_req.iter_mut();
-        imem_req_warps.for_each(|w| { tie_off(w); });
-        imem_req_core.for_each(|w| { tie_off(w); });
-
-        let imem_resp_warps = &mut me.warps.iter_mut().map(|w| &mut w.imem_resp);
-        let imem_resp_core = me.imem_resp.iter_mut();
-        imem_resp_core.for_each(|w| { tie_off_input(w); });
-        imem_resp_warps.for_each(|w| { tie_off_input(w); });
 
         info!("muon core {} instantiated!", config.lane_config.core_id);
 
@@ -84,30 +62,22 @@ impl ModuleBehaviors for MuonCore {
     fn tick_one(&mut self) {
         // println!("{}: muon tick!", self.base.cycle);
         self.scheduler.tick_one();
-        if let Some(sched) = self.scheduler.schedule[0].peek() {
-            info!("warp 0 schedule=0x{:08x}", sched.pc);
-            assert_eq!(self.warps[0].schedule.peek().unwrap().pc, sched.pc);
+
+        // forward schedule to warps
+        let sched_out = self.scheduler.schedule.iter_mut();
+        let sched_in = self.warps.iter_mut().map(|w| &mut w.schedule);
+        sched_out.zip(sched_in).for_each(|(out, in_)| { *in_ = out.clone(); });
+
+        if let Some(sched0) = self.scheduler.schedule[0].as_ref() {
+            info!("warp 0 schedule=0x{:08x}", sched0.pc);
         }
 
         self.warps.iter_mut().for_each(Warp::tick_one);
 
-        // forward output ports
-        let imem_req_warps = self.warps.iter_mut().map(|w| &mut w.imem_req);
-        let imem_req_core = self.imem_req.iter_mut();
-        for (req_warp, req_core) in imem_req_warps.zip(imem_req_core) {
-            if let Some(req) = req_warp.get() {
-                req_core.put(&req);
-            }
-        }
-
-        // forward input ports
-        let imem_resp_warps = self.warps.iter_mut().map(|w| &mut w.imem_resp);
-        let imem_resp_core = self.imem_resp.iter_mut();
-        for (resp_warp, resp_core) in imem_resp_warps.zip(imem_resp_core) {
-            if let Some(resp) = resp_core.get() {
-                resp_warp.put(&resp);
-            }
-        }
+        // forward schedule_wb back to scheduler
+        let sched_wb_in = self.scheduler.schedule_wb.iter_mut();
+        let sched_wb_out = self.warps.iter_mut().map(|w| &mut w.schedule_wb);
+        sched_wb_out.zip(sched_wb_in).for_each(|(out, in_)| { *in_ = out.clone(); });
 
         self.base.cycle += 1;
     }

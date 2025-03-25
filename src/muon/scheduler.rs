@@ -19,7 +19,7 @@ pub struct SchedulerState {
 }
 
 #[derive(Debug, Default, Clone)]
-pub struct ScheduleOut {
+pub struct Schedule {
     pub pc: u32,
     pub mask: u32,
     pub active_warps: u32,
@@ -30,8 +30,8 @@ pub struct ScheduleOut {
 #[derive(Debug, Default)]
 pub struct Scheduler {
     base: ModuleBase<SchedulerState, MuonConfig>,
-    pub schedule: Vec<Port<OutputPort, ScheduleOut>>,
-    pub schedule_wb: Vec<Port<InputPort, ScheduleWriteback>>,
+    pub schedule: Vec<Option<Schedule>>,
+    pub schedule_wb: Vec<Option<ScheduleWriteback>>,
 }
 
 impl Scheduler {
@@ -50,8 +50,8 @@ impl Scheduler {
                 },
                 ..ModuleBase::default()
             },
-            schedule: vec![Port::new(); num_warps],
-            schedule_wb: vec![Port::new(); num_warps],
+            schedule: vec![None; num_warps],
+            schedule_wb: vec![None; num_warps],
         };
         me.init_conf(config);
         me
@@ -74,8 +74,8 @@ module!(Scheduler, SchedulerState, MuonConfig,
 
 impl ModuleBehaviors for Scheduler {
     fn tick_one(&mut self) {
-        self.schedule_wb.iter_mut().enumerate().for_each(|(wid, port)| {
-            if let Some(wb) = port.get() {
+        self.schedule_wb.iter_mut().enumerate().for_each(|(wid, writeback)| {
+            if let Some(wb) = writeback {
                 if let Some(target_pc) = wb.branch {
                     self.base.state.pc[wid] = target_pc;
                     self.base.state.end_stall[wid] = true;
@@ -145,11 +145,10 @@ impl ModuleBehaviors for Scheduler {
             }
         });
 
-        self.schedule.iter_mut().enumerate().for_each(|(wid, port)| {
-            let ready = self.base.state.active_warps.bit(wid) && !port.blocked();
-            if ready {
+        self.schedule.iter_mut().enumerate().for_each(|(wid, warp)| {
+            if self.base.state.active_warps.bit(wid) {
                 let &pc = &self.base.state.pc[wid];
-                port.put(&ScheduleOut {
+                *warp = Some(Schedule {
                     pc,
                     mask: self.base.state.thread_masks[wid],
                     active_warps: self.base.state.active_warps,
@@ -157,6 +156,8 @@ impl ModuleBehaviors for Scheduler {
                 });
                 self.base.state.end_stall[wid] = false;
                 *(&mut self.base.state.pc[wid]) += 8;
+            } else {
+                *warp = None;
             }
         });
     }

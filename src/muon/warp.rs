@@ -2,7 +2,7 @@ use std::sync::Arc;
 use log::info;
 use crate::base::behavior::*;
 use crate::base::module::{module, ModuleBase, IsModule};
-use crate::base::mem::{MemRequest, MemResponse};
+use crate::base::mem::{HasMemory, MemRequest, MemResponse};
 use crate::base::port::{InputPort, OutputPort, Port};
 use crate::builtin::queue::Queue;
 use crate::muon::config::{LaneConfig, MuonConfig};
@@ -10,31 +10,13 @@ use crate::muon::csr::CSRFile;
 use crate::muon::decode::{DecodeUnit, DecodedInst, RegFile};
 use crate::muon::execute::{ExecuteUnit, Writeback};
 use crate::muon::isa::{CSRType, SFUType};
-use crate::muon::scheduler::ScheduleOut;
+use crate::muon::scheduler::Schedule;
+use crate::sim::top::GMEM;
 use crate::utils::BitSlice;
 
 #[derive(Debug, Default)]
 pub struct WarpState {
     pub stalled: bool,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct FetchMetadata {
-    pub mask: u32,
-    pub pc: u32,
-    pub active_warps: u32,
-    pub end_stall: bool,
-}
-
-impl From<&ScheduleOut> for FetchMetadata {
-    fn from(value: &ScheduleOut) -> Self {
-        Self {
-            pc: value.pc,
-            mask: value.mask,
-            active_warps: value.active_warps,
-            end_stall: value.end_stall
-        }
-    }
 }
 
 #[derive(Debug, Default, Clone)]
@@ -50,50 +32,43 @@ pub struct Warp {
     base: ModuleBase<WarpState, MuonConfig>,
     pub lanes: Vec<Lane>,
 
-    pub fetch_queue: Queue<FetchMetadata, 4>,
-    pub schedule: Port<InputPort, ScheduleOut>,
-
-    pub imem_req: Port<OutputPort, MemRequest>,
-    pub imem_resp: Port<InputPort, MemResponse>,
-
-    pub schedule_wb: Port<OutputPort, ScheduleWriteback>,
+    pub schedule: Option<Schedule>,
+    pub schedule_wb: Option<ScheduleWriteback>,
 }
 
 impl ModuleBehaviors for Warp {
     fn tick_one(&mut self) {
         { self.base().cycle += 1; }
         // fetch
-        if let Some(schedule) = self.schedule.get() {
+        if let Some(schedule) = &self.schedule {
             info!("warp {} fetch=0x{:08x}", self.conf().lane_config.warp_id, schedule.pc);
-            if !self.imem_req.blocked() && self.fetch_queue.try_enq(&(&schedule).into()) {
-                assert!(self.imem_req.read::<8>(schedule.pc as usize));
-            }
-        }
-        // decode, execute, writeback
-        if let Some(resp) = self.imem_resp.get() {
-            let metadata = self.fetch_queue.try_deq().expect("fetch queue empty");
 
-            info!("warp {} decode=0x{:08x} end_stall={}", self.conf().lane_config.warp_id, metadata.pc, metadata.end_stall);
-            self.base.state.stalled &= !metadata.end_stall;
+            let inst_data = *GMEM.write()
+                .expect("gmem poisoned")
+                .read::<8>(schedule.pc as usize)
+                .expect("failed to fetch instruction");
+
+            info!("warp {} decode=0x{:08x} end_stall={}", self.conf().lane_config.warp_id, schedule.pc, schedule.end_stall);
+            self.base.state.stalled &= !schedule.end_stall;
             if self.base.state.stalled {
                 info!("warp stalled");
                 return;
             }
 
             // decode, execute, write back to register file
-            let inst_data: [u8; 8] = (*(resp.data.as_ref().unwrap().clone()))
-                .try_into().expect("imem response is not 8 bytes");
-            info!("cycle={}, pc={:08x}", self.base.cycle, metadata.pc);
+            // let inst_data: [u8; 8] = (*(resp.data.as_ref().unwrap().clone()))
+            //     .try_into().expect("imem response is not 8 bytes");
+            info!("cycle={}, pc={:08x}", self.base.cycle, schedule.pc);
             let writebacks: Vec<_> = (0..self.conf().num_lanes).map(|lane_id| {
-                self.lanes[lane_id].csr_file.emu_access(0xcc3, metadata.active_warps);
-                self.lanes[lane_id].csr_file.emu_access(0xcc4, metadata.mask);
+                self.lanes[lane_id].csr_file.emu_access(0xcc3, schedule.active_warps);
+                self.lanes[lane_id].csr_file.emu_access(0xcc4, schedule.mask);
 
-                if !metadata.mask.bit(lane_id) {
+                if !schedule.mask.bit(lane_id) {
                     return None;
                 }
 
                 let rf = &self.lanes[lane_id].reg_file;
-                let decoded = self.lanes[lane_id].decode_unit.decode(inst_data, metadata.pc, rf);
+                let decoded = self.lanes[lane_id].decode_unit.decode(inst_data, schedule.pc, rf);
                 let writeback = self.lanes[lane_id].execute_unit.execute(decoded);
 
                 let rf_mut = &mut self.lanes[lane_id].reg_file;
@@ -111,11 +86,7 @@ impl ModuleBehaviors for Warp {
                 sfu: None
             };
             // update the scheduler
-            first_wb.set_pc.map(|pc| {
-                // if pc == 0 {
-                //     println!("simulation has probably finished, main has returned");
-                //     std::process::exit(0);
-                // }
+            self.schedule_wb = first_wb.set_pc.map(|pc| {
                 self.state().stalled = true;
                 ScheduleWriteback {
                     branch: Some(pc),
@@ -150,9 +121,7 @@ impl ModuleBehaviors for Warp {
                     sfu: Some(sfu),
                     ..base_sched_wb.clone()
                 }
-            })).iter().for_each(|wb| {
-                assert!(self.schedule_wb.put(wb));
-            });
+            }));
         }
     }
 
@@ -186,11 +155,8 @@ impl Warp {
                     execute_unit: ExecuteUnit::new(Arc::clone(&lane_config)),
                 }
             }).collect(),
-            fetch_queue: Queue::new(Arc::new(())),
-            schedule: Port::new(),
-            imem_req: Port::new(),
-            imem_resp: Port::new(),
-            schedule_wb: Port::new(),
+            schedule: None,
+            schedule_wb: None,
         };
         me.init_conf(config);
         me

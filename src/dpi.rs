@@ -108,12 +108,13 @@ pub fn emulator_tick_rs(
 
     // FIXME: only warp 0 is fed
     let mut req_bundles = Vec::with_capacity(1);
-    match get_mem_req(&mut muon.imem_req[0], slice_a_ready[0] == 1) {
-        Some(bundle) => {
-            req_bundles.push(bundle);
-        }
-        None => {}
-    }
+    todo!("no more imem ports");
+    // match get_mem_req(&mut muon.imem_req[0], slice_a_ready[0] == 1) {
+    //     Some(bundle) => {
+    //         req_bundles.push(bundle);
+    //     }
+    //     None => {}
+    // }
 
     req_bundles_to_rtl(
         &req_bundles,
@@ -139,13 +140,14 @@ pub fn emulator_tick_rs(
         });
     }
 
+    todo!("no more imem ports");
     // let fsm = &mut context.fsm;
     // push_mem_resp(fsm, &resp_bundles[0]);
     // fsm.tick_one();
 
     println!("[@{}] emulator_tick_rs()", muon.base.cycle);
 
-    push_mem_resp(&mut muon.imem_resp[0], &resp_bundles[0]);
+    // push_mem_resp(&mut muon.imem_resp[0], &resp_bundles[0]);
     muon.tick_one();
 }
 
