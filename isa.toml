@@ -1,0 +1,10 @@
+[muon]
+num_lanes = 8
+num_warps = 4
+num_cores = 1
+
+[sim]
+elf = "gemm.elf"
+log_level = "info"
+timeout = 100000
+benchmark = 10

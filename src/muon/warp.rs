@@ -122,6 +122,8 @@ impl ModuleBehaviors for Warp {
                     ..base_sched_wb.clone()
                 }
             }));
+        } else {
+            self.schedule_wb = None;
         }
     }
 

@@ -85,9 +85,10 @@ impl ModuleBehaviors for Scheduler {
                     }
                 }
                 if let Some(sfu) = wb.sfu {
+                    
                     // for warp-wide operations, we take lane 0 to be the truth
                     self.base.state.pc[wid] = wb.first_inst.pc + 8; // flush
-                    info!("resetting next pc to 0x{:08x}", wb.first_inst.pc + 8);
+                    info!("processing writeback for {}: resetting next pc to 0x{:08x}", wid, wb.first_inst.pc + 8);
                     match sfu {
                         SFUType::TMC => {
                             let tmask = wb.first_inst.rs1;
@@ -103,6 +104,7 @@ impl ModuleBehaviors for Scheduler {
                             for i in 0..wb.first_inst.rs1 as usize {
                                 if !self.base.state.active_warps.bit(i) {
                                     self.base.state.pc[i] = start_pc;
+                                    self.base.state.thread_masks[i] = u32::MAX;
                                 }
                                 self.base.state.active_warps.mut_bit(i, true);
                             }
