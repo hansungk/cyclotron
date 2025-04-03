@@ -125,7 +125,20 @@ impl ModuleBehaviors for Scheduler {
                             todo!()
                         }
                         SFUType::PRED => {
-                            todo!()
+                            // only stay active if (thread is active) AND (lsb of predicate is 1)
+                            let then_mask: Vec<_> = wb.insts.iter()
+                                .map(|d| d.is_some_and(|dd| dd.rs1.bit(0)))
+                                .collect();
+                            
+                            // if all threads are not active, set thread mask to rs2 of warp leader
+                            // NOTE: simx appears to use highest non-masked thread rather than lowest?
+                            if then_mask.iter().all(|x| !*x) {
+                                let tmask = wb.first_inst.rs2;
+                                self.base.state.thread_masks[wid] = tmask;
+                                if tmask == 0 {
+                                    self.base.state.active_warps.mut_bit(wid, false);
+                                }
+                            }
                         }
                         SFUType::KILL => {
                             self.base.state.thread_masks[wid] = 0;
