@@ -14,7 +14,7 @@ pub struct SchedulerState {
     thread_masks: Vec<u32>,
     pub tohost: Option<u32>,
     pc: Vec<u32>,
-    _ipdom_stack: Vec<u32>,
+    ipdom_stack: Vec<Vec<IpdomEntry>>,
     end_stall: Vec<bool>,
 }
 
@@ -34,6 +34,14 @@ pub struct Scheduler {
     pub schedule_wb: Vec<Option<ScheduleWriteback>>,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct IpdomEntry {
+    original_tmask: u32,
+    second_tmask: u32,
+    reconvergence_pc: u32,
+    fallthrough: bool
+}
+
 impl Scheduler {
     pub fn new(config: Arc<MuonConfig>) -> Self {
         let num_warps = config.num_warps;
@@ -45,7 +53,7 @@ impl Scheduler {
                     thread_masks: vec![0u32; num_warps],
                     tohost: None,
                     pc: vec![0x80000000u32; num_warps],
-                    _ipdom_stack: vec![0; num_warps],
+                    ipdom_stack: vec![Vec::with_capacity(config.num_lanes); num_warps],
                     end_stall: vec![false; num_warps],
                 },
                 ..ModuleBase::default()
@@ -112,14 +120,80 @@ impl ModuleBehaviors for Scheduler {
                         }
                         SFUType::SPLIT => {
                             let then_mask: Vec<_> = wb.insts.iter()
-                                .map(|d| d.is_some_and(|dd| dd.rs1.bit(0))).collect();
+                                .map(|d| d.is_some_and(|dd| dd.rs1.bit(0)))
+                                .collect();
                             let else_mask: Vec<_> = wb.insts.iter()
-                                .map(|d| d.is_some_and(|dd| !dd.rs1.bit(0))).collect();
-                            let _sup = else_mask;
-                            todo!()
+                                .map(|d| d.is_some_and(|dd| !dd.rs1.bit(0)))
+                                .collect();
+
+                            // todo: should really implement more bit slice utilities for [bool]
+                            let then_mask: u32 = then_mask.iter().copied()
+                                .enumerate()
+                                .map(|(i, b)| (b as u32) << i)
+                                .sum();
+                            let else_mask: u32 = else_mask.iter().copied()
+                                .enumerate()
+                                .map(|(i, b)| (b as u32) << i)
+                                .sum();
+                                
+                            let any_then = then_mask != 0;
+                            let any_else = else_mask != 0;
+                            let diverges = any_then && any_else;
+
+                            if diverges {
+                                let current_tmask = self.base.state.thread_masks[wid];
+                                let current_pc = wb.first_inst.pc;
+                                let ipdom_stack = &mut self.base.state.ipdom_stack[wid];
+                                let ipdom_capacity = self.base.config.get().unwrap().num_lanes;
+                                if ipdom_stack.len() == ipdom_capacity {
+                                    todo!("ipdom stack full");
+                                }
+
+                                let then_count = then_mask.count_ones();
+                                let else_count = else_mask.count_ones();
+                                let (first_tmask, second_tmask) = if then_count > else_count {
+                                    (then_mask, else_mask)
+                                } else {
+                                    (else_mask, then_mask)
+                                };
+
+                                let ipdom_entry = IpdomEntry {
+                                    original_tmask: current_tmask,
+                                    second_tmask,
+                                    reconvergence_pc: current_pc + 8,
+                                    fallthrough: false,
+                                };
+                                ipdom_stack.push(ipdom_entry);
+                                self.base.state.thread_masks[wid] = first_tmask;
+                            }
+
+                            // TODO: split should return ipdom stack pointer
                         }
                         SFUType::JOIN => {
-                            todo!()
+                            // unsure why we need this, but it's what simx does
+                            let stack_ptr = wb.first_inst.rs1;
+                            let ipdom_stack = &mut self.base.state.ipdom_stack[wid];
+                            if stack_ptr != ipdom_stack.len() as u32 {
+                                if let Some(IpdomEntry { 
+                                    original_tmask, 
+                                    second_tmask, 
+                                    reconvergence_pc, 
+                                    fallthrough 
+                                }) = ipdom_stack.last_mut() {
+                                    if *fallthrough {
+                                        self.base.state.thread_masks[wid] = *original_tmask;
+                                        ipdom_stack.pop();
+                                    }
+                                    else {
+                                        self.base.state.thread_masks[wid] = *second_tmask;
+                                        self.base.state.pc[wid] = *reconvergence_pc;
+                                        *fallthrough = true;
+                                    }
+                                }
+                                else {
+                                    todo!("popping empty ipdom stack")
+                                }   
+                            }
                         }
                         SFUType::BAR => {
                             todo!()
@@ -132,7 +206,7 @@ impl ModuleBehaviors for Scheduler {
                             
                             // if all threads are not active, set thread mask to rs2 of warp leader
                             // NOTE: simx appears to use highest non-masked thread rather than lowest?
-                            if then_mask.iter().all(|x| !*x) {
+                            if then_mask.iter().copied().all(|x| !x) {
                                 let tmask = wb.first_inst.rs2;
                                 self.base.state.thread_masks[wid] = tmask;
                                 if tmask == 0 {
