@@ -41,14 +41,14 @@ impl ModuleBehaviors for Warp {
         { self.base().cycle += 1; }
         // fetch
         if let Some(schedule) = &self.schedule {
-            info!("warp {} fetch=0x{:08x}", self.conf().lane_config.warp_id, schedule.pc);
+            info!("{} cycle={} fetch=0x{:08x}", self.name(), self.base.cycle, schedule.pc);
 
             let inst_data = *GMEM.write()
                 .expect("gmem poisoned")
                 .read::<8>(schedule.pc as usize)
                 .expect("failed to fetch instruction");
 
-            info!("warp {} decode=0x{:08x} end_stall={}", self.conf().lane_config.warp_id, schedule.pc, schedule.end_stall);
+            info!("{} decode=0x{:08x} end_stall={}", self.name(), schedule.pc, schedule.end_stall);
             self.base.state.stalled &= !schedule.end_stall;
             if self.base.state.stalled {
                 info!("warp stalled");
@@ -58,7 +58,6 @@ impl ModuleBehaviors for Warp {
             // decode, execute, write back to register file
             // let inst_data: [u8; 8] = (*(resp.data.as_ref().unwrap().clone()))
             //     .try_into().expect("imem response is not 8 bytes");
-            info!("cycle={}, pc={:08x}", self.base.cycle, schedule.pc);
             let writebacks: Vec<_> = (0..self.conf().num_lanes).map(|lane_id| {
                 self.lanes[lane_id].csr_file.emu_access(0xcc3, schedule.active_warps);
                 self.lanes[lane_id].csr_file.emu_access(0xcc4, schedule.mask);
@@ -77,7 +76,8 @@ impl ModuleBehaviors for Warp {
                 Some(writeback)
             }).collect();
 
-            let first_wb = writebacks.iter().find(|&wb| wb.is_some()).unwrap().as_ref().unwrap();
+            let first_wb = writebacks.iter().find(|&wb| wb.is_some())
+                .expect("no active threads in warp but warp is active").as_ref().unwrap();
             let wb_insts = writebacks.iter().map(|w| w.as_ref().and_then(|ww| Some(ww.inst))).collect();
             let base_sched_wb = ScheduleWriteback {
                 first_inst: first_wb.inst,
@@ -162,6 +162,10 @@ impl Warp {
         };
         me.init_conf(config);
         me
+    }
+
+    fn name(&self) -> String {
+        format!("core {} warp {}", self.conf().lane_config.core_id, self.conf().lane_config.warp_id)
     }
 }
 

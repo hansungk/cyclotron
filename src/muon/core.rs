@@ -28,6 +28,7 @@ impl MuonCore {
             warps: (0..num_warps).map(|warp_id| Warp::new(Arc::new(MuonConfig {
                 lane_config: LaneConfig {
                     warp_id,
+                    core_id: id,
                     ..config.lane_config
                 },
                 ..*config

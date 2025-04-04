@@ -59,7 +59,8 @@ impl CSRFile {
 
     // these are constant values
     fn csr_ro_ref(&self, addr: u32) -> Option<u32> {
-        let mhartid = self.conf().num_warps * self.conf().lane_config.core_id +
+        let mhartid = self.conf().num_lanes * self.conf().num_warps *
+            self.conf().lane_config.core_id +
             self.conf().num_lanes * self.conf().lane_config.warp_id +
             self.conf().lane_config.lane_id;
         get_ro_match!(addr, [

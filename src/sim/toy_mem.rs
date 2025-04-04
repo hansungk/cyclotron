@@ -5,7 +5,6 @@ use crate::base::mem::HasMemory;
 use crate::sim::elf::ElfBackedMem;
 
 // a sparse memory structure that initializes anything read with 0
-// TODO: this needs to work with imem
 #[derive(Default)]
 pub struct ToyMemory {
     mem: HashMap<usize, u32>,
@@ -25,8 +24,11 @@ impl HasMemory for ToyMemory {
         let words: Vec<_> = (addr..addr + N).step_by(4).map(|a| {
             (!self.mem.contains_key(&a)).then_some(()).and_then(|_| {
                 if let Some(elf) = &self.fallthrough {
-                    info!("fallthrough address {:08x}; todo: cache read", addr);
-                    elf.write().unwrap().read::<4>(a).map(|r| u32::from_le_bytes(*r))
+                    let d = elf.write().unwrap().read::<4>(a).map(|r| u32::from_le_bytes(*r));
+                    if d.is_some() {
+                        self.mem.entry(a).or_insert(d.unwrap());
+                    }
+                    d
                 } else {
                     None
                 }
