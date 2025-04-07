@@ -183,9 +183,10 @@ impl ModuleBehaviors for Scheduler {
                             todo!()
                         }
                         SFUType::PRED => {
+                            let invert = wb.first_inst.rd == 1;
                             // only stay active if (thread is active) AND (lsb of predicate is 1)
                             let then_mask: Vec<_> = wb.insts.iter()
-                                .map(|d| d.is_some_and(|dd| dd.rs1.bit(0)))
+                                .map(|d| d.is_some_and(|dd| dd.rs1.bit(0) ^ invert))
                                 .collect();
                             
                             // if all threads are not active, set thread mask to rs2 of warp leader
