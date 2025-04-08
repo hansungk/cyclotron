@@ -7,7 +7,7 @@ use crate::base::port::{InputPort, OutputPort, Port};
 use crate::muon::config::MuonConfig;
 use crate::muon::isa::SFUType;
 use crate::muon::warp::ScheduleWriteback;
-use crate::utils::BitSlice;
+use crate::utils::{mask_to_int, BitSlice};
 
 #[derive(Debug, Default)]
 pub struct IpdomEntry {
@@ -126,15 +126,6 @@ impl ModuleBehaviors for Scheduler {
                                 .map(|d| d.is_some_and(|dd| !dd.rs1.bit(0))).collect();
                             let else_mask: Vec<_> = wb.insts.iter()
                                 .map(|d| d.is_some_and(|dd| dd.rs1.bit(0))).collect();
-                            let mask_to_int = |mask: &[bool]| {
-                                let mut mask_int = 0;
-                                for (i, bit) in mask.iter().enumerate() {
-                                    if *bit {
-                                        mask_int |= 1 << i;
-                                    }
-                                }
-                                mask_int
-                            };
                             let then_mask_int = mask_to_int(&then_mask);
                             let else_mask_int = mask_to_int(&else_mask);
 
@@ -185,13 +176,13 @@ impl ModuleBehaviors for Scheduler {
                         SFUType::PRED => {
                             let invert = wb.first_inst.rd == 1;
                             // only stay active if (thread is active) AND (lsb of predicate is 1)
-                            let then_mask: Vec<_> = wb.insts.iter()
+                            let pred_mask: Vec<_> = wb.insts.iter()
                                 .map(|d| d.is_some_and(|dd| dd.rs1.bit(0) ^ invert))
                                 .collect();
-                            
+                            self.base.state.thread_masks[wid] &= mask_to_int(&pred_mask);
+
                             // if all threads are not active, set thread mask to rs2 of warp leader
-                            // NOTE: simx appears to use highest non-masked thread rather than lowest?
-                            if then_mask.iter().all(|x| !*x) {
+                            if self.base.state.thread_masks[wid] == 0 {
                                 let tmask = wb.first_inst.rs2;
                                 self.base.state.thread_masks[wid] = tmask;
                                 if tmask == 0 {

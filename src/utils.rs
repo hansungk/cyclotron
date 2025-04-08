@@ -43,6 +43,16 @@ impl<T: PrimInt + Unsigned + TryFrom<u64>> BitSlice for T {
     }
 }
 
+pub fn mask_to_int(mask: &[bool]) -> u32 {
+    let mut mask_int = 0;
+    for (i, bit) in mask.iter().enumerate() {
+        if *bit {
+            mask_int |= 1 << i;
+        }
+    }
+    mask_int
+}
+
 macro_rules! parse_val {
     ($value:expr) => {$value.parse().map_err(|_| format!("parse config value {} failed", $value))};
 }
