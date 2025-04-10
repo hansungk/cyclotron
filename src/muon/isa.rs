@@ -257,7 +257,7 @@ impl ISA {
             InstImp::nul_f3("csrrsi", Opcode::System, 6, InstAction::CSR, |_| CSRType::RSI as u32),
             InstImp::nul_f3("csrrci", Opcode::System, 7, InstAction::CSR, |_| CSRType::RCI as u32),
             // only support test pass/fail ecall
-            InstImp::nul_f3("ecall",  Opcode::System, 0, InstAction::SFU, |_| SFUType::ECALL as u32),
+            InstImp::nul_f3("tohost", Opcode::System, 0, InstAction::SFU, |_| SFUType::ECALL as u32),
             // sets thread mask to rs1[NT-1:0]
             InstImp::nul_f3_f7("vx_tmc",    Opcode::Custom0, 0, 0, InstAction::SFU, |_| SFUType::TMC as u32),
             // spawns rs1 warps, except the executing warp, and set their pc's to rs2

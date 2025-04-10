@@ -196,13 +196,9 @@ impl ModuleBehaviors for Scheduler {
                         }
                         SFUType::ECALL => {
                             let a0 = wb.first_inst.rs1;
-                            let a7 = wb.first_inst.rs2;
-
-                            if a7 == 93 {
-                                self.base.state.tohost = Some(a0);
-                                self.base.state.thread_masks[wid] = 0;
-                                self.base.state.active_warps.mut_bit(wid, false);
-                            }
+                            self.base.state.tohost = Some(a0);
+                            self.base.state.thread_masks[wid] = 0;
+                            self.base.state.active_warps.mut_bit(wid, false);
                         }
                     }
                     self.base.state.end_stall[wid] = true;
