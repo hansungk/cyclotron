@@ -43,14 +43,50 @@ impl<T: PrimInt + Unsigned + TryFrom<u64>> BitSlice for T {
     }
 }
 
-pub fn mask_to_int(mask: &[bool]) -> u32 {
-    let mut mask_int = 0;
-    for (i, bit) in mask.iter().enumerate() {
-        if *bit {
-            mask_int |= 1 << i;
+pub trait BitMask {
+    fn to_u32(&self) -> u32;
+    fn bitwise_or(&mut self, other: &Self);
+}
+
+impl BitMask for &[bool] {
+    fn to_u32(&self) -> u32 {
+        assert!(self.len() <= 32, "Bitmask too large for u32");
+        let mut mask_int = 0;
+        for (i, bit) in self.iter().enumerate() {
+            if *bit {
+                mask_int |= 1 << i;
+            }
+        }
+        mask_int
+    }
+
+    fn bitwise_or(&mut self, other: &Self) {}
+}
+
+impl BitMask for &mut [bool] {
+    fn to_u32(&self) -> u32 {
+        self.as_ref().to_u32()
+    }
+
+    fn bitwise_or(&mut self, other: &Self) {
+        assert!(self.len() == other.len(), "Bitmasks must be of equal length");
+        for (x, y) in self.iter_mut().zip(other.iter()) {
+            *x = *x || *y;
         }
     }
-    mask_int
+}
+
+impl BitMask for Vec<bool> {
+    fn to_u32(&self) -> u32 {
+        self.as_slice().to_u32()
+    }
+
+    fn bitwise_or(&mut self, other: &Self) {
+        assert_eq!(self.len(), other.len(), "Vectors must be of equal length");
+        for (x, y) in self.iter_mut().zip(other.iter()) {
+            *x = *x || *y;
+        }
+    }
 }
 
 macro_rules! parse_val {

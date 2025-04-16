@@ -7,7 +7,7 @@ use crate::base::port::{InputPort, OutputPort, Port};
 use crate::muon::config::MuonConfig;
 use crate::muon::isa::SFUType;
 use crate::muon::warp::ScheduleWriteback;
-use crate::utils::{mask_to_int, BitSlice};
+use crate::utils::{BitMask, BitSlice};
 
 #[derive(Debug, Default)]
 pub struct IpdomEntry {
@@ -126,8 +126,8 @@ impl ModuleBehaviors for Scheduler {
                                 .map(|d| d.is_some_and(|dd| !dd.rs1.bit(0))).collect();
                             let else_mask: Vec<_> = wb.insts.iter()
                                 .map(|d| d.is_some_and(|dd| dd.rs1.bit(0))).collect();
-                            let then_mask_int = mask_to_int(&then_mask);
-                            let else_mask_int = mask_to_int(&else_mask);
+                            let then_mask_int = then_mask.to_u32();
+                            let else_mask_int = else_mask.to_u32();
 
                             info!("split warp {}: then_mask={:08b}, else_mask={:08b}, invert={}",
                                 wid, then_mask_int, else_mask_int, invert);
@@ -179,7 +179,7 @@ impl ModuleBehaviors for Scheduler {
                             let pred_mask: Vec<_> = wb.insts.iter()
                                 .map(|d| d.is_some_and(|dd| dd.rs1.bit(0) ^ invert))
                                 .collect();
-                            self.base.state.thread_masks[wid] &= mask_to_int(&pred_mask);
+                            self.base.state.thread_masks[wid] &= pred_mask.to_u32();
 
                             // if all threads are not active, set thread mask to rs2 of warp leader
                             if self.base.state.thread_masks[wid] == 0 {
