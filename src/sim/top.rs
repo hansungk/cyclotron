@@ -6,13 +6,21 @@ use crate::sim::elf::ElfBackedMem;
 use crate::sim::toy_mem::ToyMemory;
 use std::path::PathBuf;
 use std::sync::{Arc, LazyLock, RwLock};
+use serde::Deserialize;
+use crate::neutrino::config::NeutrinoConfig;
 
 pub static GMEM: LazyLock<RwLock<ToyMemory>> = LazyLock::new(|| RwLock::new(ToyMemory::default()));
 
 pub struct CyclotronTopConfig {
     pub timeout: u64,
     pub elf_path: PathBuf,
+    pub cluster_config: ClusterConfig,
+}
+
+#[derive(Debug, Deserialize, Clone, Copy)]
+pub struct ClusterConfig {
     pub muon_config: MuonConfig,
+    pub neutrino_config: NeutrinoConfig,
 }
 
 pub struct CyclotronTop {
@@ -25,12 +33,13 @@ impl CyclotronTop {
     pub fn new(config: Arc<CyclotronTopConfig>) -> CyclotronTop {
         let imem = Arc::new(RwLock::new(ElfBackedMem::new(config.elf_path.as_path())));
         let mut clusters = Vec::new();
-        let muon_config = Arc::new(config.muon_config);
+        let cluster_config = Arc::new(config.cluster_config.clone());
         for id in 0..1 {
-            clusters.push(Cluster::new(Arc::clone(&muon_config), Arc::clone(&imem), id));
+            clusters.push(Cluster::new(cluster_config.clone(), id));
         }
         let top = CyclotronTop {
-            cproc: CommandProcessor::new(Arc::clone(&muon_config), 1 /*FIXME: properly get thread dimension*/),
+            cproc: CommandProcessor::new(Arc::new(config.cluster_config.muon_config.clone()),
+                1 /*FIXME: properly get thread dimension*/),
             clusters,
             timeout: config.timeout,
         };

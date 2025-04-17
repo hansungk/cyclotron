@@ -7,8 +7,6 @@ pub struct NeutrinoConfig {
     #[serde(default)]
     pub num_entries: usize,
     #[serde(default)]
-    pub num_deps: usize,
-    #[serde(default)]
     pub task_id_width: usize,
     #[serde(default)]
     pub counter_width: usize,
@@ -24,7 +22,6 @@ impl Default for NeutrinoConfig {
     fn default() -> Self {
         Self {
             num_entries: 32,
-            num_deps: 3,
             task_id_width: 8,
             counter_width: 24,
             in_order_issue: false,

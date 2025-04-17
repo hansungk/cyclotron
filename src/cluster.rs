@@ -1,29 +1,28 @@
 use crate::base::behavior::*;
-use crate::base::mem::*;
 use crate::muon::config::MuonConfig;
 use crate::muon::core::MuonCore;
-use crate::sim::elf::ElfBackedMem;
 use log::info;
 use std::sync::{Arc, RwLock};
-use crate::sim::top::GMEM;
+use crate::neutrino::neutrino::Neutrino;
+use crate::sim::top::ClusterConfig;
 
 pub struct Cluster {
     id: usize,
-    imem: Arc<RwLock<ElfBackedMem>>,
     pub cores: Vec<MuonCore>,
+    pub neutrino: Neutrino,
     scheduled_threadblocks: usize,
 }
 
 impl Cluster {
-    pub fn new(config: Arc<MuonConfig>, imem: Arc<RwLock<ElfBackedMem>>, id: usize) -> Self {
+    pub fn new(config: Arc<ClusterConfig>, id: usize) -> Self {
         let mut cores = Vec::new();
-        for cid in 0..config.num_cores {
-            cores.push(MuonCore::new(Arc::clone(&config), cid));
+        for cid in 0..config.muon_config.num_cores {
+            cores.push(MuonCore::new(Arc::new(config.muon_config), cid));
         }
         Cluster {
             id,
-            imem,
             cores,
+            neutrino: Neutrino::new(Arc::new(config.neutrino_config)),
             scheduled_threadblocks: 0,
         }
     }

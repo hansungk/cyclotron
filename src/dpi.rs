@@ -107,7 +107,7 @@ pub fn emulator_tick_rs(
     let _finished = unsafe { std::slice::from_raw_parts_mut(raw_finished, 1) };
 
     // FIXME: only warp 0 is fed
-    let mut req_bundles = Vec::with_capacity(1);
+    let req_bundles = Vec::with_capacity(1);
     todo!("no more imem ports");
     // match get_mem_req(&mut muon.imem_req[0], slice_a_ready[0] == 1) {
     //     Some(bundle) => {

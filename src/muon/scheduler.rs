@@ -165,13 +165,13 @@ impl ModuleBehaviors for Scheduler {
                                 .expect("join without split");
                             info!("join warp {}: pc=0x{:08x}, tmask={:b}",
                                   wid, entry.pc, entry.tmask);
-                            if (entry.pc > 0) {
+                            if entry.pc > 0 {
                                 self.base.state.pc[wid] = entry.pc;
                             }
                             self.base.state.thread_masks[wid] = entry.tmask;
                         }
                         SFUType::BAR => {
-                            todo!()
+                            panic!("muon does not support vx_bar anymore, use neutrino insts")
                         }
                         SFUType::PRED => {
                             let invert = wb.first_inst.rd == 1;

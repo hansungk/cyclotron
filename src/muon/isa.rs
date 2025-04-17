@@ -182,6 +182,14 @@ impl InstImp<0> {
 
         InstImp::<3> { name, mask, pattern, actions, op }
     }
+
+    pub const fn qua(name: &'static str, opcode: Opcode, actions: u32, op: fn([u32; 4]) -> u32) -> InstImp<4> {
+        let (mask, pattern) = make_bitpat!(
+            OPCODE_MASK => opcode as u64
+        );
+
+        InstImp::<4> { name, mask, pattern, actions, op }
+    }
 }
 
 #[derive(Debug)]
@@ -209,6 +217,7 @@ pub enum InstGroup {
     Unary(InstGroupVariant<1>),
     Binary(InstGroupVariant<2>),
     Ternary(InstGroupVariant<3>),
+    Quaternary(InstGroupVariant<4>),
 }
 
 impl InstGroup {
@@ -218,6 +227,7 @@ impl InstGroup {
             InstGroup::Unary(x) => { x.execute(req) }
             InstGroup::Binary(x) => { x.execute(req) }
             InstGroup::Ternary(x) => { x.execute(req) }
+            InstGroup::Quaternary(x) => { x.execute(req) }
         }
     }
 }
@@ -307,7 +317,7 @@ impl ISA {
                     b
                 }
             } else {
-                if (min) {
+                if min {
                     a.min(b)
                 } else {
                     a.max(b)
@@ -370,9 +380,6 @@ impl ISA {
             InstImp::bin_f3_f7("fle.s",     Opcode::OpFp, 0,  80, InstAction::WRITE_REG, |[a, b]| { fcmp_op(a, b, |x, y| { x <= y }) }),
 
             InstImp::bin_f3_f7("fclass.s",  Opcode::OpFp, 1, 112, InstAction::WRITE_REG, |[a, b]| { fclass(a) }),
-            // these are just regular mv's, shouldn't be compiled
-            InstImp::bin_f3_f7("fmv.x.w",   Opcode::OpFp, 0, 112, InstAction::WRITE_REG, |[a, b]| { todo!() }),
-            InstImp::bin_f3_f7("fmv.w.x",   Opcode::OpFp, 0, 120, InstAction::WRITE_REG, |[a, b]| { todo!() }),
         ];
         const fpu_insts: InstGroupVariant<2> = InstGroupVariant {
             insts: fpu_inst_imps,
@@ -509,6 +516,14 @@ impl ISA {
             get_operands: |req| [(req.imm32 as u32) << 12],
         };
 
+        const neutrino_insts_imp: &'static [InstImp<4>] = &[
+            InstImp::qua("nu.invoke", Opcode::Custom2, InstAction::WRITE_REG, |[t, d0, d1, d2]| { todo!() }),
+        ];
+        const neutrino_insts: InstGroupVariant<4> = InstGroupVariant {
+            insts: neutrino_insts_imp,
+            get_operands: |req| [req.rs1, req.rs2, req.rs3, req.rs4],
+        };
+
         const INST_GROUPS: &[InstGroup] = &[
             InstGroup::Nullary(sfu_insts),
             InstGroup::Unary(lui_inst),
@@ -520,7 +535,8 @@ impl ISA {
             InstGroup::Binary(pcrel_insts),
             InstGroup::Ternary(r4_insts),
             InstGroup::Ternary(sb_insts),
-            InstGroup::Ternary(fm_insts)
+            InstGroup::Ternary(fm_insts),
+            InstGroup::Quaternary(neutrino_insts)
         ];
 
         INST_GROUPS

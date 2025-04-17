@@ -8,8 +8,9 @@ use clap::Parser;
 use cyclotron::base::behavior::*;
 use cyclotron::base::module::IsModule;
 use cyclotron::muon::config::MuonConfig;
+use cyclotron::neutrino::config::NeutrinoConfig;
 use cyclotron::sim::config::{Config, SimConfig};
-use cyclotron::sim::top::{CyclotronTop, CyclotronTopConfig};
+use cyclotron::sim::top::{ClusterConfig, CyclotronTop, CyclotronTopConfig};
 
 #[derive(Parser)]
 #[command(version, about)]
@@ -38,16 +39,21 @@ pub fn main() -> Result<(), u32> {
     let config_table: Table = toml::from_str(&config).expect("cannot parse config toml");
     let sim_config = SimConfig::from_section(config_table.get("sim"));
     let mut muon_config = MuonConfig::from_section(config_table.get("muon"));
+    let mut neutrino_config = NeutrinoConfig::from_section(config_table.get("neutrino"));
 
     // optionally override config.toml
     muon_config.num_lanes = argv.num_lanes.unwrap_or(muon_config.num_lanes);
     muon_config.num_warps = argv.num_warps.unwrap_or(muon_config.num_warps);
     muon_config.num_cores = argv.num_cores.unwrap_or(muon_config.num_cores);
+    neutrino_config.muon_config = muon_config.clone();
 
     let mut top = CyclotronTop::new(Arc::new(CyclotronTopConfig {
         timeout: sim_config.timeout,
         elf_path: argv.binary_path.unwrap_or(sim_config.elf.into()),
-        muon_config,
+        cluster_config: ClusterConfig {
+            muon_config,
+            neutrino_config,
+        },
     }));
 
     top.reset();

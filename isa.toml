@@ -3,6 +3,13 @@ num_lanes = 8
 num_warps = 4
 num_cores = 2
 
+[neutrino]
+num_entries = 32
+num_deps = 3
+task_id_width = 8
+counter_width = 24
+in_order_issue = false
+
 [sim]
 elf = "gemm.elf"
 log_level = "info"
