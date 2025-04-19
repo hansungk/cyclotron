@@ -48,24 +48,17 @@ pub trait BitMask {
     fn bitwise_or(&mut self, other: &Self);
 }
 
-impl BitMask for &[bool] {
+impl BitMask for [bool] {
     fn to_u32(&self) -> u32 {
         assert!(self.len() <= 32, "Bitmask too large for u32");
         let mut mask_int = 0;
         for (i, bit) in self.iter().enumerate() {
-            if *bit {
-                mask_int |= 1 << i;
+            if *bit { 
+                mask_int |= 1 << i; 
             }
         }
+
         mask_int
-    }
-
-    fn bitwise_or(&mut self, other: &Self) {}
-}
-
-impl BitMask for &mut [bool] {
-    fn to_u32(&self) -> u32 {
-        self.as_ref().to_u32()
     }
 
     fn bitwise_or(&mut self, other: &Self) {
