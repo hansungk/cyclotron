@@ -1,12 +1,21 @@
 use std::sync::Arc;
-use log::info;
-use num_traits::FromPrimitive;
+use std::fmt::Debug;
+use libc::fileno;
+use log::{error, info};
+use num_derive::FromPrimitive;
+use num_traits::real::Real;
+use num_traits::{FromPrimitive, ToPrimitive};
+pub use num_traits::WrappingAdd;
 use crate::base::mem::HasMemory;
 use crate::muon::config::MuonConfig;
-use crate::muon::decode::{sign_ext, DecodedInst};
-use crate::muon::isa::{CSRType, InstAction, SFUType, ISA};
+use crate::muon::decode::{sign_ext, DecodedInst, RegFile};
 use crate::sim::top::GMEM;
 use crate::utils::BitSlice;
+use crate::{make_bitpat};
+use phf::phf_map;
+use crate::muon::csr::CSRFile;
+use crate::muon::scheduler::Scheduler;
+use crate::neutrino::neutrino::Neutrino;
 
 #[derive(Debug)]
 pub struct Writeback {
@@ -33,98 +42,598 @@ impl Default for Writeback {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct Opcode;
+#[allow(non_upper_case_globals)]
+impl Opcode {
+    pub const Load    : u16 = 0b0000011u16;
+    pub const LoadFp  : u16 = 0b0000111u16;
+    pub const Custom0 : u16 = 0b0001011u16;
+    pub const MiscMem : u16 = 0b0001111u16;
+    pub const OpImm   : u16 = 0b0010011u16;
+    pub const Auipc   : u16 = 0b0010111u16;
+    //  pub const OpImm32 : u16 = 0b0011011u16;
+    pub const Store   : u16 = 0b0100011u16;
+    pub const StoreFp : u16 = 0b0100111u16;
+    pub const Custom1 : u16 = 0b0101011u16;
+    //  pub const Amo     : u16 = 0b0101111u16;
+    pub const Op      : u16 = 0b0110011u16;
+    pub const Lui     : u16 = 0b0110111u16;
+    pub const Op32    : u16 = 0b0111011u16;
+    pub const Madd    : u16 = 0b1000011u16;
+    pub const Msub    : u16 = 0b1000111u16;
+    pub const NmSub   : u16 = 0b1001011u16;
+    pub const NmAdd   : u16 = 0b1001111u16;
+    pub const OpFp    : u16 = 0b1010011u16;
+    //  pub const OpV     : u16 = 0b1010111u16;
+    pub const Custom2 : u16 = 0b1011011u16;
+    pub const Branch  : u16 = 0b1100011u16;
+    pub const Jalr    : u16 = 0b1100111u16;
+    pub const Jal     : u16 = 0b1101111u16;
+    pub const System  : u16 = 0b1110011u16;
+    pub const Custom3 : u16 = 0b1111011u16;
+
+    pub const NuInvoke   : u16 = 0b001011011u16;
+    pub const NuPayload  : u16 = 0b011011011u16;
+    pub const NuComplete : u16 = 0b101011011u16;
+}
+
+// TODO: use bitflags crate for this
+#[derive(Debug)]
+pub struct InstAction;
+
+impl InstAction {
+    pub const NONE: u32          = 0;
+    pub const WRITE_REG: u32     = 1 << 0;
+    pub const MEM_LOAD: u32      = 1 << 1;
+    pub const MEM_STORE: u32     = 1 << 2;
+    pub const SET_ABS_PC: u32    = 1 << 3;
+    pub const SET_REL_PC: u32    = 1 << 4;
+    pub const LINK: u32          = 1 << 5;
+    pub const FENCE: u32         = 1 << 6;
+    pub const SFU: u32           = 1 << 7;
+    pub const CSR: u32           = 1 << 8;
+}
+
+macro_rules! f3_f7_mask {
+    ($f3:expr, $f7:expr) => {
+        ((($f3 as u16) << 7) | ($f7 as u16))
+    };
+}
+
+macro_rules! print_and_execute {
+    ($inst:expr, $operands:expr) => {{
+        info!("{} {:08x?}", $inst.0, $operands);
+        $inst.1($operands)
+    }};
+}
+
+macro_rules! print_and_unwrap {
+    ($inst:expr) => {{
+        info!("{}", $inst.0);
+        $inst.1
+    }};
+}
+
+
+#[derive(Debug, FromPrimitive, Clone, Copy)]
+pub enum SFUType {
+    TMC    = 0,
+    WSPAWN = 1,
+    SPLIT  = 2,
+    JOIN   = 3,
+    BAR    = 4,
+    PRED   = 5,
+    KILL   = 6,
+    ECALL  = 7,
+}
+
+#[derive(Debug, FromPrimitive, Clone, Copy, PartialEq)]
+pub enum CSRType {
+    RW  = 1,
+    RS  = 2,
+    RC  = 3,
+    RWI = 5,
+    RSI = 6,
+    RCI = 7,
+}
+
+#[derive(Debug)]
+pub struct InstImp<const N: usize> (
+    &'static str,
+    fn([u32; N]) -> u32,
+);
+
+#[derive(Debug)]
+pub struct InstDef<T> (
+    &'static str,
+    T,
+);
+
 #[derive(Debug)]
 pub struct ExecuteUnit;
 
 impl ExecuteUnit {
-    pub fn new(_: Arc<MuonConfig>) -> Self {
-        ExecuteUnit {}
+
+    pub fn alu(decoded_inst: &DecodedInst, rf: &mut RegFile) {
+        fn check_zero(b: u32) -> bool {
+            if b == 0 {
+                error!("divide by zero");
+                true
+            } else {
+                false
+            }
+        }
+
+        const fn check_overflow(a: u32, b: i32) -> i32 {
+            if (a == 0x8000_0000u32) && (b == -1) {
+                1
+            } else {
+                b
+            }
+        }
+
+        static op_insts: phf::Map<u16, InstImp::<2>> = phf_map! {
+            0b000_0000000u16 => InstImp("add",    |[a, b]| { a.wrapping_add(b) }),
+            0b000_0100000u16 => InstImp("sub",    |[a, b]| { (a as i32).wrapping_sub(b as i32) as u32 }),
+            0b001_0000000u16 => InstImp("sll",    |[a, b]| { a << (b & 31) }),
+            0b010_0000000u16 => InstImp("slt",    |[a, b]| { if (a as i32) < (b as i32) { 1 } else { 0 } }),
+            0b011_0000000u16 => InstImp("sltu",   |[a, b]| { if a < b { 1 } else { 0 } }),
+            0b100_0000000u16 => InstImp("xor",    |[a, b]| { a ^ b }),
+            0b101_0000000u16 => InstImp("srl",    |[a, b]| { a >> (b & 31) }),
+            0b101_0100000u16 => InstImp("sra",    |[a, b]| { ((a as i32) >> (b & 31)) as u32 }),
+            0b110_0000000u16 => InstImp("or",     |[a, b]| { a | b }),
+            0b111_0000000u16 => InstImp("and",    |[a, b]| { a & b }),
+            0b000_0000001u16 => InstImp("mul",    |[a, b]| { a.wrapping_mul(b) }),
+            0b001_0000001u16 => InstImp("mulh",   |[a, b]| { ((((a as i32) as i64).wrapping_mul((b as i32) as i64)) >> 32) as u32 }),
+            0b010_0000001u16 => InstImp("mulhsu", |[a, b]| { ((((a as i32) as i64).wrapping_mul((b as u64) as i64)) >> 32) as u32 }),
+            0b011_0000001u16 => InstImp("mulhu",  |[a, b]| { (((a as u64).wrapping_mul(b as u64)) >> 32) as u32 }),
+            0b100_0000001u16 => InstImp("div",    |[a, b]| { if check_zero(b) { u32::MAX } else { ((a as i32) / check_overflow(a, b as i32)) as u32 } }),
+            0b101_0000001u16 => InstImp("divu",   |[a, b]| { if check_zero(b) { u32::MAX } else { a / b } }),
+            0b110_0000001u16 => InstImp("rem",    |[a, b]| { if check_zero(b) { a } else { ((a as i32) % check_overflow(a, b as i32)) as u32 } }),
+            0b111_0000001u16 => InstImp("remu",   |[a, b]| { if check_zero(b) { a } else { a % b } }),
+        };
+
+        static opimm_f3_insts: phf::Map<u8, InstImp::<2>> = phf_map! {
+            0u8 => InstImp("addi",  |[a, b]| { a.wrapping_add(b) }),
+            2u8 => InstImp("slti",  |[a, b]| { if (a as i32) < (b as i32) { 1 } else { 0 } }),
+            3u8 => InstImp("sltiu", |[a, b]| { if a < b { 1 } else { 0 } }),
+            4u8 => InstImp("xori",  |[a, b]| { a ^ b }),
+            6u8 => InstImp("ori",   |[a, b]| { a | b }),
+            7u8 => InstImp("andi",  |[a, b]| { a & b }),
+        };
+
+        static opimm_f3f7_insts: phf::Map<u16, InstImp::<2>> = phf_map! {
+            0b001_0000000u16 => InstImp("slli", |[a, b]| { a << (b & 31) }),
+            0b101_0000000u16 => InstImp("srli", |[a, b]| { a >> (b & 31) }),
+            0b101_0100000u16 => InstImp("srai", |[a, b]| { ((a as i32) >> (b & 31)) as u32 }),
+        };
+
+        let rd_data = match decoded_inst.opcode {
+            Opcode::Op => {
+                op_insts.get(&(f3_f7_mask!(decoded_inst.f3, decoded_inst.f7))).and_then(|imp| {
+                    Some(print_and_execute!(imp, [
+                        rf.read_gpr(decoded_inst.rs1_addr),
+                        rf.read_gpr(decoded_inst.rs2_addr)
+                    ]))
+                })
+            }
+            Opcode::OpImm => {
+                opimm_f3_insts.get(&decoded_inst.f3).or_else(|| {
+                    opimm_f3f7_insts.get(&(f3_f7_mask!(decoded_inst.f3, decoded_inst.f7)))
+                }).and_then(|imp| {
+                    Some(print_and_execute!(imp, [
+                        rf.read_gpr(decoded_inst.rs1_addr),
+                        decoded_inst.imm32
+                    ]))
+                })
+            }
+            Opcode::Auipc => {
+                let imp = InstImp("auipc", |[a, b]| { a.wrapping_add(b) });
+                Some(print_and_execute!(imp, [
+                    decoded_inst.pc,
+                    decoded_inst.imm32
+                ]))
+            }
+            Opcode::Lui => {
+                let imp = InstImp("lui", |[a]| { a << 12 });
+                Some(print_and_execute!(imp, [decoded_inst.imm32]))
+            }
+            _ => { panic!("unreachable"); }
+        };
+
+        rf.write_gpr(decoded_inst.rd, rd_data.expect("unimplemented"));
     }
 
-    pub fn execute(&mut self, decoded: DecodedInst) -> Writeback {
-        let isa = ISA::get_insts();
-        let (op, alu_result, actions) = isa.iter().map(|inst_group| {
-            inst_group.execute(&decoded)
-        }).fold(None, |prev, curr| {
-            assert!(prev.clone().and(curr.clone()).is_none(), "multiple viable implementations for {}", &decoded);
-            prev.or(curr)
-        }).expect(&format!("unimplemented instruction {}", &decoded));
+    pub fn fpu(decoded_inst: &DecodedInst, rf: &mut RegFile) {
+        fn fp_op(a: u32, b: u32, op: fn(f32, f32) -> f32) -> u32 {
+            let result = op(f32::from_bits(a), f32::from_bits(b)).to_bits();
+            info!("result of the fp operation is {:08x}", result);
+            if [0xffc00000, 0x7fffffff, 0xffffffff].contains(&result) {
+                0x7fc00000 // risc-v only ever generates this qNaNf
+            } else {
+                result
+            }
+        }
 
-        info!("execute pc 0x{:08x} {} {}", decoded.pc, op, decoded);
+        fn fcmp_op(a: u32, b: u32, op: fn(f32, f32) -> bool) -> u32 {
+            op(f32::from_bits(a), f32::from_bits(b)) as u32
+        }
 
-        let mut writeback = Writeback {
-            inst: decoded,
-            ..Writeback::default()
+        fn fsgn_op(a: u32, b: u32, op: fn(f32, u32) -> f32) -> u32 {
+            op(f32::from_bits(a), b).to_bits()
+        }
+
+        // NOTE: this really should just be the f32::minimum/maximum functions, but
+        // they are unstable. we should swap that in when that goes into stable.
+        fn fminmax(a: f32, b: f32, min: bool) -> f32 {
+            if a.is_nan() { return b; }
+            if b.is_nan() { return a; }
+            if (a == 0f32) && (b == 0f32) {
+                if (min && a.is_sign_negative()) || (!min && a.is_sign_positive()) {
+                    a
+                } else {
+                    b
+                }
+            } else {
+                if min {
+                    a.min(b)
+                } else {
+                    a.max(b)
+                }
+            }
+        }
+
+        fn fcvt_saturate(a: u32, unsigned: bool) -> u32 {
+            let f = f32::from_bits(a);
+            if unsigned {
+                f.to_u32().unwrap_or_else(|| {
+                    if f < 0f32 {
+                        0u32
+                    } else {
+                        u32::MAX
+                    }
+                })
+            } else {
+                f.to_i32().unwrap_or_else(|| {
+                    if f < i32::MIN as f32 {
+                        i32::MIN
+                    } else {
+                        i32::MAX
+                    }
+                }) as u32
+            }
+        }
+
+        fn fclass(a: u32) -> u32 {
+            let f = f32::from_bits(a);
+            let conds = [
+                f == f32::NEG_INFINITY,             // 0
+                f  < 0f32 && f.is_normal(),         // 1
+                f  < 0f32 && f.is_subnormal(),      // 2
+                f == 0f32 && f.is_sign_negative(),  // 3
+                f == 0f32 && f.is_sign_positive(),  // 4
+                f  > 0f32 && f.is_subnormal(),      // 5
+                f  > 0f32 && f.is_normal(),         // 6
+                f == f32::INFINITY,                 // 7
+                a == 0x7f800001, // sNaNf           // 8
+                a == 0x7fc00000, // qNaNf           // 9
+            ];
+            (1 << conds.iter().position(|&c| c).unwrap()) as u32
+        }
+
+        static opfp_f3f7_insts: phf::Map<u16, InstImp::<2>> = phf_map! {
+            0b000_0010000u16 => InstImp("fsgnj.s",  |[a, b]| { fsgn_op(a, b, |x, y| { if y.bit(31) { -x.abs() } else { x.abs() } }) }),
+            0b001_0010000u16 => InstImp("fsgnjn.s", |[a, b]| { fsgn_op(a, b, |x, y| { if y.bit(31) { x.abs() } else { -x.abs() } }) }),
+            0b010_0010000u16 => InstImp("fsgnjx.s", |[a, b]| { fsgn_op(a, b, |x, y| { if y.bit(31) { -1.0 * x } else { x } }) }),
+            0b000_0010100u16 => InstImp("fmin.s",   |[a, b]| { fp_op(a, b, |x, y| { fminmax(x, y, true) }) }),
+            0b001_0010100u16 => InstImp("fmax.s",   |[a, b]| { fp_op(a, b, |x, y| { fminmax(x, y, false) }) }),
+            0b010_1010000u16 => InstImp("feq.s",    |[a, b]| { fcmp_op(a, b, |x, y| { x == y }) }),
+            0b001_1010000u16 => InstImp("flt.s",    |[a, b]| { fcmp_op(a, b, |x, y| { x < y }) }),
+            0b000_1010000u16 => InstImp("fle.s",    |[a, b]| { fcmp_op(a, b, |x, y| { x <= y }) }),
+            0b001_1110000u16 => InstImp("fclass.s", |[a, b]| { fclass(a) }),
         };
-        if (actions & InstAction::WRITE_REG) > 0 {
-            writeback.rd_addr = decoded.rd;
-            writeback.rd_data = alu_result;
+
+        static opfp_f7_insts: phf::Map<u8, InstImp::<3>> = phf_map! {
+            0b0000000u8 => InstImp("fadd.s",   |[a, b, rs2_addr]| { fp_op(a, b, |x, y| { x + y }) }),
+            0b0000100u8 => InstImp("fsub.s",   |[a, b, rs2_addr]| { fp_op(a, b, |x, y| { x - y }) }),
+            0b0001000u8 => InstImp("fmul.s",   |[a, b, rs2_addr]| { fp_op(a, b, |x, y| { x * y }) }),
+            0b0001100u8 => InstImp("fdiv.s",   |[a, b, rs2_addr]| { fp_op(a, b, |x, y| { x / y }) }),
+            0b0101100u8 => InstImp("fsqrt.s",  |[a, b, rs2_addr]| { fp_op(a, b, |x, y| { x.sqrt() }) }),
+            0b1100000u8 => InstImp("fcvt.*.s", |[a, b, rs2_addr]| { fcvt_saturate(a, rs2_addr > 0) }),
+            0b1101000u8 => InstImp("fcvt.s.*", |[a, b, rs2_addr]| { if rs2_addr > 0 { f32::to_bits(a as f32) } else { f32::to_bits(a as i32 as f32) } }),
+        };
+
+        let base_wb = Writeback {
+            inst: *decoded_inst,
+            rd_addr: decoded_inst.rd,
+            rd_data: 0,
+            set_pc: None,
+            sfu_type: None,
+            csr_type: None,
+        };
+
+        let rd_data = match decoded_inst.opcode {
+            Opcode::OpFp => {
+                opfp_f3f7_insts.get(&(f3_f7_mask!(decoded_inst.f3, decoded_inst.f7)))
+                    .and_then(|imp| {
+                        Some(print_and_execute!(imp, [
+                            rf.read_gpr(decoded_inst.rs1_addr),
+                            rf.read_gpr(decoded_inst.rs2_addr)
+                        ]))
+                    }).or_else(|| {
+                        opfp_f7_insts.get(&decoded_inst.f7).and_then(|imp| {
+                            Some(print_and_execute!(imp, [
+                                rf.read_gpr(decoded_inst.rs1_addr),
+                                rf.read_gpr(decoded_inst.rs2_addr),
+                                decoded_inst.rs2_addr as u32
+                            ]))
+                        })
+                    })
+            }
+            Opcode::Madd | Opcode::Msub | Opcode::NmAdd | Opcode::NmSub => {
+                let imp = match decoded_inst.opcode {
+                    Opcode::Madd => InstImp("fmadd.s", |[a, b, c]| { fp_op(fp_op(a, b, |x, y| { x * y }), c, |x, y| { x + y }) }),
+                    Opcode::Msub => InstImp("fmsub.s", |[a, b, c]| { fp_op(fp_op(a, b, |x, y| { x * y }), c, |x, y| { x - y}) }),
+                    Opcode::NmAdd => InstImp("fnmadd.s", |[a, b, c]| { fp_op(fp_op(a, b, |x, y| { x * y }), c, |x, y| {-x - y}) }),
+                    Opcode::NmSub => InstImp("fnmsub.s", |[a, b, c]| { fp_op(fp_op(a, b, |x, y| { x * y }), c, |x, y| {-x + y}) }),
+                    _ => { panic!() }
+                };
+                Some(print_and_execute!(imp, [
+                    rf.read_gpr(decoded_inst.rs1_addr),
+                    rf.read_gpr(decoded_inst.rs2_addr),
+                    rf.read_gpr(decoded_inst.rs3_addr)
+                ]))
+            }
+            _ => { panic!("unreachable"); }
+        };
+
+        rf.write_gpr(decoded_inst.rd, rd_data.expect("unimplemented"));
+    }
+
+    pub fn branch(decoded_inst: &DecodedInst, rf: &mut RegFile) -> Option<u32> {
+        let rs1 = rf.read_gpr(decoded_inst.rs1_addr);
+        let rs2 = rf.read_gpr(decoded_inst.rs2_addr);
+        let branch_offset = decoded_inst.imm24 as u32;
+        let branch_target = decoded_inst.pc.wrapping_add(branch_offset);
+        let branch_taken = match decoded_inst.f3 {
+            0b000 => rs1 == rs2,
+            0b001 => rs1 != rs2,
+            0b100 => (rs1 as i32) < (rs2 as i32),
+            0b101 => (rs1 as i32) >= (rs2 as i32),
+            0b110 => rs1 < rs2,
+            0b111 => rs1 >= rs2,
+            _ => panic!("unreachable"),
+        };
+        // TODO: print debug information
+        branch_taken.then_some(branch_target)
+    }
+
+    pub fn load(decoded_inst: &DecodedInst, rf: &mut RegFile) {
+        // TODO: simplify this to have the phf_map only provide the instruction name
+        static insts: phf::Map<u8, InstImp::<2>> = phf_map! {
+            0u8 => InstImp("lb",  |[a, b]| { a.wrapping_add(b) }),
+            1u8 => InstImp("lh",  |[a, b]| { a.wrapping_add(b) }),
+            2u8 => InstImp("lw",  |[a, b]| { a.wrapping_add(b) }),
+            3u8 => InstImp("ld",  |[a, b]| { a.wrapping_add(b) }),
+            4u8 => InstImp("lbu", |[a, b]| { a.wrapping_add(b) }),
+            5u8 => InstImp("lhu", |[a, b]| { a.wrapping_add(b) }),
+            6u8 => InstImp("lwu", |[a, b]| { a.wrapping_add(b) }),
+        };
+
+        let alu_result = insts.get(&decoded_inst.f3).and_then(|imp| {
+            Some(print_and_execute!(imp, [
+                rf.read_gpr(decoded_inst.rs1_addr),
+                decoded_inst.imm32
+            ]))
+        }).expect("unimplemented");
+
+        let load_size = decoded_inst.f3 & 3;
+        let load_addr = alu_result >> 2 << 2;
+        assert_eq!(alu_result >> 2, (alu_result + (1 << load_size) - 1) >> 2, "misaligned load");
+
+        let load_data_bytes = GMEM.write().expect("lock poisoned").read::<4>(
+            load_addr as usize).expect("store failed");
+
+        let raw_load = u32::from_le_bytes(*load_data_bytes);
+        let offset = ((alu_result & 3) * 8) as usize;
+        let sext = !decoded_inst.f3.bit(2);
+        let opt_sext = |f: fn(u32) -> i32, x: u32| { if sext { f(x) as u32 } else { x } };
+        let masked_load = match load_size {
+            0 => opt_sext(sign_ext::<8>, raw_load.sel(7 + offset, offset)),
+            1 => opt_sext(sign_ext::<16>, raw_load.sel(15 + offset, offset)),
+            2 => raw_load,
+            _ => panic!("unimplemented load type"),
+        };
+        info!("load f3={} M[0x{:08x}] -> raw 0x{:08x} masked 0x{:08x}",
+                decoded_inst.f3, load_addr, raw_load, masked_load);
+
+        rf.write_gpr(decoded_inst.rd, masked_load);
+    }
+
+    pub fn store(decoded_inst: &DecodedInst, rf: &RegFile) {
+        static insts: phf::Map<u8, InstImp::<2>> = phf_map! {
+            0u8 => InstImp("sb", |[a, imm]| { a.wrapping_add(imm) }),
+            1u8 => InstImp("sh", |[a, imm]| { a.wrapping_add(imm) }),
+            2u8 => InstImp("sw", |[a, imm]| { a.wrapping_add(imm) }),
+            // 3u8 => InstImp("sd", |[a, imm]| { a.wrapping_add(imm) }),
+        };
+
+        let alu_result = insts.get(&decoded_inst.f3).and_then(|imp| {
+            Some(print_and_execute!(imp, [
+                rf.read_gpr(decoded_inst.rs1_addr),
+                decoded_inst.imm24 as u32
+            ]))
+        }).expect("unimplemented");
+
+        let mut gmem = GMEM.write().expect("lock poisoned");
+        let addr = alu_result as usize;
+        let data = rf.read_gpr(decoded_inst.rs2_addr).to_le_bytes();
+        match decoded_inst.f3 & 3 {
+            0 => {
+                gmem.write::<1>(addr, Arc::new(data[0..1].try_into().unwrap()))
+            },
+            1 => {
+                gmem.write::<2>(addr, Arc::new(data[0..2].try_into().unwrap()))
+            },
+            2 => {
+                gmem.write::<4>(addr, Arc::new(data[0..4].try_into().unwrap()))
+            },
+            _ => panic!("unimplemented store type"),
+        }.expect("store failed");
+    }
+
+    pub fn csr(decoded_inst: &DecodedInst, rf: &mut RegFile, csr: &mut CSRFile) {
+        let csr_type = print_and_unwrap!(match decoded_inst.f3 {
+            1 => InstDef("csrrw",  CSRType::RW),
+            2 => InstDef("csrrs",  CSRType::RS),
+            3 => InstDef("csrrc",  CSRType::RC),
+            5 => InstDef("csrrwi", CSRType::RWI),
+            6 => InstDef("csrrsi", CSRType::RSI),
+            7 => InstDef("csrrci", CSRType::RCI),
+            _ => panic!("unimplemented")
+        });
+        let new_val = match csr_type {
+            CSRType::RW | CSRType::RS | CSRType::RC => {
+                rf.read_gpr(decoded_inst.rs1_addr)
+            }
+            CSRType::RWI | CSRType::RSI | CSRType::RCI => {
+                decoded_inst.rs1_addr as u32
+            }
+        };
+        let csrr = match csr_type {
+            CSRType::RS | CSRType::RSI => new_val == 0,
+            _ => false,
+        };
+        let addr = decoded_inst.imm32;
+        if [0xcc3, 0xcc4].contains(&addr) && !csrr {
+            panic!("unimplemented thread mask write using csr");
         }
-        if (actions & InstAction::MEM_LOAD) > 0 {
-            let load_size = writeback.inst.f3 & 3;
-            let load_addr = alu_result >> 2 << 2;
-            assert_eq!(alu_result >> 2, (alu_result + (1 << load_size) - 1) >> 2, "misaligned load");
+        let old_val = csr.user_access(addr, new_val, csr_type);
+        rf.write_gpr(decoded_inst.rd, old_val);
+        info!("csr read address {} => value {}", addr, old_val);
+    }
 
-            let load_data_bytes = GMEM.write().expect("lock poisoned").read::<4>(
-                load_addr as usize).expect("store failed");
-            writeback.rd_addr = decoded.rd;
+    pub fn sfu(decoded_inst: &DecodedInst, wid: usize, first_lid: usize,
+               rf: &Vec<&mut RegFile>, scheduler: &mut Scheduler) {
+        let insts = phf_map! {
+            // sets thread mask to rs1[NT-1:0]
+            0b000_0000000u16 => InstDef("vx_tmc",   SFUType::TMC),
+            // spawns rs1 warps, except the executing warp, and set their pc's to rs2
+            0b001_0000000u16 => InstDef("vx_wspawn",SFUType::WSPAWN),
+            // collect rs1[0] for then mask. divergent if mask not all 0 or 1. write divergence back. set tmc, push else mask to ipdom
+            0b010_0000000u16 => InstDef("vx_split", SFUType::SPLIT),
+            // rs1[0] indicates divergence from split. pop ipdom and set tmc if divergent
+            0b011_0000000u16 => InstDef("vx_join",  SFUType::JOIN),
+            // rs1 indicates barrier id, rs2 indicates num warps participating in each core
+            0b100_0000000u16 => InstDef("vx_bar",   SFUType::BAR),
+            // sets thread mask to current tmask & then_mask, same rules as split. if no lanes take branch, set mask to rs2.
+            0b101_0000000u16 => InstDef("vx_pred",  SFUType::PRED),
+            // 0b000_0000001u16 => InstDef("vx_rast",  SFUType::),
+            // signals the result of a test, used only for isa tests
+        };
+        let tohost_inst = InstDef("tohost", SFUType::ECALL);
+        let sfu_type = if decoded_inst.opcode == Opcode::System {
+            print_and_unwrap!(tohost_inst)
+        } else {
+            insts.get(&(f3_f7_mask!(decoded_inst.f3, decoded_inst.f7))).and_then(|imp| {
+                Some(print_and_unwrap!(imp))
+            }).expect("unimplemented sfu instruction")
+        };
 
-            let raw_load = u32::from_le_bytes(*load_data_bytes);
-            let offset = ((alu_result & 3) * 8) as usize;
-            let sext = !writeback.inst.f3.bit(2);
-            let opt_sext = |f: fn(u32) -> i32, x: u32| { if sext { f(x) as u32 } else { x } };
-            let masked_load = match load_size {
-                0 => opt_sext(sign_ext::<8>, raw_load.sel(7 + offset, offset)),
-                1 => opt_sext(sign_ext::<16>, raw_load.sel(15 + offset, offset)),
-                2 => raw_load,
-                _ => panic!("unimplemented load type"),
+        scheduler.sfu(wid, first_lid, sfu_type, decoded_inst,
+            rf.iter().map(|lrf| lrf.read_gpr(decoded_inst.rs1_addr)).collect(),
+            rf.iter().map(|lrf| lrf.read_gpr(decoded_inst.rs2_addr)).collect());
+    }
+
+    pub fn execute(decoded: DecodedInst, tmask: u32, wid: usize,
+                   rf: &mut Vec<&mut RegFile>, csr: &mut Vec<&mut CSRFile>,
+                   scheduler: &mut Scheduler, neutrino: &mut Neutrino) {
+        // let isa = ISA::get_insts();
+        // let (op, alu_result, actions) = isa.iter().map(|inst_group| {
+        //     inst_group.execute(&decoded)
+        // }).fold(None, |prev, curr| {
+        //     assert!(prev.clone().and(curr.clone()).is_none(), "multiple viable implementations for {}", &decoded);
+        //     prev.or(curr)
+        // }).expect(&format!("unimplemented instruction {}", &decoded));
+
+        // lane id of first active thread
+        let first_lid = tmask.trailing_zeros() as usize;
+
+        info!("execute pc 0x{:08x} {}", decoded.pc, decoded);
+
+        macro_rules! masked_execute {
+            ($closure:expr) => {
+                rf.iter_mut().enumerate().for_each(|(i, lrf)| {
+                    if tmask.bit(i) {
+                        $closure(lrf)
+                    }
+                });
             };
-            info!("load f3={} M[0x{:08x}] -> raw 0x{:08x} masked 0x{:08x}",
-                writeback.inst.f3, load_addr, raw_load, masked_load);
-            writeback.rd_data = masked_load;
-        }
-        if (actions & InstAction::MEM_STORE) > 0 {
-            let mut gmem = GMEM.write().expect("lock poisoned");
-            let addr = alu_result as usize;
-            let data = decoded.rs2.to_le_bytes();
-            match writeback.inst.f3 & 3 {
-                0 => {
-                    gmem.write::<1>(addr, Arc::new(data[0..1].try_into().unwrap()))
-                },
-                1 => {
-                    gmem.write::<2>(addr, Arc::new(data[0..2].try_into().unwrap()))
-                },
-                2 => {
-                    gmem.write::<4>(addr, Arc::new(data[0..4].try_into().unwrap()))
-                },
-                _ => panic!("unimplemented store type"),
-            }.expect("store failed");
-        }
-        if (actions & InstAction::SET_REL_PC) > 0 {
-            writeback.set_pc = (alu_result != 0).then(|| decoded.pc.wrapping_add(alu_result));
-        }
-        if (actions & InstAction::SET_ABS_PC) > 0 {
-            writeback.set_pc = Some(alu_result);
-        }
-        if (actions & InstAction::LINK) > 0 {
-            writeback.rd_addr = decoded.rd;
-            writeback.rd_data = decoded.pc + 8;
-        }
-        if (actions & InstAction::FENCE) > 0 {
-            // todo!();
-        }
-        if (actions & InstAction::SFU) > 0 {
-            writeback.sfu_type = Some(SFUType::from_u32(alu_result).unwrap())
-        }
-        if (actions & InstAction::CSR) > 0 {
-            writeback.csr_type = Some(CSRType::from_u32(alu_result).unwrap());
-            writeback.rd_addr = decoded.rd;
-            writeback.rd_data = decoded.imm32 as u32;
-        }
-        if writeback.rd_addr > 0 {
-            // info!("normal writeback to x{} value 0x{:08x}", writeback.rd_addr, writeback.rd_data);
         }
 
-        writeback
+        match decoded.opcode {
+            Opcode::Op | Opcode::OpImm | Opcode::Lui | Opcode::Auipc => {
+                masked_execute!(|lrf| ExecuteUnit::alu(&decoded, lrf));
+            }
+            Opcode::OpFp | Opcode::Madd | Opcode::Msub | Opcode::NmAdd | Opcode::NmSub => {
+                masked_execute!(|lrf| ExecuteUnit::fpu(&decoded, lrf));
+            }
+            Opcode::Branch => {
+                if let Some(target) = ExecuteUnit::branch(&decoded, rf[first_lid]) {
+                    scheduler.branch(wid, target);
+                }
+            }
+            Opcode::Jal => {
+                scheduler.branch(wid, decoded.pc.wrapping_add(decoded.imm32));
+                masked_execute!(|lrf: &mut RegFile| lrf.write_gpr(decoded.rd, decoded.pc + 8));
+            }
+            Opcode::Jalr => {
+                let target = rf[first_lid].read_gpr(decoded.rs1_addr).wrapping_add(decoded.imm32);
+                scheduler.branch(wid, target);
+                masked_execute!(|lrf: &mut RegFile| lrf.write_gpr(decoded.rd, decoded.pc + 8));
+            }
+            Opcode::Load => {
+                masked_execute!(|lrf| ExecuteUnit::load(&decoded, lrf));
+            }
+            Opcode::Store => {
+                masked_execute!(|lrf| ExecuteUnit::store(&decoded, lrf));
+            }
+            Opcode::MiscMem => {
+                let imp = match decoded.f3 {
+                    0 => InstDef("fence",   0),
+                    1 => InstDef("fence.i", 1),
+                    _ => panic!("unimplemented"),
+                };
+                print_and_unwrap!(imp);
+                // TODO fence
+            }
+            Opcode::System => {
+                if decoded.f3 == 0 { // tohost
+                    ExecuteUnit::sfu(&decoded, wid, first_lid, rf, scheduler);
+                } else { // csr
+                    rf.iter_mut().zip(csr.iter_mut()).enumerate().for_each(|(i, (lrf, lcsr))| {
+                        if tmask.bit(i) {
+                            ExecuteUnit::csr(&decoded, lrf, lcsr);
+                        }
+                    });
+                }
+            }
+            Opcode::Custom0 => {
+                ExecuteUnit::sfu(&decoded, wid, first_lid, rf, scheduler);
+            }
+            Opcode::Custom1 => {
+                // 0b000_0000000u16 => InstImp("vx_tex",  |[a, b, c]| { }),
+                // 0b001_0000000u16 => InstImp("vx_cmov", |[a, b, c]| { }),
+                // 0b001_0000001u16 => InstImp("vx_rop",  |[a, b, c]| { }),
+                todo!()
+            }
+            Opcode::Custom2 => {
+                neutrino.execute(&decoded, rf[first_lid], scheduler);
+                todo!()
+            }
+
+            _ => { panic!("unimplemented opcode 0x{:x}", decoded.opcode); }
+        }
     }
 }

@@ -12,26 +12,25 @@ pub struct DecodedInst {
     pub opcode: u16,
     pub rd: u8,
     pub f3: u8,
-    pub rs1: u32,
-    pub rs2: u32,
-    pub rs3: u32,
-    pub rs4: u32,
+    pub rs1_addr: u8,
+    pub rs2_addr: u8,
+    pub rs3_addr: u8,
+    pub rs4_addr: u8,
     pub f7: u8,
-    pub imm32: i32,
+    pub imm32: u32,
     pub imm24: i32,
     pub imm8: i32,
-    pub rs2_addr: u8,
     pub pc: u32,
     pub raw: u64,
 }
 
 impl std::fmt::Display for DecodedInst {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        
         write!(
             f,
-            "inst {:#010x} [ op: 0x{:x}, f3: {}, f7: {}, rs1: 0x{:08x}, rs2: 0x{:08x} ]",
-            self.raw, self.opcode, self.f3, self.f7, self.rs1, self.rs2
+            "inst {:#010x} [ op: 0x{:x}, f3: {}, f7: {}, rd=x{}, rs1=x{}, x{}, x{}, rs4=x{} ]",
+            self.raw, self.opcode, self.f3, self.f7,
+            self.rd, self.rs1_addr, self.rs2_addr, self.rs3_addr, self.rs4_addr
         )
     }
 }
@@ -60,17 +59,17 @@ impl Default for RegFileState {
 #[derive(Debug, Default)]
 pub struct RegFile {
     base: ModuleBase<RegFileState, MuonConfig>,
+    lane_id: usize,
 }
 
-// TODO: implement timing behavior for the regfile
 impl ModuleBehaviors for RegFile {
     fn tick_one(&mut self) {}
     fn reset(&mut self) {
         self.base.state.gpr.fill(0u32);
-        let config = self.conf();
-        let gtid = config.num_warps * config.lane_config.core_id
-            + config.num_lanes * config.lane_config.warp_id
-            + config.lane_config.lane_id;
+        let gtid = self.conf().num_lanes * self.conf().num_warps *
+            self.conf().lane_config.core_id +
+            self.conf().num_lanes * self.conf().lane_config.warp_id +
+            self.lane_id;
         self.base.state.gpr[2] = 0xffff0000u32 - (0x100000u32 * gtid as u32); // sp
     }
 }
@@ -79,7 +78,7 @@ module!(RegFile, RegFileState, MuonConfig,
 );
 
 impl RegFile {
-    pub fn new(config: Arc<MuonConfig>) -> RegFile {
+    pub fn new(config: Arc<MuonConfig>, lid: usize) -> RegFile {
         let mut me = RegFile::default();
         me.init_conf(config);
         me
@@ -105,7 +104,7 @@ impl RegFile {
 pub struct DecodeUnit;
 
 impl DecodeUnit {
-    pub fn decode(&self, inst_data: [u8; 8], pc: u32, rf: &RegFile) -> DecodedInst {
+    pub fn decode(inst_data: [u8; 8], pc: u32) -> DecodedInst {
         let inst = u64::from_le_bytes(inst_data);
 
         let _pred: u8 = inst.sel(63, 60) as u8;
@@ -125,15 +124,14 @@ impl DecodeUnit {
             opcode: inst.sel(8, 0) as u16,
             rd: inst.sel(16, 9) as u8,
             f3: inst.sel(19, 17) as u8,
-            rs1: rf.read_gpr(rs1_addr),
-            rs2: rf.read_gpr(rs2_addr),
-            rs3: rf.read_gpr(rs3_addr),
-            rs4: rf.read_gpr(rs4_addr),
+            rs1_addr,
+            rs2_addr,
+            rs3_addr,
+            rs4_addr,
             f7: inst.sel(58, 52) as u8,
-            imm32: uimm32 as i32,
+            imm32: uimm32,
             imm24,
             imm8,
-            rs2_addr,
             pc,
             raw: inst,
         }

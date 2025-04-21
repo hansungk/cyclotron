@@ -1,8 +1,8 @@
 pub mod core;
-mod execute;
-mod decode;
-mod isa;
-mod csr;
-mod scheduler;
-mod warp;
+pub mod execute;
+pub mod decode;
+// mod isa;
+pub mod csr;
+pub mod scheduler;
+pub mod warp;
 pub mod config;

@@ -4,7 +4,8 @@ use log::info;
 use crate::base::behavior::*;
 use crate::base::module::*;
 use crate::muon::config::MuonConfig;
-use crate::muon::isa::CSRType;
+use crate::muon::decode::DecodedInst;
+use crate::muon::execute::CSRType;
 
 #[derive(Debug, Default)]
 pub struct CSRState {
@@ -16,6 +17,7 @@ pub struct CSRState {
 pub struct CSRFile {
     base: ModuleBase<CSRState, MuonConfig>,
     lock: RwLock<()>,
+    lane_id: usize,
 }
 
 impl ModuleBehaviors for CSRFile {
@@ -50,10 +52,11 @@ macro_rules! get_ro_match {
 }
 
 impl CSRFile {
-    pub fn new(config: Arc<MuonConfig>) -> Self {
+    pub fn new(config: Arc<MuonConfig>, lid: usize) -> Self {
         let mut csr = CSRFile::default();
         csr.lock = RwLock::new(());
         csr.init_conf(config);
+        csr.lane_id = lid;
         csr
     }
 
@@ -62,7 +65,7 @@ impl CSRFile {
         let mhartid = self.conf().num_lanes * self.conf().num_warps *
             self.conf().lane_config.core_id +
             self.conf().num_lanes * self.conf().lane_config.warp_id +
-            self.conf().lane_config.lane_id;
+            self.lane_id;
         get_ro_match!(addr, [
             0xf11, 0; // mvendorid
             0xf12, 0; // marchid
@@ -108,7 +111,7 @@ impl CSRFile {
             0xb81, 0; // mpm_reserved_h
 
             0xf14, mhartid as u32; // mhartid
-            0xcc0, self.conf().lane_config.lane_id as u32; // thread_id
+            0xcc0, self.lane_id as u32; // thread_id
             0xcc1, self.conf().lane_config.warp_id as u32; // warp_id
             0xcc2, self.conf().lane_config.core_id as u32; // core_id
             0xfc0, self.conf().num_lanes as u32; // num_threads

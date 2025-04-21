@@ -2,6 +2,8 @@ use std::sync::Arc;
 use crate::base::behavior::{ModuleBehaviors, Parameterizable};
 use crate::base::module::IsModule;
 use crate::base::module::{module, ModuleBase};
+use crate::muon::decode::{DecodedInst, RegFile};
+use crate::muon::scheduler::Scheduler;
 use crate::neutrino::config::NeutrinoConfig;
 use crate::neutrino::scoreboard::Scoreboard;
 
@@ -33,5 +35,10 @@ impl Neutrino {
         };
         me.init_conf(config.clone());
         me
+    }
+    
+    pub fn execute(&mut self, decoded: &DecodedInst, rf: &mut RegFile, scheduler: &mut Scheduler) {
+        // self.scoreboard.execute(decoded, rf, scheduler);) {
+    
     }
 }

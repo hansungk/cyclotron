@@ -18,6 +18,7 @@ clap = { version = "4.5.28", features = ["derive"] }
 lazy_static = "1.5.0"
 serde = { version = "1.0.217", features = ["derive"] }
 toml = "0.8.19"
+phf = { version = "0.11.3", features = ["macros"] }
 
 [lib]
 name = "cyclotron"
