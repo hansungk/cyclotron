@@ -1,5 +1,4 @@
 use std::cmp::PartialEq;
-use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::sync::Arc;
 use log::error;

@@ -3,7 +3,6 @@ use std::sync::Arc;
 use log::info;
 use crate::base::behavior::*;
 use crate::base::module::{module, ModuleBase, IsModule};
-use crate::base::port::{InputPort, OutputPort, Port};
 use crate::muon::config::MuonConfig;
 use crate::muon::decode::DecodedInst;
 use crate::muon::execute::SFUType;
@@ -105,7 +104,7 @@ impl Scheduler {
             }
             SFUType::SPLIT => {
                 let invert = decoded_inst.rs2_addr == 1;
-                // by default we use vx_split_n, which is called with the
+                // by default, we use vx_split_n, which is called with the
                 // bits set high if NOT TAKING the then branch
                 let then_mask = rs1.iter().map(|r| !r.bit(0)).collect::<Vec<_>>().to_u32()
                     & self.state().thread_masks[wid];

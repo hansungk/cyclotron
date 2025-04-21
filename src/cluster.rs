@@ -1,8 +1,7 @@
 use crate::base::behavior::*;
-use crate::muon::config::MuonConfig;
 use crate::muon::core::MuonCore;
 use log::info;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use crate::neutrino::neutrino::Neutrino;
 use crate::sim::top::ClusterConfig;
 

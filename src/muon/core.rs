@@ -1,12 +1,10 @@
 use std::sync::Arc;
 use log::info;
-use crate::base::{behavior::*, module::*, port::*};
-use crate::base::mem::{MemRequest, MemResponse};
+use crate::base::{behavior::*, module::*};
 use crate::muon::config::{LaneConfig, MuonConfig};
 use crate::muon::scheduler::Scheduler;
 use crate::muon::warp::Warp;
 use crate::neutrino::neutrino::Neutrino;
-use crate::utils::fill;
 
 #[derive(Debug, Default)]
 pub struct MuonState {}

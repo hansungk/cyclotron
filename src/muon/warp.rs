@@ -1,11 +1,10 @@
 use crate::base::behavior::*;
-use crate::base::mem::{HasMemory, MemResponse};
+use crate::base::mem::HasMemory;
 use crate::base::module::{module, IsModule, ModuleBase};
-use crate::base::port::{OutputPort, Port};
 use crate::muon::config::MuonConfig;
 use crate::muon::csr::CSRFile;
-use crate::muon::decode::{DecodeUnit, DecodedInst, RegFile};
-use crate::muon::execute::{ExecuteUnit, SFUType, Writeback};
+use crate::muon::decode::{DecodeUnit, RegFile};
+use crate::muon::execute::ExecuteUnit;
 use crate::muon::scheduler::{Schedule, Scheduler};
 use crate::sim::top::GMEM;
 use log::info;

@@ -183,7 +183,7 @@ fn get_mem_req(
         ReqBundle {
             valid: true,
             address: data.address as u64,
-            size: 2 as u32, // FIXME: RTL doesn't support 256B yet
+            size: 2u32, // FIXME: RTL doesn't support 256B yet
         }
     });
     req

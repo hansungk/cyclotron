@@ -1,17 +1,13 @@
 use std::sync::Arc;
 use std::fmt::Debug;
-use libc::fileno;
 use log::{error, info};
 use num_derive::FromPrimitive;
-use num_traits::real::Real;
-use num_traits::{FromPrimitive, ToPrimitive};
+use num_traits::ToPrimitive;
 pub use num_traits::WrappingAdd;
 use crate::base::mem::HasMemory;
-use crate::muon::config::MuonConfig;
 use crate::muon::decode::{sign_ext, DecodedInst, RegFile};
 use crate::sim::top::GMEM;
 use crate::utils::BitSlice;
-use crate::{make_bitpat};
 use phf::phf_map;
 use crate::muon::csr::CSRFile;
 use crate::muon::scheduler::Scheduler;
@@ -44,38 +40,37 @@ impl Default for Writeback {
 
 #[derive(Debug, Clone)]
 pub struct Opcode;
-#[allow(non_upper_case_globals)]
 impl Opcode {
-    pub const Load    : u16 = 0b0000011u16;
-    pub const LoadFp  : u16 = 0b0000111u16;
-    pub const Custom0 : u16 = 0b0001011u16;
-    pub const MiscMem : u16 = 0b0001111u16;
-    pub const OpImm   : u16 = 0b0010011u16;
-    pub const Auipc   : u16 = 0b0010111u16;
+    pub const LOAD: u16 = 0b0000011u16;
+    pub const LOAD_FP: u16 = 0b0000111u16;
+    pub const CUSTOM0: u16 = 0b0001011u16;
+    pub const MISC_MEM: u16 = 0b0001111u16;
+    pub const OP_IMM: u16 = 0b0010011u16;
+    pub const AUIPC: u16 = 0b0010111u16;
     //  pub const OpImm32 : u16 = 0b0011011u16;
-    pub const Store   : u16 = 0b0100011u16;
-    pub const StoreFp : u16 = 0b0100111u16;
-    pub const Custom1 : u16 = 0b0101011u16;
+    pub const STORE: u16 = 0b0100011u16;
+    pub const STORE_FP: u16 = 0b0100111u16;
+    pub const CUSTOM1: u16 = 0b0101011u16;
     //  pub const Amo     : u16 = 0b0101111u16;
-    pub const Op      : u16 = 0b0110011u16;
-    pub const Lui     : u16 = 0b0110111u16;
-    pub const Op32    : u16 = 0b0111011u16;
-    pub const Madd    : u16 = 0b1000011u16;
-    pub const Msub    : u16 = 0b1000111u16;
-    pub const NmSub   : u16 = 0b1001011u16;
-    pub const NmAdd   : u16 = 0b1001111u16;
-    pub const OpFp    : u16 = 0b1010011u16;
+    pub const OP: u16 = 0b0110011u16;
+    pub const LUI: u16 = 0b0110111u16;
+    pub const OP32: u16 = 0b0111011u16;
+    pub const MADD: u16 = 0b1000011u16;
+    pub const MSUB: u16 = 0b1000111u16;
+    pub const NM_SUB: u16 = 0b1001011u16;
+    pub const NM_ADD: u16 = 0b1001111u16;
+    pub const OP_FP: u16 = 0b1010011u16;
     //  pub const OpV     : u16 = 0b1010111u16;
-    pub const Custom2 : u16 = 0b1011011u16;
-    pub const Branch  : u16 = 0b1100011u16;
-    pub const Jalr    : u16 = 0b1100111u16;
-    pub const Jal     : u16 = 0b1101111u16;
-    pub const System  : u16 = 0b1110011u16;
-    pub const Custom3 : u16 = 0b1111011u16;
+    pub const CUSTOM2: u16 = 0b1011011u16;
+    pub const BRANCH: u16 = 0b1100011u16;
+    pub const JALR: u16 = 0b1100111u16;
+    pub const JAL: u16 = 0b1101111u16;
+    pub const SYSTEM: u16 = 0b1110011u16;
+    pub const CUSTOM3: u16 = 0b1111011u16;
 
-    pub const NuInvoke   : u16 = 0b001011011u16;
-    pub const NuPayload  : u16 = 0b011011011u16;
-    pub const NuComplete : u16 = 0b101011011u16;
+    pub const NU_INVOKE: u16 = 0b001011011u16;
+    pub const NU_PAYLOAD: u16 = 0b011011011u16;
+    pub const NU_COMPLETE: u16 = 0b101011011u16;
 }
 
 // TODO: use bitflags crate for this
@@ -173,7 +168,7 @@ impl ExecuteUnit {
             }
         }
 
-        static op_insts: phf::Map<u16, InstImp::<2>> = phf_map! {
+        static OP_INSTS: phf::Map<u16, InstImp<2>> = phf_map! {
             0b000_0000000u16 => InstImp("add",    |[a, b]| { a.wrapping_add(b) }),
             0b000_0100000u16 => InstImp("sub",    |[a, b]| { (a as i32).wrapping_sub(b as i32) as u32 }),
             0b001_0000000u16 => InstImp("sll",    |[a, b]| { a << (b & 31) }),
@@ -194,7 +189,7 @@ impl ExecuteUnit {
             0b111_0000001u16 => InstImp("remu",   |[a, b]| { if check_zero(b) { a } else { a % b } }),
         };
 
-        static opimm_f3_insts: phf::Map<u8, InstImp::<2>> = phf_map! {
+        static OPIMM_F3_INSTS: phf::Map<u8, InstImp<2>> = phf_map! {
             0u8 => InstImp("addi",  |[a, b]| { a.wrapping_add(b) }),
             2u8 => InstImp("slti",  |[a, b]| { if (a as i32) < (b as i32) { 1 } else { 0 } }),
             3u8 => InstImp("sltiu", |[a, b]| { if a < b { 1 } else { 0 } }),
@@ -203,24 +198,24 @@ impl ExecuteUnit {
             7u8 => InstImp("andi",  |[a, b]| { a & b }),
         };
 
-        static opimm_f3f7_insts: phf::Map<u16, InstImp::<2>> = phf_map! {
+        static OPIMM_F3F7_INSTS: phf::Map<u16, InstImp<2>> = phf_map! {
             0b001_0000000u16 => InstImp("slli", |[a, b]| { a << (b & 31) }),
             0b101_0000000u16 => InstImp("srli", |[a, b]| { a >> (b & 31) }),
             0b101_0100000u16 => InstImp("srai", |[a, b]| { ((a as i32) >> (b & 31)) as u32 }),
         };
 
         let rd_data = match decoded_inst.opcode {
-            Opcode::Op => {
-                op_insts.get(&(f3_f7_mask!(decoded_inst.f3, decoded_inst.f7))).and_then(|imp| {
+            Opcode::OP => {
+                OP_INSTS.get(&(f3_f7_mask!(decoded_inst.f3, decoded_inst.f7))).and_then(|imp| {
                     Some(print_and_execute!(imp, [
                         rf.read_gpr(decoded_inst.rs1_addr),
                         rf.read_gpr(decoded_inst.rs2_addr)
                     ]))
                 })
             }
-            Opcode::OpImm => {
-                opimm_f3_insts.get(&decoded_inst.f3).or_else(|| {
-                    opimm_f3f7_insts.get(&(f3_f7_mask!(decoded_inst.f3, decoded_inst.f7)))
+            Opcode::OP_IMM => {
+                OPIMM_F3_INSTS.get(&decoded_inst.f3).or_else(|| {
+                    OPIMM_F3F7_INSTS.get(&(f3_f7_mask!(decoded_inst.f3, decoded_inst.f7)))
                 }).and_then(|imp| {
                     Some(print_and_execute!(imp, [
                         rf.read_gpr(decoded_inst.rs1_addr),
@@ -228,14 +223,14 @@ impl ExecuteUnit {
                     ]))
                 })
             }
-            Opcode::Auipc => {
+            Opcode::AUIPC => {
                 let imp = InstImp("auipc", |[a, b]| { a.wrapping_add(b) });
                 Some(print_and_execute!(imp, [
                     decoded_inst.pc,
                     decoded_inst.imm32
                 ]))
             }
-            Opcode::Lui => {
+            Opcode::LUI => {
                 let imp = InstImp("lui", |[a]| { a << 12 });
                 Some(print_and_execute!(imp, [decoded_inst.imm32]))
             }
@@ -322,7 +317,7 @@ impl ExecuteUnit {
             (1 << conds.iter().position(|&c| c).unwrap()) as u32
         }
 
-        static opfp_f3f7_insts: phf::Map<u16, InstImp::<2>> = phf_map! {
+        static OPFP_F3F7_INSTS: phf::Map<u16, InstImp<2>> = phf_map! {
             0b000_0010000u16 => InstImp("fsgnj.s",  |[a, b]| { fsgn_op(a, b, |x, y| { if y.bit(31) { -x.abs() } else { x.abs() } }) }),
             0b001_0010000u16 => InstImp("fsgnjn.s", |[a, b]| { fsgn_op(a, b, |x, y| { if y.bit(31) { x.abs() } else { -x.abs() } }) }),
             0b010_0010000u16 => InstImp("fsgnjx.s", |[a, b]| { fsgn_op(a, b, |x, y| { if y.bit(31) { -1.0 * x } else { x } }) }),
@@ -331,38 +326,29 @@ impl ExecuteUnit {
             0b010_1010000u16 => InstImp("feq.s",    |[a, b]| { fcmp_op(a, b, |x, y| { x == y }) }),
             0b001_1010000u16 => InstImp("flt.s",    |[a, b]| { fcmp_op(a, b, |x, y| { x < y }) }),
             0b000_1010000u16 => InstImp("fle.s",    |[a, b]| { fcmp_op(a, b, |x, y| { x <= y }) }),
-            0b001_1110000u16 => InstImp("fclass.s", |[a, b]| { fclass(a) }),
+            0b001_1110000u16 => InstImp("fclass.s", |[a, _b]| { fclass(a) }),
         };
 
-        static opfp_f7_insts: phf::Map<u8, InstImp::<3>> = phf_map! {
-            0b0000000u8 => InstImp("fadd.s",   |[a, b, rs2_addr]| { fp_op(a, b, |x, y| { x + y }) }),
-            0b0000100u8 => InstImp("fsub.s",   |[a, b, rs2_addr]| { fp_op(a, b, |x, y| { x - y }) }),
-            0b0001000u8 => InstImp("fmul.s",   |[a, b, rs2_addr]| { fp_op(a, b, |x, y| { x * y }) }),
-            0b0001100u8 => InstImp("fdiv.s",   |[a, b, rs2_addr]| { fp_op(a, b, |x, y| { x / y }) }),
-            0b0101100u8 => InstImp("fsqrt.s",  |[a, b, rs2_addr]| { fp_op(a, b, |x, y| { x.sqrt() }) }),
-            0b1100000u8 => InstImp("fcvt.*.s", |[a, b, rs2_addr]| { fcvt_saturate(a, rs2_addr > 0) }),
-            0b1101000u8 => InstImp("fcvt.s.*", |[a, b, rs2_addr]| { if rs2_addr > 0 { f32::to_bits(a as f32) } else { f32::to_bits(a as i32 as f32) } }),
-        };
-
-        let base_wb = Writeback {
-            inst: *decoded_inst,
-            rd_addr: decoded_inst.rd,
-            rd_data: 0,
-            set_pc: None,
-            sfu_type: None,
-            csr_type: None,
+        static OPFP_F7_INSTS: phf::Map<u8, InstImp<3>> = phf_map! {
+            0b0000000u8 => InstImp("fadd.s",   |[a, b, _rs2_addr]| { fp_op(a, b, |x, y| { x + y }) }),
+            0b0000100u8 => InstImp("fsub.s",   |[a, b, _rs2_addr]| { fp_op(a, b, |x, y| { x - y }) }),
+            0b0001000u8 => InstImp("fmul.s",   |[a, b, _rs2_addr]| { fp_op(a, b, |x, y| { x * y }) }),
+            0b0001100u8 => InstImp("fdiv.s",   |[a, b, _rs2_addr]| { fp_op(a, b, |x, y| { x / y }) }),
+            0b0101100u8 => InstImp("fsqrt.s",  |[a, b, _rs2_addr]| { fp_op(a, b, |x, _y| { x.sqrt() }) }),
+            0b1100000u8 => InstImp("fcvt.*.s", |[a, _b, rs2_addr]| { fcvt_saturate(a, rs2_addr > 0) }),
+            0b1101000u8 => InstImp("fcvt.s.*", |[a, _b, rs2_addr]| { if rs2_addr > 0 { f32::to_bits(a as f32) } else { f32::to_bits(a as i32 as f32) } }),
         };
 
         let rd_data = match decoded_inst.opcode {
-            Opcode::OpFp => {
-                opfp_f3f7_insts.get(&(f3_f7_mask!(decoded_inst.f3, decoded_inst.f7)))
+            Opcode::OP_FP => {
+                OPFP_F3F7_INSTS.get(&(f3_f7_mask!(decoded_inst.f3, decoded_inst.f7)))
                     .and_then(|imp| {
                         Some(print_and_execute!(imp, [
                             rf.read_gpr(decoded_inst.rs1_addr),
                             rf.read_gpr(decoded_inst.rs2_addr)
                         ]))
                     }).or_else(|| {
-                        opfp_f7_insts.get(&decoded_inst.f7).and_then(|imp| {
+                        OPFP_F7_INSTS.get(&decoded_inst.f7).and_then(|imp| {
                             Some(print_and_execute!(imp, [
                                 rf.read_gpr(decoded_inst.rs1_addr),
                                 rf.read_gpr(decoded_inst.rs2_addr),
@@ -371,12 +357,12 @@ impl ExecuteUnit {
                         })
                     })
             }
-            Opcode::Madd | Opcode::Msub | Opcode::NmAdd | Opcode::NmSub => {
+            Opcode::MADD | Opcode::MSUB | Opcode::NM_ADD | Opcode::NM_SUB => {
                 let imp = match decoded_inst.opcode {
-                    Opcode::Madd => InstImp("fmadd.s", |[a, b, c]| { fp_op(fp_op(a, b, |x, y| { x * y }), c, |x, y| { x + y }) }),
-                    Opcode::Msub => InstImp("fmsub.s", |[a, b, c]| { fp_op(fp_op(a, b, |x, y| { x * y }), c, |x, y| { x - y}) }),
-                    Opcode::NmAdd => InstImp("fnmadd.s", |[a, b, c]| { fp_op(fp_op(a, b, |x, y| { x * y }), c, |x, y| {-x - y}) }),
-                    Opcode::NmSub => InstImp("fnmsub.s", |[a, b, c]| { fp_op(fp_op(a, b, |x, y| { x * y }), c, |x, y| {-x + y}) }),
+                    Opcode::MADD => InstImp("fmadd.s", |[a, b, c]| { fp_op(fp_op(a, b, |x, y| { x * y }), c, |x, y| { x + y }) }),
+                    Opcode::MSUB => InstImp("fmsub.s", |[a, b, c]| { fp_op(fp_op(a, b, |x, y| { x * y }), c, |x, y| { x - y}) }),
+                    Opcode::NM_ADD => InstImp("fnmadd.s", |[a, b, c]| { fp_op(fp_op(a, b, |x, y| { x * y }), c, |x, y| {-x - y}) }),
+                    Opcode::NM_SUB => InstImp("fnmsub.s", |[a, b, c]| { fp_op(fp_op(a, b, |x, y| { x * y }), c, |x, y| {-x + y}) }),
                     _ => { panic!() }
                 };
                 Some(print_and_execute!(imp, [
@@ -411,7 +397,7 @@ impl ExecuteUnit {
 
     pub fn load(decoded_inst: &DecodedInst, rf: &mut RegFile) {
         // TODO: simplify this to have the phf_map only provide the instruction name
-        static insts: phf::Map<u8, InstImp::<2>> = phf_map! {
+        static INSTS: phf::Map<u8, InstImp<2>> = phf_map! {
             0u8 => InstImp("lb",  |[a, b]| { a.wrapping_add(b) }),
             1u8 => InstImp("lh",  |[a, b]| { a.wrapping_add(b) }),
             2u8 => InstImp("lw",  |[a, b]| { a.wrapping_add(b) }),
@@ -421,7 +407,7 @@ impl ExecuteUnit {
             6u8 => InstImp("lwu", |[a, b]| { a.wrapping_add(b) }),
         };
 
-        let alu_result = insts.get(&decoded_inst.f3).and_then(|imp| {
+        let alu_result = INSTS.get(&decoded_inst.f3).and_then(|imp| {
             Some(print_and_execute!(imp, [
                 rf.read_gpr(decoded_inst.rs1_addr),
                 decoded_inst.imm32
@@ -452,14 +438,14 @@ impl ExecuteUnit {
     }
 
     pub fn store(decoded_inst: &DecodedInst, rf: &RegFile) {
-        static insts: phf::Map<u8, InstImp::<2>> = phf_map! {
+        static INSTS: phf::Map<u8, InstImp<2>> = phf_map! {
             0u8 => InstImp("sb", |[a, imm]| { a.wrapping_add(imm) }),
             1u8 => InstImp("sh", |[a, imm]| { a.wrapping_add(imm) }),
             2u8 => InstImp("sw", |[a, imm]| { a.wrapping_add(imm) }),
             // 3u8 => InstImp("sd", |[a, imm]| { a.wrapping_add(imm) }),
         };
 
-        let alu_result = insts.get(&decoded_inst.f3).and_then(|imp| {
+        let alu_result = INSTS.get(&decoded_inst.f3).and_then(|imp| {
             Some(print_and_execute!(imp, [
                 rf.read_gpr(decoded_inst.rs1_addr),
                 decoded_inst.imm24 as u32
@@ -533,7 +519,7 @@ impl ExecuteUnit {
             // signals the result of a test, used only for isa tests
         };
         let tohost_inst = InstDef("tohost", SFUType::ECALL);
-        let sfu_type = if decoded_inst.opcode == Opcode::System {
+        let sfu_type = if decoded_inst.opcode == Opcode::SYSTEM {
             print_and_unwrap!(tohost_inst)
         } else {
             insts.get(&(f3_f7_mask!(decoded_inst.f3, decoded_inst.f7))).and_then(|imp| {
@@ -573,33 +559,33 @@ impl ExecuteUnit {
         }
 
         match decoded.opcode {
-            Opcode::Op | Opcode::OpImm | Opcode::Lui | Opcode::Auipc => {
+            Opcode::OP | Opcode::OP_IMM | Opcode::LUI | Opcode::AUIPC => {
                 masked_execute!(|lrf| ExecuteUnit::alu(&decoded, lrf));
             }
-            Opcode::OpFp | Opcode::Madd | Opcode::Msub | Opcode::NmAdd | Opcode::NmSub => {
+            Opcode::OP_FP | Opcode::MADD | Opcode::MSUB | Opcode::NM_ADD | Opcode::NM_SUB => {
                 masked_execute!(|lrf| ExecuteUnit::fpu(&decoded, lrf));
             }
-            Opcode::Branch => {
+            Opcode::BRANCH => {
                 if let Some(target) = ExecuteUnit::branch(&decoded, rf[first_lid]) {
                     scheduler.branch(wid, target);
                 }
             }
-            Opcode::Jal => {
+            Opcode::JAL => {
                 scheduler.branch(wid, decoded.pc.wrapping_add(decoded.imm32));
                 masked_execute!(|lrf: &mut RegFile| lrf.write_gpr(decoded.rd, decoded.pc + 8));
             }
-            Opcode::Jalr => {
+            Opcode::JALR => {
                 let target = rf[first_lid].read_gpr(decoded.rs1_addr).wrapping_add(decoded.imm32);
                 scheduler.branch(wid, target);
                 masked_execute!(|lrf: &mut RegFile| lrf.write_gpr(decoded.rd, decoded.pc + 8));
             }
-            Opcode::Load => {
+            Opcode::LOAD => {
                 masked_execute!(|lrf| ExecuteUnit::load(&decoded, lrf));
             }
-            Opcode::Store => {
+            Opcode::STORE => {
                 masked_execute!(|lrf| ExecuteUnit::store(&decoded, lrf));
             }
-            Opcode::MiscMem => {
+            Opcode::MISC_MEM => {
                 let imp = match decoded.f3 {
                     0 => InstDef("fence",   0),
                     1 => InstDef("fence.i", 1),
@@ -608,7 +594,7 @@ impl ExecuteUnit {
                 print_and_unwrap!(imp);
                 // TODO fence
             }
-            Opcode::System => {
+            Opcode::SYSTEM => {
                 if decoded.f3 == 0 { // tohost
                     ExecuteUnit::sfu(&decoded, wid, first_lid, rf, scheduler);
                 } else { // csr
@@ -619,16 +605,16 @@ impl ExecuteUnit {
                     });
                 }
             }
-            Opcode::Custom0 => {
+            Opcode::CUSTOM0 => {
                 ExecuteUnit::sfu(&decoded, wid, first_lid, rf, scheduler);
             }
-            Opcode::Custom1 => {
+            Opcode::CUSTOM1 => {
                 // 0b000_0000000u16 => InstImp("vx_tex",  |[a, b, c]| { }),
                 // 0b001_0000000u16 => InstImp("vx_cmov", |[a, b, c]| { }),
                 // 0b001_0000001u16 => InstImp("vx_rop",  |[a, b, c]| { }),
                 todo!()
             }
-            Opcode::Custom2 => {
+            Opcode::CUSTOM2 => {
                 neutrino.execute(&decoded, rf[first_lid], scheduler);
                 todo!()
             }

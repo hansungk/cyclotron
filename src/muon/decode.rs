@@ -81,6 +81,7 @@ impl RegFile {
     pub fn new(config: Arc<MuonConfig>, lid: usize) -> RegFile {
         let mut me = RegFile::default();
         me.init_conf(config);
+        me.lane_id = lid;
         me
     }
 

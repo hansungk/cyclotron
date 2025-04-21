@@ -4,7 +4,6 @@ use log::info;
 use crate::base::behavior::*;
 use crate::base::module::*;
 use crate::muon::config::MuonConfig;
-use crate::muon::decode::DecodedInst;
 use crate::muon::execute::CSRType;
 
 #[derive(Debug, Default)]

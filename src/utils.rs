@@ -62,7 +62,7 @@ impl BitMask for [bool] {
     }
 
     fn bitwise_or(&mut self, other: &Self) {
-        assert!(self.len() == other.len(), "Bitmasks must be of equal length");
+        assert_eq!(self.len(), other.len(), "Bitmasks must be of equal length");
         for (x, y) in self.iter_mut().zip(other.iter()) {
             *x = *x || *y;
         }

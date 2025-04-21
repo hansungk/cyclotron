@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
-use log::info;
 use crate::base::mem::HasMemory;
 use crate::sim::elf::ElfBackedMem;
 
