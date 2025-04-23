@@ -17,11 +17,11 @@ pub struct IpdomEntry {
 #[derive(Debug, Default)]
 pub struct SchedulerState {
     pub active_warps: u32,
+    pub stalled_warps: u32,
     thread_masks: Vec<u32>,
     pub tohost: Option<u32>,
     pc: Vec<u32>,
     ipdom_stack: Vec<VecDeque<IpdomEntry>>,
-    end_stall: Vec<bool>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -29,33 +29,32 @@ pub struct Schedule {
     pub pc: u32,
     pub mask: u32,
     pub active_warps: u32,
-    pub end_stall: bool,
 }
 
 // instantiated per core
 #[derive(Debug, Default)]
 pub struct Scheduler {
     base: ModuleBase<SchedulerState, MuonConfig>,
-    pub schedule: Vec<Option<Schedule>>,
+    cid: usize,
 }
 
 impl Scheduler {
-    pub fn new(config: Arc<MuonConfig>) -> Self {
+    pub fn new(config: Arc<MuonConfig>, cid: usize) -> Self {
         let num_warps = config.num_warps;
         info!("scheduler instantiated with {} warps!", num_warps);
         let mut me = Scheduler {
             base: ModuleBase::<SchedulerState, MuonConfig> {
                 state: SchedulerState {
                     active_warps: 0,
+                    stalled_warps: 0,
                     thread_masks: vec![0u32; num_warps],
                     tohost: None,
                     pc: vec![0x80000000u32; num_warps],
                     ipdom_stack: (0..num_warps).map(|_| VecDeque::new()).collect(),
-                    end_stall: vec![false; num_warps],
                 },
                 ..ModuleBase::default()
             },
-            schedule: vec![None; num_warps],
+            cid
         };
         me.init_conf(config);
         me
@@ -69,7 +68,6 @@ impl Scheduler {
 
     pub fn branch(&mut self, wid: usize, target_pc: u32) {
         self.base.state.pc[wid] = target_pc;
-        self.base.state.end_stall[wid] = true;
         if target_pc == 0 { // returned from main
             self.base.state.thread_masks[wid] = 0;
             self.base.state.active_warps.mut_bit(wid, false);
@@ -192,7 +190,23 @@ impl Scheduler {
                 self.base.state.active_warps.mut_bit(wid, false);
             }
         }
-        self.base.state.end_stall[wid] = true;
+    }
+
+    pub fn get_schedule(&mut self, wid: usize) -> Option<Schedule> {
+        (self.state().active_warps.bit(wid) && !self.state().stalled_warps.bit(wid)).then(|| {
+            let &pc = &self.state().pc[wid];
+            let sched = Schedule {
+                pc,
+                mask: self.base.state.thread_masks[wid],
+                active_warps: self.base.state.active_warps, // for csr writing
+            };
+            self.state().pc[wid] = pc.wrapping_add(8);
+            sched
+        })
+    }
+
+    pub fn neutrino_stall(&mut self, stalls: Vec<bool>) {
+        self.state().stalled_warps = stalls.to_u32();
     }
 
     // TODO: This should differentiate between different threadblocks.
@@ -206,27 +220,15 @@ module!(Scheduler, SchedulerState, MuonConfig,
 
 impl ModuleBehaviors for Scheduler {
     fn tick_one(&mut self) {
-
-        self.schedule.iter_mut().enumerate().for_each(|(wid, warp)| {
-            if self.base.state.active_warps.bit(wid) {
-                let &pc = &self.base.state.pc[wid];
-                *warp = Some(Schedule {
-                    pc,
-                    mask: self.base.state.thread_masks[wid],
-                    active_warps: self.base.state.active_warps,
-                    end_stall: self.base.state.end_stall[wid],
-                });
-                self.base.state.end_stall[wid] = false;
-                *(&mut self.base.state.pc[wid]) += 8;
-            } else {
-                *warp = None;
-            }
-        });
+        self.base.cycle += 1;
+        info!("core {} active warps {:08b} stalled warps {:08b}",
+              self.cid, self.base.state.active_warps, self.base.state.stalled_warps);
     }
 
     fn reset(&mut self) {
         let all_ones = u32::MAX; // 0xFFFF
         self.state().thread_masks = [all_ones].repeat(self.conf().num_warps);
         self.base.state.active_warps = 0;
+        self.base.state.stalled_warps = 0;
     }
 }

@@ -69,6 +69,7 @@ impl Opcode {
     pub const CUSTOM3: u16 = 0b1111011u16;
 
     pub const NU_INVOKE: u16 = 0b001011011u16;
+    pub const NU_INVOKE_IMM: u16 = 0b001111011u16;
     pub const NU_PAYLOAD: u16 = 0b011011011u16;
     pub const NU_COMPLETE: u16 = 0b101011011u16;
 }
@@ -103,6 +104,7 @@ macro_rules! print_and_execute {
     }};
 }
 
+#[macro_export]
 macro_rules! print_and_unwrap {
     ($inst:expr) => {{
         info!("{}", $inst.0);
@@ -135,14 +137,14 @@ pub enum CSRType {
 
 #[derive(Debug)]
 pub struct InstImp<const N: usize> (
-    &'static str,
-    fn([u32; N]) -> u32,
+    pub &'static str,
+    pub fn([u32; N]) -> u32,
 );
 
 #[derive(Debug)]
 pub struct InstDef<T> (
-    &'static str,
-    T,
+    pub &'static str,
+    pub T,
 );
 
 #[derive(Debug)]
@@ -382,17 +384,18 @@ impl ExecuteUnit {
         let rs2 = rf.read_gpr(decoded_inst.rs2_addr);
         let branch_offset = decoded_inst.imm24 as u32;
         let branch_target = decoded_inst.pc.wrapping_add(branch_offset);
-        let branch_taken = match decoded_inst.f3 {
-            0b000 => rs1 == rs2,
-            0b001 => rs1 != rs2,
-            0b100 => (rs1 as i32) < (rs2 as i32),
-            0b101 => (rs1 as i32) >= (rs2 as i32),
-            0b110 => rs1 < rs2,
-            0b111 => rs1 >= rs2,
-            _ => panic!("unreachable"),
+        static INSTS: phf::Map<u8, InstDef<fn([u32; 2]) -> bool>> = phf_map! {
+            0b000u8 => InstDef("beq",  |[a, b]| a == b),
+            0b001u8 => InstDef("bne",  |[a, b]| a != b),
+            0b100u8 => InstDef("blt",  |[a, b]| (a as i32) < (b as i32)),
+            0b101u8 => InstDef("bge",  |[a, b]| (a as i32) >= (b as i32)),
+            0b110u8 => InstDef("bltu", |[a, b]| a < b),
+            0b111u8 => InstDef("bgeu", |[a, b]| a >= b),
         };
-        // TODO: print debug information
-        branch_taken.then_some(branch_target)
+        let taken = INSTS.get(&decoded_inst.f3).and_then(|imp| {
+            Some(print_and_execute!(imp, [rs1, rs2]))
+        }).expect("unimplemented branch instruction");
+        taken.then_some(branch_target)
     }
 
     pub fn load(decoded_inst: &DecodedInst, rf: &mut RegFile) {
@@ -497,7 +500,7 @@ impl ExecuteUnit {
         }
         let old_val = csr.user_access(addr, new_val, csr_type);
         rf.write_gpr(decoded_inst.rd, old_val);
-        info!("csr read address {} => value {}", addr, old_val);
+        info!("csr read address {:04x} => value {}", addr, old_val);
     }
 
     pub fn sfu(decoded_inst: &DecodedInst, wid: usize, first_lid: usize,
@@ -532,7 +535,7 @@ impl ExecuteUnit {
             rf.iter().map(|lrf| lrf.read_gpr(decoded_inst.rs2_addr)).collect());
     }
 
-    pub fn execute(decoded: DecodedInst, tmask: u32, wid: usize,
+    pub fn execute(decoded: DecodedInst, cid: usize, wid: usize, tmask: u32,
                    rf: &mut Vec<&mut RegFile>, csr: &mut Vec<&mut CSRFile>,
                    scheduler: &mut Scheduler, neutrino: &mut Neutrino) {
         // let isa = ISA::get_insts();
@@ -615,8 +618,7 @@ impl ExecuteUnit {
                 todo!()
             }
             Opcode::CUSTOM2 => {
-                neutrino.execute(&decoded, rf[first_lid], scheduler);
-                todo!()
+                neutrino.execute(&decoded, cid, wid, tmask, rf[first_lid]);
             }
 
             _ => { panic!("unimplemented opcode 0x{:x}", decoded.opcode); }

@@ -23,7 +23,7 @@ impl MuonCore {
         let mut me = MuonCore {
             base: Default::default(),
             id,
-            scheduler: Scheduler::new(Arc::clone(&config)),
+            scheduler: Scheduler::new(Arc::clone(&config), id),
             warps: (0..num_warps).map(|warp_id| Warp::new(Arc::new(MuonConfig {
                 lane_config: LaneConfig {
                     warp_id,
@@ -52,17 +52,17 @@ impl MuonCore {
     }
 
     pub fn execute(&mut self, neutrino: &mut Neutrino) {
-        self.scheduler.tick_one();
-
-        let sched_out: Vec<_> = self.scheduler.schedule.iter().map(|s| s.clone()).collect();
-        if let Some(sched0) = self.scheduler.schedule[0].as_ref() {
-            info!("warp 0 schedule=0x{:08x}", sched0.pc);
-        }
-        self.warps.iter_mut().zip(sched_out).for_each(|(warp, s)| {
+        // important to gather all schedules before executing any
+        let schedules = (0..self.conf().num_warps)
+            .map(|wid| self.scheduler.get_schedule(wid))
+            .collect::<Vec<_>>();
+        self.warps.iter_mut().zip(schedules).for_each(|(warp, s)| {
             if let Some(sched) = s {
+                info!("warp {} schedule=0x{:08x}", warp.wid, sched.pc);
                 warp.execute(sched, &mut self.scheduler, neutrino);
             }
         });
+        self.scheduler.tick_one();
 
         self.warps.iter_mut().for_each(Warp::tick_one);
 

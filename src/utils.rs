@@ -49,13 +49,12 @@ pub trait BitMask {
 }
 
 impl BitMask for [bool] {
+    #[inline]
     fn to_u32(&self) -> u32 {
         assert!(self.len() <= 32, "Bitmask too large for u32");
         let mut mask_int = 0;
-        for (i, bit) in self.iter().enumerate() {
-            if *bit { 
-                mask_int |= 1 << i; 
-            }
+        for (i, bit) in self.iter().enumerate().take(32) {
+            mask_int |= (*bit as u32) << i;
         }
 
         mask_int

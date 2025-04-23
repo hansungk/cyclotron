@@ -1,7 +1,8 @@
 use std::cmp::PartialEq;
 use std::collections::HashMap;
+use std::fmt::{Display, Formatter};
 use std::sync::Arc;
-use log::error;
+use log::info;
 use crate::base::module::IsModule;
 use crate::base::behavior::{ModuleBehaviors, Parameterizable};
 use crate::base::module::{module, ModuleBase};
@@ -16,14 +17,14 @@ pub struct JobID {
 }
 
 #[derive(Copy, Clone, PartialEq, Eq)]
-enum RetMode {
+pub enum NeutrinoRetMode {
     Immediate,
     Hardware,
     Manual,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq)]
-enum PartMode {
+pub enum NeutrinoPartMode {
     Threads,
     Warps,
     ThreadBlocks,
@@ -38,11 +39,11 @@ pub enum JobStatus {
 
 pub struct ScoreboardEntry {
     deps: Vec<JobID>,
-    ret_mode: RetMode,
-    part_mode: PartMode,
+    ret_mode: NeutrinoRetMode,
+    part_mode: NeutrinoPartMode,
     sync: bool,
     num_elems: u32,
-    arrived_mask: Vec<Vec<u64>>, // mask[wid] = thread mask
+    arrived_mask: Vec<Vec<u32>>, // mask[wid] = thread mask
     dispatched: bool,
 }
 
@@ -60,49 +61,74 @@ pub enum NeutrinoCmdType {
 
 #[derive(Clone)]
 pub struct NeutrinoCmd {
-    cmd_type: NeutrinoCmdType,
-    job_id: Option<JobID>,
-    task: u32,
-    deps: Vec<JobID>,
-    ret_mode: RetMode,
-    part_mode: PartMode,
-    num_elems: u32,
-    sync: bool,
-    tmask: u64,
+    pub cmd_type: NeutrinoCmdType,
+    pub job_id: Option<JobID>, // for payload/complete
+    pub task: u32,
+    pub deps: Vec<JobID>,
+    pub ret_mode: NeutrinoRetMode,
+    pub part_mode: NeutrinoPartMode,
+    pub num_elems: u32,
+    pub sync: bool,
+    pub tmask: u32,
 }
 
-#[derive(Clone)]
-pub struct NeutrinoSchedulerControl {
-    stall: Vec<bool>,
+impl Display for NeutrinoCmd {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "neutrino [type: {}, job_id: {:?}, task: {}, deps: {:?}, \
+            ret_mode: {}, part_mode: {}, num_elems: {}, sync: {}, tmask: {:08x}]",
+            match self.cmd_type {
+                NeutrinoCmdType::Invoke => "invoke",
+                NeutrinoCmdType::Payload => "payload",
+                NeutrinoCmdType::Complete => "complete",
+            },
+            self.job_id,
+            self.task,
+            self.deps,
+            match self.ret_mode {
+                NeutrinoRetMode::Immediate => "immediate",
+                NeutrinoRetMode::Hardware => "hardware",
+                NeutrinoRetMode::Manual => "manual",
+            },
+            match self.part_mode {
+                NeutrinoPartMode::Threads => "threads",
+                NeutrinoPartMode::Warps => "warps",
+                NeutrinoPartMode::ThreadBlocks => "thread blocks",
+            },
+            self.num_elems,
+            self.sync,
+            self.tmask
+        )
+    }
+}
+
+impl Display for JobID {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "job[{} | {}]", self.task_id, self.counter)
+    }
 }
 
 pub struct Scoreboard {
     base: ModuleBase<ScoreboardState, NeutrinoConfig>,
     counters: Counters,
-    cmd_in: Vec<Vec<Option<NeutrinoCmd>>>,
-    schedule_out: Vec<NeutrinoSchedulerControl>, // one struct per core
 }
 
 module!(Scoreboard, ScoreboardState, NeutrinoConfig,);
 
 impl ModuleBehaviors for Scoreboard {
     fn tick_one(&mut self) {
-        // assume inputs have arrived
-        self.process_inputs();
-        // find all ready jobs
-        let ready_jobs = self.find_ready_jobs();
-        // dispatch jobs
-        ready_jobs.iter().for_each(|job_id| {
-            self.dispatch(*job_id);
-        });
-        // update stalls
-        self.update_stalls();
+        self.base.cycle += 1;
+    }
+
+    fn reset(&mut self) {
+        self.counters.reset();
+        self.base.state.entries.clear();
     }
 }
 
 impl Scoreboard {
     pub fn new(config: Arc<NeutrinoConfig>) -> Self {
-        let muon_config = config.muon_config;
         let counters = Counters::new(config.clone());
         let mut me = Scoreboard {
             base: ModuleBase::<ScoreboardState, NeutrinoConfig> {
@@ -112,77 +138,70 @@ impl Scoreboard {
                 ..ModuleBase::default()
             },
             counters,
-            cmd_in: vec![vec![None; muon_config.num_warps]; muon_config.num_cores],
-            schedule_out: vec![NeutrinoSchedulerControl {
-                stall: vec![false; config.muon_config.num_cores]
-            }; muon_config.num_cores],
         };
         me.init_conf(config);
         me
     }
 
-    pub fn arrive(&mut self, cmd: NeutrinoCmd, core_id: usize, warp_id: usize) {
-        assert!(core_id < self.conf().muon_config.num_cores, "core id out of range");
-        assert!(warp_id < self.conf().muon_config.num_warps, "warp id out of range");
-        assert!(cmd.task > 0, "task 0 is reserved");
-        let cmd_in = &mut self.cmd_in[core_id][warp_id];
-        if cmd_in.is_none() {
-            *cmd_in = Some(cmd);
-        } else {
-            error!("command already arrived");
+    pub fn job_id_from_u32(&self, id: u32) -> JobID {
+        let task_id = (id >> self.conf().counter_width) & ((1 << self.conf().task_id_width) - 1);
+        let counter = id & ((1 << self.conf().counter_width) - 1);
+        JobID { task_id, counter }
+    }
+
+    pub fn u32_from_job_id(&self, job_id: JobID) -> u32 {
+        job_id.task_id << self.conf().counter_width | job_id.counter
+    }
+
+    pub fn arrive(&mut self, cmd: &NeutrinoCmd, cid: usize, wid: usize) -> JobID {
+        let num_cores = self.conf().muon_config.num_cores;
+        let num_warps = self.conf().muon_config.num_warps;
+        assert!(cid < num_cores, "core id out of range");
+        assert!(wid < num_warps, "warp id out of range");
+        // assert!(cmd.task > 0, "task 0 is reserved");
+        match cmd.cmd_type {
+            NeutrinoCmdType::Invoke => {
+                // first try to find existing non-dispatched entry
+                let existing_job_id = self.counters.peek(cmd.task);
+                let entry_opt = self.base.state.entries.get_mut(&existing_job_id);
+                let use_existing = entry_opt.as_ref().is_some_and(|e| !e.dispatched);
+                if use_existing {
+                    // TODO: warn if existing parameters mismatch incoming
+                    let entry = entry_opt.unwrap();
+                    entry.arrived_mask[cid][wid] |= cmd.tmask;
+                    existing_job_id
+                } else {
+                    // either entry doesn't exist or is already dispatched
+                    // so we make a new entry
+                    let job_id = self.counters.take(cmd.task);
+                    let mut entry = ScoreboardEntry {
+                        deps: cmd.deps.clone(),
+                        ret_mode: cmd.ret_mode,
+                        part_mode: cmd.part_mode,
+                        sync: cmd.sync,
+                        num_elems: cmd.num_elems,
+                        arrived_mask: vec![vec![0u32; num_warps]; num_cores],
+                        dispatched: false,
+                    };
+                    entry.arrived_mask[cid][wid] = cmd.tmask;
+                    self.base.state.entries.insert(job_id, entry);
+                    job_id
+                }
+            }
+            NeutrinoCmdType::Payload => {
+                // Handle payload command
+                todo!()
+            }
+            NeutrinoCmdType::Complete => {
+                // Handle complete command
+                todo!()
+            }
         }
     }
 
     pub fn verify(&self, job_id: JobID) {
         assert!(self.base.state.entries.contains_key(&job_id),
-            "job {} not found", job_id.task_id)
-    }
-
-    pub fn process_inputs(&mut self) {
-        let num_cores = self.conf().muon_config.num_cores;
-        let num_warps = self.conf().muon_config.num_warps;
-        self.cmd_in.iter().enumerate().for_each(|(cid, warps)| {
-            warps.iter().enumerate().for_each(|(wid, cmd)| {
-                if let Some(cmd) = cmd {
-                    match cmd.cmd_type {
-                        NeutrinoCmdType::Invoke => {
-                            // first try to find existing non-dispatched entry
-                            let existing_job_id = self.counters.peek(cmd.task);
-                            let entry_opt = self.base.state.entries.get_mut(&existing_job_id);
-                            let use_existing = entry_opt.as_ref().is_some_and(|e| !e.dispatched);
-                            if use_existing {
-                                // TODO: warn if existing parameters mismatch incoming
-                                let entry = entry_opt.unwrap();
-                                entry.arrived_mask[cid][wid] |= cmd.tmask
-                            } else {
-                                // either entry doesn't exist or is already dispatched
-                                // so we make a new entry
-                                let job_id = self.counters.take(cmd.task);
-                                let mut entry = ScoreboardEntry {
-                                    deps: cmd.deps.clone(),
-                                    ret_mode: cmd.ret_mode,
-                                    part_mode: cmd.part_mode,
-                                    sync: cmd.sync,
-                                    num_elems: cmd.num_elems,
-                                    arrived_mask: vec![vec![0u64; num_warps]; num_cores],
-                                    dispatched: false,
-                                };
-                                entry.arrived_mask[cid][wid] = cmd.tmask;
-                                self.base.state.entries.insert(job_id, entry);
-                            }
-                        }
-                        NeutrinoCmdType::Payload => {
-                            // Handle payload command
-                            todo!()
-                        }
-                        NeutrinoCmdType::Complete => {
-                            // Handle complete command
-                            todo!()
-                        }
-                    }
-                }
-            });
-        });
+                "job {} not found", job_id.task_id)
     }
 
     pub fn is_ready(&self, job_id: JobID) -> bool {
@@ -194,19 +213,19 @@ impl Scoreboard {
         }).sum();
         // any thread in a warp means warp has arrived
         let num_warps: u32 = arrived.iter().flat_map(|x| {
-            x.iter().filter(|y| **y != 0u64)
+            x.iter().filter(|y| **y != 0u32)
         }).collect::<Vec<_>>().len() as u32;
 
-        let participation_satisfied  = (match entry.part_mode {
-            PartMode::Threads => num_threads,
-            PartMode::Warps => num_warps,
-            PartMode::ThreadBlocks => todo!(),
+        let participation_satisfied = (match entry.part_mode {
+            NeutrinoPartMode::Threads => num_threads,
+            NeutrinoPartMode::Warps => num_warps,
+            NeutrinoPartMode::ThreadBlocks => todo!(),
         }) >= entry.num_elems;
 
         let dependencies_satisfied = entry.deps.iter().map(|dep| {
             (dep.task_id == 0) || // task 0 is reserved for no dependency
                 (!self.base.state.entries.contains_key(dep) &&
-                (self.counters.check(*dep) != NotStarted))
+                    (self.counters.check(*dep) != NotStarted))
         }).all(|x| x);
 
         // if either the previous job doesn't exist or is dispatched, then it's in order
@@ -238,7 +257,7 @@ impl Scoreboard {
             panic!("task id {} not implemented", job_id.task_id)
         }
 
-        if entry.ret_mode == RetMode::Immediate {
+        if entry.ret_mode == NeutrinoRetMode::Immediate {
             self.complete(job_id)
         }
     }
@@ -250,14 +269,14 @@ impl Scoreboard {
         self.base.state.entries.remove_entry(&job_id);
     }
 
-    pub fn update_stalls(&mut self) {
+    pub fn get_stalls(&mut self) -> Vec<Vec<u32>> {
         // find all sync, undispatched jobs and OR their masks
         let mut stalls = vec![
-            vec![0u64; self.conf().muon_config.num_warps];
+            vec![0u32; self.conf().muon_config.num_warps];
             self.conf().muon_config.num_cores];
-        let arrived_masks: Vec<Vec<Vec<u64>>> = self.base.state.entries.iter().filter_map(|e| {
-            e.1.sync.then_some(e.1.arrived_mask.clone())
-        }).collect::<Vec<_>>();
+        let arrived_masks: Vec<Vec<Vec<u32>>> = self.base.state.entries.iter()
+            .filter_map(|e| { e.1.sync.then_some(e.1.arrived_mask.clone()) })
+            .collect::<Vec<_>>();
         arrived_masks.iter().for_each(|e| {
             e.iter().enumerate().for_each(|(cid, warp)| {
                 warp.iter().enumerate().for_each(|(wid, mask)| {
@@ -265,5 +284,7 @@ impl Scoreboard {
                 });
             });
         });
+        info!("stalls {:?}", stalls);
+        stalls
     }
 }

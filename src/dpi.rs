@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_variables, unreachable_code)]
 use crate::base::behavior::*;
 use crate::base::mem;
 use crate::base::port::*;

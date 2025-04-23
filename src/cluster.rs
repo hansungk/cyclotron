@@ -58,6 +58,10 @@ impl ModuleBehaviors for Cluster {
             core.tick_one();
             core.execute(&mut self.neutrino);
         }
+        self.neutrino.tick_one();
+        self.neutrino.update(&mut self.cores.iter_mut()
+            .map(|c| &mut c.scheduler)
+            .collect());
     }
 
     fn reset(&mut self) {
