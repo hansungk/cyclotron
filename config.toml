@@ -4,7 +4,7 @@ num_warps = 8
 num_cores = 8
 
 [sim]
-elf = "gemm.elf"
+elf = "test/vecadd.elf"
 log_level = "info"
 timeout = 100000
 benchmark = 10
