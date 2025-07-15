@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::{collections::HashMap, fs};
 use std::sync::Arc;
-use goblin::elf::Elf;
+use goblin::elf::{section_header, Elf};
 use crate::base::mem::HasMemory;
 
 pub struct ElfBackedMem {
@@ -53,7 +53,10 @@ impl ElfBackedMem {
                 // Extract the section bytes
                 let offset = section.sh_offset as usize;
                 let size = section.sh_size as usize;
-                if offset + size <= data.len() {
+                if section_header::SHT_NOBITS == section.sh_type {
+                    // SHT_NOBITS sections are implicitly zeroed, not on the file
+                    self.sections.insert(range, vec![0u8; size]);
+                } else if offset + size <= data.len() {
                     let bytes = data[offset..offset + size].to_vec();
                     self.sections.insert(range, bytes);
                 } else {
