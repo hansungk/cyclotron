@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use log::info;
+use log::{debug, info};
 use crate::base::{behavior::*, module::*};
 use crate::muon::config::{LaneConfig, MuonConfig};
 use crate::muon::scheduler::Scheduler;
@@ -58,7 +58,7 @@ impl MuonCore {
             .collect::<Vec<_>>();
         self.warps.iter_mut().zip(schedules).for_each(|(warp, s)| {
             if let Some(sched) = s {
-                info!("warp {} schedule=0x{:08x}", warp.wid, sched.pc);
+                debug!("warp {} schedule=0x{:08x}", warp.wid, sched.pc);
                 warp.execute(sched, &mut self.scheduler, neutrino);
             }
         });

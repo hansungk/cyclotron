@@ -1,4 +1,4 @@
-use log::info;
+use log::{debug, info};
 use std::sync::Arc;
 use crate::base::behavior::{ModuleBehaviors, Parameterizable};
 use crate::base::module::IsModule;

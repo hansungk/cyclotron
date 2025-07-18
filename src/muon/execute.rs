@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use std::fmt::Debug;
-use log::{error, info};
+use log::{debug, error, info};
 use num_derive::FromPrimitive;
 use num_traits::ToPrimitive;
 pub use num_traits::WrappingAdd;
@@ -99,7 +99,7 @@ macro_rules! f3_f7_mask {
 
 macro_rules! print_and_execute {
     ($inst:expr, $operands:expr) => {{
-        info!("{} {:08x?}", $inst.0, $operands);
+        debug!("{} {:08x?}", $inst.0, $operands);
         $inst.1($operands)
     }};
 }
@@ -107,7 +107,7 @@ macro_rules! print_and_execute {
 #[macro_export]
 macro_rules! print_and_unwrap {
     ($inst:expr) => {{
-        info!("{}", $inst.0);
+        debug!("{}", $inst.0);
         $inst.1
     }};
 }
@@ -500,7 +500,7 @@ impl ExecuteUnit {
         }
         let old_val = csr.user_access(addr, new_val, csr_type);
         rf.write_gpr(decoded_inst.rd, old_val);
-        info!("csr read address {:04x} => value {}", addr, old_val);
+        debug!("csr read address {:04x} => value {}", addr, old_val);
     }
 
     pub fn sfu(decoded_inst: &DecodedInst, wid: usize, first_lid: usize,
