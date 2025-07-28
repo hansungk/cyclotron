@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
+use std::io::Write;
 use crate::base::mem::HasMemory;
+use crate::sim::config::MemConfig;
 use crate::sim::elf::ElfBackedMem;
 
 // a sparse memory structure that initializes anything read with 0
@@ -8,11 +10,16 @@ use crate::sim::elf::ElfBackedMem;
 pub struct ToyMemory {
     mem: HashMap<usize, u32>,
     fallthrough: Option<Arc<RwLock<ElfBackedMem>>>,
+    config: Option<MemConfig>,
 }
 
 impl ToyMemory {
     pub fn set_fallthrough(&mut self, fallthrough: Arc<RwLock<ElfBackedMem>>) {
         self.fallthrough = Some(fallthrough);
+    }
+
+    pub fn set_config(&mut self, config: MemConfig) {
+        self.config = Some(config);
     }
 }
 
@@ -40,6 +47,22 @@ impl HasMemory for ToyMemory {
     }
 
     fn write<const N: usize>(&mut self, addr: usize, data: Arc<[u8; N]>) -> Result<(), String> {
+        // Check if this is a write to the I/O console address range
+        if let Some(config) = &self.config {
+            if addr >= config.io_cout_addr && addr < config.io_cout_addr + config.io_cout_size {
+                let bytes = &*data;
+                if let Ok(text) = std::str::from_utf8(bytes) {
+                    print!("{}", text);
+                } else {
+                    // Print as hex if not valid UTF-8
+                    for &byte in bytes.iter() {
+                        print!("{:02x}", byte);
+                    }
+                }
+                std::io::stdout().flush().unwrap();
+            }
+        }
+
         if N < 4 {
             assert!((addr % 3) + N - 1 < 4, "misaligned store across word boundary");
             let word_addr = addr >> 2 << 2;

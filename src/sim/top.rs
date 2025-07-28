@@ -2,6 +2,7 @@ use crate::base::behavior::*;
 use crate::cluster::Cluster;
 use crate::command_proc::CommandProcessor;
 use crate::muon::config::MuonConfig;
+use crate::sim::config::MemConfig;
 use crate::sim::elf::ElfBackedMem;
 use crate::sim::toy_mem::ToyMemory;
 use std::path::PathBuf;
@@ -15,6 +16,7 @@ pub struct CyclotronTopConfig {
     pub timeout: u64,
     pub elf_path: PathBuf,
     pub cluster_config: ClusterConfig,
+    pub mem_config: MemConfig,
 }
 
 #[derive(Debug, Deserialize, Clone, Copy)]
@@ -46,6 +48,10 @@ impl CyclotronTop {
         GMEM.write()
             .expect("gmem poisoned")
             .set_fallthrough(Arc::clone(&imem));
+
+        GMEM.write()
+            .expect("gmem poisoned")
+            .set_config(config.mem_config);
         top
     }
 

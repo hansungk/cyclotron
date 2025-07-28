@@ -3,8 +3,12 @@ num_lanes = 32
 num_warps = 8
 num_cores = 8
 
+[mem]
+io_cout_addr = 0xFF080000
+io_cout_size = 64
+
 [sim]
 elf = "test/vecadd.elf"
 log_level = "info"
-timeout = 100000
+timeout = 1000000
 benchmark = 10

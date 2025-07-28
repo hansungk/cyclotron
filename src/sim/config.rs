@@ -39,3 +39,20 @@ impl Default for SimConfig {
         }
     }
 }
+
+#[derive(Debug, Deserialize, Clone, Copy)]
+pub struct MemConfig {
+    pub io_cout_addr: usize,
+    pub io_cout_size: usize,
+}
+
+impl Config for MemConfig {}
+
+impl Default for MemConfig {
+    fn default() -> Self {
+        Self {
+            io_cout_addr: 0xFF080000,
+            io_cout_size: 64,
+        }
+    }
+}

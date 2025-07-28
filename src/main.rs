@@ -9,7 +9,7 @@ use cyclotron::base::behavior::*;
 use cyclotron::base::module::IsModule;
 use cyclotron::muon::config::MuonConfig;
 use cyclotron::neutrino::config::NeutrinoConfig;
-use cyclotron::sim::config::{Config, SimConfig};
+use cyclotron::sim::config::{Config, MemConfig, SimConfig};
 use cyclotron::sim::top::{ClusterConfig, CyclotronTop, CyclotronTopConfig};
 
 #[derive(Parser)]
@@ -38,6 +38,7 @@ pub fn main() -> Result<(), u32> {
 
     let config_table: Table = toml::from_str(&config).expect("cannot parse config toml");
     let sim_config = SimConfig::from_section(config_table.get("sim"));
+    let mem_config = MemConfig::from_section(config_table.get("mem"));
     let mut muon_config = MuonConfig::from_section(config_table.get("muon"));
     let mut neutrino_config = NeutrinoConfig::from_section(config_table.get("neutrino"));
 
@@ -54,6 +55,7 @@ pub fn main() -> Result<(), u32> {
             muon_config,
             neutrino_config,
         },
+        mem_config,
     }));
 
     top.reset();
