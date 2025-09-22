@@ -7,6 +7,7 @@ pub struct ModuleBase<T, C> {
     pub frequency: u64,
     pub state: T,
     pub config: OnceLock<Arc<C>>,
+    // pub sim: Arc<C>,
 }
 
 impl<T: Default, C: Default> Default for ModuleBase<T, C> {

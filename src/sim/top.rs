@@ -2,19 +2,67 @@ use crate::base::behavior::*;
 use crate::cluster::Cluster;
 use crate::command_proc::CommandProcessor;
 use crate::muon::config::MuonConfig;
-use crate::sim::config::MemConfig;
+use crate::base::module::IsModule;
+use crate::sim::config::{SimConfig, MemConfig};
 use crate::sim::elf::ElfBackedMem;
 use crate::sim::toy_mem::ToyMemory;
-use std::path::PathBuf;
+use std::path::Path;
 use std::sync::{Arc, LazyLock, RwLock};
 use serde::Deserialize;
 use crate::neutrino::config::NeutrinoConfig;
 
 pub static GMEM: LazyLock<RwLock<ToyMemory>> = LazyLock::new(|| RwLock::new(ToyMemory::default()));
 
-pub struct CyclotronTopConfig {
-    pub timeout: u64,
-    pub elf_path: PathBuf,
+pub struct Sim {
+    pub config: SimConfig,
+    pub top: CyclotronTop,
+}
+
+impl Sim {
+    pub fn new(sim_config: SimConfig, muon_config: MuonConfig,
+               neutrino_config: NeutrinoConfig,
+               mem_config: MemConfig) -> Sim {
+        let top = CyclotronTop::new(Arc::new(CyclotronConfig {
+            timeout: sim_config.timeout,
+            elf: sim_config.elf.clone(),
+            cluster_config: ClusterConfig {
+                muon_config,
+                neutrino_config,
+            },
+            mem_config,
+        }));
+        let sim = Sim {
+            config: sim_config,
+            top,
+        };
+        sim
+    }
+
+    pub fn simulate(&mut self) -> Result<(), u32> {
+        self.top.reset();
+        for cycle in 0..self.top.timeout {
+            self.top.tick_one();
+            if self.top.finished() {
+                println!("simulation finished after {} cycles", cycle + 1);
+                if let Some(mut tohost) = self.top.clusters[0].cores[0].scheduler.state().tohost {
+                    if tohost > 0 {
+                        tohost >>= 1;
+                        println!("failed test case {}", tohost);
+                        return Err(tohost)
+                    } else {
+                        println!("test passed");
+                    }
+                }
+                return Ok(());
+            }
+        }
+        Err(0)
+    }
+}
+
+pub struct CyclotronConfig {
+    pub timeout: u64, // TODO: use sim
+    pub elf: String, // TODO: use sim
     pub cluster_config: ClusterConfig,
     pub mem_config: MemConfig,
 }
@@ -32,8 +80,9 @@ pub struct CyclotronTop {
 }
 
 impl CyclotronTop {
-    pub fn new(config: Arc<CyclotronTopConfig>) -> CyclotronTop {
-        let imem = Arc::new(RwLock::new(ElfBackedMem::new(config.elf_path.as_path())));
+    pub fn new(config: Arc<CyclotronConfig>) -> CyclotronTop {
+        let elf_path = Path::new(&config.elf);
+        let imem = Arc::new(RwLock::new(ElfBackedMem::new(&elf_path)));
         let mut clusters = Vec::new();
         let cluster_config = Arc::new(config.cluster_config.clone());
         for id in 0..1 {
@@ -52,6 +101,7 @@ impl CyclotronTop {
         GMEM.write()
             .expect("gmem poisoned")
             .set_config(config.mem_config);
+
         top
     }
 
