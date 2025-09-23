@@ -7,7 +7,8 @@ use crate::muon::decode::{DecodeUnit, RegFile};
 use crate::muon::execute::ExecuteUnit;
 use crate::muon::scheduler::{Schedule, Scheduler};
 use crate::sim::top::GMEM;
-use log::info;
+use crate::sim::log::Logger;
+use crate::info;
 use std::sync::Arc;
 use crate::neutrino::neutrino::Neutrino;
 
@@ -17,10 +18,10 @@ pub struct WarpState {
     pub csr_file: Vec<CSRFile>,
 }
 
-#[derive(Debug, Default)]
 pub struct Warp {
     base: ModuleBase<WarpState, MuonConfig>,
     pub wid: usize,
+    logger: Arc<Logger>,
 }
 
 impl ModuleBehaviors for Warp {
@@ -38,7 +39,7 @@ module!(Warp, WarpState, MuonConfig,
 );
 
 impl Warp {
-    pub fn new(config: Arc<MuonConfig>) -> Warp {
+    pub fn new(config: Arc<MuonConfig>, logger: &Arc<Logger>) -> Warp {
         let num_lanes = config.num_lanes;
         let mut me = Warp {
             base: ModuleBase {
@@ -49,6 +50,7 @@ impl Warp {
                 ..ModuleBase::default()
             },
             wid: config.lane_config.warp_id,
+            logger: logger.clone(),
         };
         me.init_conf(config);
         me
@@ -60,7 +62,7 @@ impl Warp {
 
     pub fn execute(&mut self, schedule: Schedule,
                    scheduler: &mut Scheduler, neutrino: &mut Neutrino) {
-        info!("{} cycle={} fetch=0x{:08x}", self.name(), self.base.cycle, schedule.pc);
+        info!(self.logger, "@t={} [{}] PC=0x{:08x}", self.base.cycle, self.name(), schedule.pc);
 
         let inst_data = *GMEM.write()
             .expect("gmem poisoned")

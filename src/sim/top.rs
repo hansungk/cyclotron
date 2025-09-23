@@ -24,7 +24,7 @@ impl Sim {
     pub fn new(sim_config: SimConfig, muon_config: MuonConfig,
                neutrino_config: NeutrinoConfig,
                mem_config: MemConfig) -> Sim {
-        let logger = Arc::new(Logger::new());
+        let logger = Arc::new(Logger::new(sim_config.log_level));
         let top = CyclotronTop::new(Arc::new(CyclotronConfig {
             timeout: sim_config.timeout,
             elf: sim_config.elf.clone(),

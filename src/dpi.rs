@@ -52,7 +52,7 @@ pub fn emulator_init_rs(num_lanes: i32) {
     if context.as_ref().is_some() {
         panic!("DPI context already initialized!");
     }
-    let logger = Arc::new(Logger::new());
+    let logger = Arc::new(Logger::new(0));
     let mut c = DpiContext {
         // TODO: propagate num_lanes to MuonConfig
         muon: MuonCore::new(Arc::new(MuonConfig::default()), 0 /*id*/, &logger),

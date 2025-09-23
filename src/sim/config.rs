@@ -8,11 +8,11 @@ pub struct SimConfig {
     #[serde(default)]
     pub elf: String,
     #[serde(default)]
-    pub log_level: String,
+    pub log_level: u64,
     #[serde(default)]
     pub timeout: u64,
     #[serde(default)]
-    pub benchmark: usize,
+    pub trace: bool,
 }
 
 pub trait Config: DeserializeOwned + Default {
@@ -33,9 +33,9 @@ impl Default for SimConfig {
     fn default() -> Self {
         Self {
             elf: "".to_string(),
-            log_level: "warn".to_string(),
+            log_level: 0,
             timeout: 10000,
-            benchmark: 0,
+            trace: false,
         }
     }
 }

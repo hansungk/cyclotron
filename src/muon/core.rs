@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use log::debug;
 use crate::sim::log::Logger;
-use crate::log;
+use crate::info;
 use crate::base::{behavior::*, module::*};
 use crate::muon::config::{LaneConfig, MuonConfig};
 use crate::muon::scheduler::Scheduler;
@@ -33,11 +33,11 @@ impl MuonCore {
                     ..config.lane_config
                 },
                 ..*config
-            }))).collect(),
+            }), logger)).collect(),
             logger: logger.clone(),
         };
 
-        log!(core.logger, "muon core {} instantiated!", config.lane_config.core_id);
+        info!(core.logger, "muon core {} instantiated!", config.lane_config.core_id);
 
         core.init_conf(Arc::clone(&config));
         core
