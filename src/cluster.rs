@@ -4,6 +4,7 @@ use log::info;
 use std::sync::Arc;
 use crate::neutrino::neutrino::Neutrino;
 use crate::sim::top::ClusterConfig;
+use crate::sim::log::Logger;
 
 pub struct Cluster {
     id: usize,
@@ -13,10 +14,10 @@ pub struct Cluster {
 }
 
 impl Cluster {
-    pub fn new(config: Arc<ClusterConfig>, id: usize) -> Self {
+    pub fn new(config: Arc<ClusterConfig>, id: usize, logger: &Arc<Logger>) -> Self {
         let mut cores = Vec::new();
         for cid in 0..config.muon_config.num_cores {
-            cores.push(MuonCore::new(Arc::new(config.muon_config), cid));
+            cores.push(MuonCore::new(Arc::new(config.muon_config), cid, logger));
         }
         Cluster {
             id,

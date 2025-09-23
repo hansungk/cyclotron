@@ -5,6 +5,7 @@ use crate::base::port::*;
 // use crate::fsm::{Fsm, FsmConfig};
 use crate::muon::config::MuonConfig;
 use crate::muon::core::MuonCore;
+use crate::sim::log::Logger;
 use std::sync::Arc;
 use std::sync::{OnceLock, RwLock};
 
@@ -51,9 +52,10 @@ pub fn emulator_init_rs(num_lanes: i32) {
     if context.as_ref().is_some() {
         panic!("DPI context already initialized!");
     }
+    let logger = Arc::new(Logger::new());
     let mut c = DpiContext {
         // TODO: propagate num_lanes to MuonConfig
-        muon: MuonCore::new(Arc::new(MuonConfig::default()), 0 /*id*/),
+        muon: MuonCore::new(Arc::new(MuonConfig::default()), 0 /*id*/, &logger),
         _mem_req: Port::new(),
         _mem_resp: Port::new(),
     };

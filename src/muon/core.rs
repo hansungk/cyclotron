@@ -1,5 +1,7 @@
 use std::sync::Arc;
-use log::{debug, info};
+use log::debug;
+use crate::sim::log::Logger;
+use crate::log;
 use crate::base::{behavior::*, module::*};
 use crate::muon::config::{LaneConfig, MuonConfig};
 use crate::muon::scheduler::Scheduler;
@@ -9,18 +11,18 @@ use crate::neutrino::neutrino::Neutrino;
 #[derive(Debug, Default)]
 pub struct MuonState {}
 
-#[derive(Debug, Default)]
 pub struct MuonCore {
     pub base: ModuleBase<MuonState, MuonConfig>,
     pub id: usize,
     pub scheduler: Scheduler,
     pub warps: Vec<Warp>,
+    logger: Arc<Logger>,
 }
 
 impl MuonCore {
-    pub fn new(config: Arc<MuonConfig>, id: usize) -> Self {
+    pub fn new(config: Arc<MuonConfig>, id: usize, logger: &Arc<Logger>) -> Self {
         let num_warps = config.num_warps;
-        let mut me = MuonCore {
+        let mut core = MuonCore {
             base: Default::default(),
             id,
             scheduler: Scheduler::new(Arc::clone(&config), id),
@@ -32,12 +34,13 @@ impl MuonCore {
                 },
                 ..*config
             }))).collect(),
+            logger: logger.clone(),
         };
 
-        info!("muon core {} instantiated!", config.lane_config.core_id);
+        log!(core.logger, "muon core {} instantiated!", config.lane_config.core_id);
 
-        me.init_conf(Arc::clone(&config));
-        me
+        core.init_conf(Arc::clone(&config));
+        core
     }
 
     /// Spawn a warp in this core.  Invoked by the command processor to schedule a threadblock to

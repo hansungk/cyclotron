@@ -6,6 +6,7 @@ use crate::base::module::IsModule;
 use crate::sim::config::{SimConfig, MemConfig};
 use crate::sim::elf::ElfBackedMem;
 use crate::sim::toy_mem::ToyMemory;
+use crate::sim::log::Logger;
 use std::path::Path;
 use std::sync::{Arc, LazyLock, RwLock};
 use serde::Deserialize;
@@ -16,12 +17,14 @@ pub static GMEM: LazyLock<RwLock<ToyMemory>> = LazyLock::new(|| RwLock::new(ToyM
 pub struct Sim {
     pub config: SimConfig,
     pub top: CyclotronTop,
+    pub logger: Arc<Logger>,
 }
 
 impl Sim {
     pub fn new(sim_config: SimConfig, muon_config: MuonConfig,
                neutrino_config: NeutrinoConfig,
                mem_config: MemConfig) -> Sim {
+        let logger = Arc::new(Logger::new());
         let top = CyclotronTop::new(Arc::new(CyclotronConfig {
             timeout: sim_config.timeout,
             elf: sim_config.elf.clone(),
@@ -30,10 +33,11 @@ impl Sim {
                 neutrino_config,
             },
             mem_config,
-        }));
+        }), &logger);
         let sim = Sim {
             config: sim_config,
             top,
+            logger,
         };
         sim
     }
@@ -80,13 +84,13 @@ pub struct CyclotronTop {
 }
 
 impl CyclotronTop {
-    pub fn new(config: Arc<CyclotronConfig>) -> CyclotronTop {
+    pub fn new(config: Arc<CyclotronConfig>, logger: &Arc<Logger>) -> CyclotronTop {
         let elf_path = Path::new(&config.elf);
         let imem = Arc::new(RwLock::new(ElfBackedMem::new(&elf_path)));
         let mut clusters = Vec::new();
         let cluster_config = Arc::new(config.cluster_config.clone());
         for id in 0..1 {
-            clusters.push(Cluster::new(cluster_config.clone(), id));
+            clusters.push(Cluster::new(cluster_config.clone(), id, logger));
         }
         let top = CyclotronTop {
             cproc: CommandProcessor::new(Arc::new(config.cluster_config.muon_config.clone()),
