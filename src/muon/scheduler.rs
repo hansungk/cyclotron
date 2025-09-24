@@ -66,7 +66,7 @@ impl Scheduler {
         self.base.state.active_warps = 1;
     }
 
-    pub fn branch(&mut self, wid: usize, target_pc: u32) {
+    pub fn take_branch(&mut self, wid: usize, target_pc: u32) {
         self.base.state.pc[wid] = target_pc;
         if target_pc == 0 { // returned from main
             self.base.state.thread_masks[wid] = 0;

@@ -56,6 +56,7 @@ impl Default for RegFileState {
     }
 }
 
+/// Register file for a single SIMT lane.
 #[derive(Debug, Default)]
 pub struct RegFile {
     base: ModuleBase<RegFileState, MuonConfig>,
