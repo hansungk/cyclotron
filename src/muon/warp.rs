@@ -26,7 +26,7 @@ pub struct Warp {
 
 impl ModuleBehaviors for Warp {
     fn tick_one(&mut self) {
-        { self.base().cycle += 1; }
+        self.base().cycle += 1;
     }
 
     fn reset(&mut self) {
@@ -62,8 +62,6 @@ impl Warp {
 
     pub fn execute(&mut self, schedule: Schedule,
                    scheduler: &mut Scheduler, neutrino: &mut Neutrino) {
-        info!(self.logger, "@t={} [{}] PC=0x{:08x}", self.base.cycle, self.name(), schedule.pc);
-
         let inst_data = *GMEM.write()
             .expect("gmem poisoned")
             .read::<8>(schedule.pc as usize)
@@ -74,7 +72,7 @@ impl Warp {
             c.emu_access(0xcc4, schedule.mask);
         });
 
-        ExecuteUnit::execute(DecodeUnit::decode(inst_data, schedule.pc),
+        let writeback = ExecuteUnit::execute(DecodeUnit::decode(inst_data, schedule.pc),
              self.conf().lane_config.core_id,
              self.wid,
              schedule.mask,
@@ -83,5 +81,13 @@ impl Warp {
              scheduler,
              neutrino,
         );
+
+        info!(self.logger, "@t={} [{}] PC=0x{:08x}, rd={:3}, data=[{} lanes valid]",
+            self.base.cycle,
+            self.name(),
+            schedule.pc,
+            writeback.rd_addr,
+            // writeback.rd_data_str(),
+            writeback.num_rd_data());
     }
 }

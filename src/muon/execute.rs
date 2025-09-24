@@ -32,6 +32,22 @@ impl Default for Writeback {
     }
 }
 
+impl Writeback {
+    pub fn rd_data_str(&self) -> String {
+        let lanes: Vec<String> = self.rd_data.iter().map(|lrd| {
+            match lrd {
+                Some(value) => format!("0x{:x}", value),
+                None => ".".to_string(),
+            }
+        }).collect();
+        format!("[{}]", lanes.join(","))
+    }
+
+    pub fn num_rd_data(&self) -> usize {
+        self.rd_data.iter().map(|lrd| lrd.is_some()).count()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Opcode;
 impl Opcode {
