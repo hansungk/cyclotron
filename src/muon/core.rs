@@ -4,8 +4,9 @@ use crate::sim::log::Logger;
 use crate::info;
 use crate::base::{behavior::*, module::*};
 use crate::muon::config::{LaneConfig, MuonConfig};
-use crate::muon::scheduler::Scheduler;
+use crate::muon::scheduler::{Schedule, Scheduler};
 use crate::muon::warp::Warp;
+use crate::muon::decode::{InstBuf, InstBufEntry};
 use crate::neutrino::neutrino::Neutrino;
 
 #[derive(Debug, Default)]
@@ -54,21 +55,36 @@ impl MuonCore {
         self.scheduler.all_warps_retired()
     }
 
-    pub fn execute(&mut self, neutrino: &mut Neutrino) {
-        // important to gather all schedules before executing any
+    pub fn schedule(&mut self) -> Vec<Option<Schedule>> {
         let schedules = (0..self.conf().num_warps)
             .map(|wid| self.scheduler.get_schedule(wid))
             .collect::<Vec<_>>();
-        self.warps.iter_mut().zip(schedules).for_each(|(warp, s)| {
-            if let Some(sched) = s {
-                debug!("warp {} schedule=0x{:08x}", warp.wid, sched.pc);
-                warp.execute(sched, &mut self.scheduler, neutrino);
-            }
+        schedules
+    }
+
+    pub fn frontend(&mut self, schedules: &Vec<Option<Schedule>>) -> InstBuf {
+        let ibuf_entries = self.warps.iter_mut().zip(schedules).map(|(warp, sched)| {
+            sched.as_ref().map(|s| {
+                warp.frontend(s.clone())
+            })
+        });
+        InstBuf(ibuf_entries.collect())
+    }
+
+    pub fn backend(&mut self, ibuf: &InstBuf, neutrino: &mut Neutrino) {
+        self.warps.iter_mut().zip(&ibuf.0).for_each(|(warp, ibuf)| {
+            ibuf.as_ref().map(|ib| {
+                warp.backend(ib, &mut self.scheduler, neutrino);
+            });
         });
         self.scheduler.tick_one();
-
         self.warps.iter_mut().for_each(Warp::tick_one);
+    }
 
+    pub fn execute(&mut self, neutrino: &mut Neutrino) {
+        let schedules = self.schedule();
+        let ibuf = self.frontend(&schedules);
+        self.backend(&ibuf, neutrino);
     }
 }
 

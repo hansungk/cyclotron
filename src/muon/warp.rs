@@ -3,7 +3,7 @@ use crate::base::mem::HasMemory;
 use crate::base::module::{module, IsModule, ModuleBase};
 use crate::muon::config::MuonConfig;
 use crate::muon::csr::CSRFile;
-use crate::muon::decode::{DecodeUnit, RegFile};
+use crate::muon::decode::{DecodeUnit, DecodedInst, InstBufEntry, RegFile};
 use crate::muon::execute::ExecuteUnit;
 use crate::muon::scheduler::{Schedule, Scheduler};
 use crate::sim::top::GMEM;
@@ -38,6 +38,41 @@ impl ModuleBehaviors for Warp {
 module!(Warp, WarpState, MuonConfig,
 );
 
+#[derive(Debug)]
+pub struct Writeback {
+    pub inst: DecodedInst,
+    pub rd_addr: u8,
+    pub rd_data: Vec<Option<u32>>,
+}
+
+// not deriving default here since if this changes in the future
+// there needs to be a conscious adjustment
+impl Default for Writeback {
+    fn default() -> Self {
+        Writeback {
+            inst: Default::default(),
+            rd_addr: 0,
+            rd_data: Vec::new(),
+        }
+    }
+}
+
+impl Writeback {
+    pub fn rd_data_str(&self) -> String {
+        let lanes: Vec<String> = self.rd_data.iter().map(|lrd| {
+            match lrd {
+                Some(value) => format!("0x{:x}", value),
+                None => ".".to_string(),
+            }
+        }).collect();
+        format!("[{}]", lanes.join(","))
+    }
+
+    pub fn num_rd_data(&self) -> usize {
+        self.rd_data.iter().map(|lrd| lrd.is_some()).count()
+    }
+}
+
 impl Warp {
     pub fn new(config: Arc<MuonConfig>, logger: &Arc<Logger>) -> Warp {
         let num_lanes = config.num_lanes;
@@ -60,8 +95,8 @@ impl Warp {
         format!("core {} warp {}", self.conf().lane_config.core_id, self.conf().lane_config.warp_id)
     }
 
-    pub fn execute(&mut self, schedule: Schedule,
-                   scheduler: &mut Scheduler, neutrino: &mut Neutrino) {
+    pub fn frontend(&mut self, schedule: Schedule) -> InstBufEntry {
+        // fetch
         let inst_data = *GMEM.write()
             .expect("gmem poisoned")
             .read::<8>(schedule.pc as usize)
@@ -72,22 +107,52 @@ impl Warp {
             c.emu_access(0xcc4, schedule.mask);
         });
 
-        let writeback = ExecuteUnit::execute(DecodeUnit::decode(inst_data, schedule.pc),
-             self.conf().lane_config.core_id,
+        // decode
+        let inst = DecodeUnit::decode(inst_data, schedule.pc);
+        let tmask = schedule.mask;
+        InstBufEntry { inst, tmask }
+    }
+
+    pub fn backend(&mut self, ibuf: &InstBufEntry, scheduler: &mut Scheduler, neutrino: &mut Neutrino) {
+        let inst = ibuf.inst;
+        let tmask = ibuf.tmask;
+        let core_id = self.conf().lane_config.core_id;
+        let mut rf = self.base.state.reg_file.iter_mut().collect::<Vec<_>>();
+        let mut csrf = self.base.state.csr_file.iter_mut().collect::<Vec<_>>();
+
+        let writeback = ExecuteUnit::execute(inst,
+             core_id,
              self.wid,
-             schedule.mask,
-             &mut self.base.state.reg_file.iter_mut().collect::<Vec<_>>(),
-             &mut self.base.state.csr_file.iter_mut().collect::<Vec<_>>(),
+             tmask,
+             &mut rf,
+             &mut csrf,
              scheduler,
              neutrino,
         );
 
+        Self::writeback(&writeback, &mut rf);
+
         info!(self.logger, "@t={} [{}] PC=0x{:08x}, rd={:3}, data=[{} lanes valid]",
-            self.base.cycle,
-            self.name(),
-            schedule.pc,
-            writeback.rd_addr,
-            // writeback.rd_data_str(),
-            writeback.num_rd_data());
+              self.base.cycle,
+              self.name(),
+              inst.pc,
+              writeback.rd_addr,
+              // writeback.rd_data_str(),
+              writeback.num_rd_data());
+    }
+
+    /// Fast-path that fuses frontend/backend for every warp instead of two-stage schedule/ibuf
+    /// iteration.
+    pub fn execute(&mut self, schedule: Schedule,
+                   scheduler: &mut Scheduler, neutrino: &mut Neutrino) {
+        let ibuf = self.frontend(schedule.clone());
+        self.backend(&ibuf, scheduler, neutrino);
+    }
+
+    pub fn writeback(wb: &Writeback, rf: &mut Vec<&mut RegFile>) {
+        let rd_addr = wb.rd_addr;
+        rf.iter_mut().zip(wb.rd_data.iter()).for_each(|(lrf, ldata)| {
+            ldata.map(|data| lrf.write_gpr(rd_addr, data));
+        });
     }
 }

@@ -24,6 +24,7 @@ pub struct SchedulerState {
     ipdom_stack: Vec<VecDeque<IpdomEntry>>,
 }
 
+/// Per-warp info of which instruction to fetch next
 #[derive(Debug, Default, Clone)]
 pub struct Schedule {
     pub pc: u32,

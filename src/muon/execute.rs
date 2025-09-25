@@ -11,42 +11,8 @@ use crate::utils::BitSlice;
 use phf::phf_map;
 use crate::muon::csr::CSRFile;
 use crate::muon::scheduler::Scheduler;
+use crate::muon::warp::Writeback;
 use crate::neutrino::neutrino::Neutrino;
-
-#[derive(Debug)]
-pub struct Writeback {
-    pub inst: DecodedInst,
-    pub rd_addr: u8,
-    pub rd_data: Vec<Option<u32>>,
-}
-
-// not deriving default here since if this changes in the future
-// there needs to be a conscious adjustment
-impl Default for Writeback {
-    fn default() -> Self {
-        Writeback {
-            inst: Default::default(),
-            rd_addr: 0,
-            rd_data: Vec::new(),
-        }
-    }
-}
-
-impl Writeback {
-    pub fn rd_data_str(&self) -> String {
-        let lanes: Vec<String> = self.rd_data.iter().map(|lrd| {
-            match lrd {
-                Some(value) => format!("0x{:x}", value),
-                None => ".".to_string(),
-            }
-        }).collect();
-        format!("[{}]", lanes.join(","))
-    }
-
-    pub fn num_rd_data(&self) -> usize {
-        self.rd_data.iter().map(|lrd| lrd.is_some()).count()
-    }
-}
 
 #[derive(Debug, Clone)]
 pub struct Opcode;
@@ -247,7 +213,7 @@ impl ExecuteUnit {
             _ => { panic!("unreachable"); }
         };
 
-        rf.write_gpr(decoded_inst.rd, rd_data.expect("unimplemented"));
+        // rf.write_gpr(decoded_inst.rd, rd_data.expect("unimplemented"));
         rd_data
     }
 
@@ -385,7 +351,7 @@ impl ExecuteUnit {
             _ => { panic!("unreachable"); }
         };
 
-        rf.write_gpr(decoded_inst.rd, rd_data.expect("unimplemented"));
+        // rf.write_gpr(decoded_inst.rd, rd_data.expect("unimplemented"));
         rd_data
     }
 
@@ -448,7 +414,7 @@ impl ExecuteUnit {
         // info!("load f3={} M[0x{:08x}] -> raw 0x{:08x} masked 0x{:08x}",
         //         decoded_inst.f3, load_addr, raw_load, masked_load);
 
-        rf.write_gpr(decoded_inst.rd, masked_load);
+        // rf.write_gpr(decoded_inst.rd, masked_load);
         Some(masked_load)
     }
 
@@ -513,7 +479,7 @@ impl ExecuteUnit {
             panic!("unimplemented thread mask write using csr");
         }
         let old_val = csr.user_access(addr, new_val, csr_type);
-        rf.write_gpr(decoded_inst.rd, old_val);
+        // rf.write_gpr(decoded_inst.rd, old_val);
         debug!("csr read address {:04x} => value {}", addr, old_val);
 
         Some(old_val)
@@ -597,8 +563,8 @@ impl ExecuteUnit {
             }
             Opcode::JAL => {
                 scheduler.take_branch(wid, decoded.pc.wrapping_add(decoded.imm32));
-                Self::collect_lanes(|lrf: &mut RegFile| {
-                    lrf.write_gpr(decoded.rd, decoded.pc + 8);
+                Self::collect_lanes(|_| {
+                    // lrf.write_gpr(decoded.rd, decoded.pc + 8);
                     Some(decoded.pc + 8)
                 }, tmask, rf)
             }
@@ -606,7 +572,7 @@ impl ExecuteUnit {
                 let target = rf[first_lid].read_gpr(decoded.rs1_addr).wrapping_add(decoded.imm32);
                 scheduler.take_branch(wid, target);
                 Self::collect_lanes(|lrf: &mut RegFile| {
-                    lrf.write_gpr(decoded.rd, decoded.pc + 8);
+                    // lrf.write_gpr(decoded.rd, decoded.pc + 8);
                     Some(decoded.pc + 8)
                 }, tmask, rf)
             }
