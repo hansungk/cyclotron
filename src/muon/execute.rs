@@ -213,7 +213,6 @@ impl ExecuteUnit {
             _ => { panic!("unreachable"); }
         };
 
-        // rf.write_gpr(decoded_inst.rd, rd_data.expect("unimplemented"));
         rd_data
     }
 
@@ -351,7 +350,6 @@ impl ExecuteUnit {
             _ => { panic!("unreachable"); }
         };
 
-        // rf.write_gpr(decoded_inst.rd, rd_data.expect("unimplemented"));
         rd_data
     }
 
@@ -414,7 +412,6 @@ impl ExecuteUnit {
         // info!("load f3={} M[0x{:08x}] -> raw 0x{:08x} masked 0x{:08x}",
         //         decoded_inst.f3, load_addr, raw_load, masked_load);
 
-        // rf.write_gpr(decoded_inst.rd, masked_load);
         Some(masked_load)
     }
 
@@ -479,7 +476,6 @@ impl ExecuteUnit {
             panic!("unimplemented thread mask write using csr");
         }
         let old_val = csr.user_access(addr, new_val, csr_type);
-        // rf.write_gpr(decoded_inst.rd, old_val);
         debug!("csr read address {:04x} => value {}", addr, old_val);
 
         Some(old_val)
@@ -518,7 +514,7 @@ impl ExecuteUnit {
     }
 
     #[inline]
-    fn collect_lanes<F>(func: F, tmask: u32, rf: &mut Vec<&mut RegFile>) -> Vec<Option<u32>>
+    fn execute_lanes<F>(func: F, tmask: u32, rf: &mut Vec<&mut RegFile>) -> Vec<Option<u32>>
     where
         F: Fn(&mut RegFile) -> Option<u32>
     {
@@ -550,10 +546,10 @@ impl ExecuteUnit {
         let empty = vec!(None::<u32>; num_lanes);
         let collected_rds = match decoded.opcode {
             Opcode::OP | Opcode::OP_IMM | Opcode::LUI | Opcode::AUIPC => {
-                Self::collect_lanes(|lrf| ExecuteUnit::alu(&decoded, lrf), tmask, rf)
+                Self::execute_lanes(|lrf| ExecuteUnit::alu(&decoded, lrf), tmask, rf)
             }
             Opcode::OP_FP | Opcode::MADD | Opcode::MSUB | Opcode::NM_ADD | Opcode::NM_SUB => {
-                Self::collect_lanes(|lrf| ExecuteUnit::fpu(&decoded, lrf), tmask, rf)
+                Self::execute_lanes(|lrf| ExecuteUnit::fpu(&decoded, lrf), tmask, rf)
             }
             Opcode::BRANCH => {
                 if let Some(target) = ExecuteUnit::branch(&decoded, rf[first_lid]) {
@@ -563,24 +559,18 @@ impl ExecuteUnit {
             }
             Opcode::JAL => {
                 scheduler.take_branch(wid, decoded.pc.wrapping_add(decoded.imm32));
-                Self::collect_lanes(|_| {
-                    // lrf.write_gpr(decoded.rd, decoded.pc + 8);
-                    Some(decoded.pc + 8)
-                }, tmask, rf)
+                Self::execute_lanes(|_| { Some(decoded.pc + 8) }, tmask, rf)
             }
             Opcode::JALR => {
                 let target = rf[first_lid].read_gpr(decoded.rs1_addr).wrapping_add(decoded.imm32);
                 scheduler.take_branch(wid, target);
-                Self::collect_lanes(|lrf: &mut RegFile| {
-                    // lrf.write_gpr(decoded.rd, decoded.pc + 8);
-                    Some(decoded.pc + 8)
-                }, tmask, rf)
+                Self::execute_lanes(|_| { Some(decoded.pc + 8) }, tmask, rf)
             }
             Opcode::LOAD => {
-                Self::collect_lanes(|lrf| ExecuteUnit::load(&decoded, lrf), tmask, rf)
+                Self::execute_lanes(|lrf| ExecuteUnit::load(&decoded, lrf), tmask, rf)
             }
             Opcode::STORE => {
-                Self::collect_lanes(|lrf| ExecuteUnit::store(&decoded, lrf), tmask, rf)
+                Self::execute_lanes(|lrf| ExecuteUnit::store(&decoded, lrf), tmask, rf)
             }
             Opcode::MISC_MEM => {
                 let imp = match decoded.f3 {

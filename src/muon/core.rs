@@ -1,12 +1,11 @@
 use std::sync::Arc;
-use log::debug;
 use crate::sim::log::Logger;
 use crate::info;
 use crate::base::{behavior::*, module::*};
 use crate::muon::config::{LaneConfig, MuonConfig};
 use crate::muon::scheduler::{Schedule, Scheduler};
 use crate::muon::warp::Warp;
-use crate::muon::decode::{InstBuf, InstBufEntry};
+use crate::muon::decode::InstBuf;
 use crate::neutrino::neutrino::Neutrino;
 
 #[derive(Debug, Default)]
