@@ -25,6 +25,13 @@ pub struct CyclotronArgs {
     pub gen_trace: Option<bool>,
 }
 
+pub fn read_toml(filepath: &str) -> String {
+    std::fs::read_to_string(filepath).unwrap_or_else(|err| {
+        eprintln!("failed to read config file: {}", err);
+        std::process::exit(1);
+    })
+}
+
 /// Make a Sim object from the TOML configuration.
 /// If `cli_args` is given, override TOML options with CLI arguments.
 pub fn make_sim(toml_string: &str, cli_args: Option<CyclotronArgs>) -> Sim {
