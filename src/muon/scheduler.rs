@@ -61,7 +61,7 @@ impl Scheduler {
         me
     }
 
-    pub fn spawn_warp(&mut self) {
+    pub fn spawn_single_warp(&mut self) {
         let all_ones = u32::MAX; // 0xFFFF
         self.state().thread_masks = [all_ones].repeat(self.conf().num_warps);
         self.base.state.active_warps = 1;

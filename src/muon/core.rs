@@ -43,10 +43,9 @@ impl MuonCore {
         core
     }
 
-    /// Spawn a warp in this core.  Invoked by the command processor to schedule a threadblock to
-    /// the cluster.
-    pub fn spawn_warp(&mut self) {
-        self.scheduler.spawn_warp()
+    /// Spawn a single warp to this core.
+    pub fn spawn_single_warp(&mut self) {
+        self.scheduler.spawn_single_warp()
     }
 
     // TODO: This should differentiate between different threadblocks.
@@ -56,7 +55,7 @@ impl MuonCore {
 
     pub fn schedule(&mut self) -> Vec<Option<Schedule>> {
         let schedules = (0..self.conf().num_warps)
-            .map(|wid| self.scheduler.get_schedule(wid))
+            .map(|wid| { self.scheduler.get_schedule(wid) })
             .collect::<Vec<_>>();
         schedules
     }

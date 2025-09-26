@@ -34,7 +34,7 @@ impl Cluster {
         );
         info!("cluster {}: scheduled a threadblock", self.id);
         for core in &mut self.cores {
-            core.spawn_warp();
+            core.spawn_single_warp();
         }
         self.scheduled_threadblocks += 1;
     }

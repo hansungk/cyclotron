@@ -35,6 +35,10 @@ impl Logger {
         Logger { level }
     }
 
+    pub fn silent() -> Self {
+        Logger { level: LogLevel::NONE }
+    }
+
     pub fn log(&self, level: LogLevel, args: std::fmt::Arguments<'_>) {
         if level > self.level {
             return;
