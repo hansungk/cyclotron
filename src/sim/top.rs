@@ -34,11 +34,13 @@ impl Sim {
             },
             mem_config,
         }), &logger);
-        let sim = Sim {
+
+        let mut sim = Sim {
             config: sim_config,
             top,
             logger,
         };
+        sim.top.reset();
         sim
     }
 

@@ -1,9 +1,9 @@
-use clap::Parser;
 use crate::muon::config::MuonConfig;
 use crate::neutrino::config::NeutrinoConfig;
 use crate::sim::config::{Config, MemConfig, SimConfig};
 use crate::sim::top::Sim;
-use std::path::PathBuf;
+use clap::Parser;
+use std::path::{Path, PathBuf};
 use toml::Table;
 
 #[derive(Parser)]
@@ -25,7 +25,7 @@ pub struct CyclotronArgs {
     pub gen_trace: Option<bool>,
 }
 
-pub fn read_toml(filepath: &str) -> String {
+pub fn read_toml(filepath: &Path) -> String {
     std::fs::read_to_string(filepath).unwrap_or_else(|err| {
         eprintln!("failed to read config file: {}", err);
         std::process::exit(1);
