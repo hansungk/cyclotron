@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use crate::sim::log::Logger;
 use crate::info;
 use crate::base::{behavior::*, module::*};
@@ -7,6 +7,7 @@ use crate::muon::scheduler::{Schedule, Scheduler};
 use crate::muon::warp::Warp;
 use crate::muon::decode::InstBuf;
 use crate::neutrino::neutrino::Neutrino;
+use crate::sim::toy_mem::ToyMemory;
 
 #[derive(Debug, Default)]
 pub struct MuonState {}
@@ -20,7 +21,7 @@ pub struct MuonCore {
 }
 
 impl MuonCore {
-    pub fn new(config: Arc<MuonConfig>, id: usize, logger: &Arc<Logger>) -> Self {
+    pub fn new(config: Arc<MuonConfig>, id: usize, logger: &Arc<Logger>, gmem: Arc<RwLock<ToyMemory>>) -> Self {
         let num_warps = config.num_warps;
         let mut core = MuonCore {
             base: Default::default(),
@@ -33,7 +34,7 @@ impl MuonCore {
                     ..config.lane_config
                 },
                 ..*config
-            }), logger)).collect(),
+            }), logger, gmem.clone())).collect(),
             logger: logger.clone(),
         };
 

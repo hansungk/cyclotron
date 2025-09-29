@@ -8,11 +8,9 @@ use crate::sim::elf::ElfBackedMem;
 use crate::sim::toy_mem::ToyMemory;
 use crate::sim::log::Logger;
 use std::path::Path;
-use std::sync::{Arc, LazyLock, RwLock};
+use std::sync::{Arc, RwLock};
 use serde::Deserialize;
 use crate::neutrino::config::NeutrinoConfig;
-
-pub static GMEM: LazyLock<RwLock<ToyMemory>> = LazyLock::new(|| RwLock::new(ToyMemory::default()));
 
 pub struct Sim {
     pub config: SimConfig,
@@ -83,6 +81,7 @@ pub struct CyclotronTop {
     pub cproc: CommandProcessor,
     pub clusters: Vec<Cluster>,
     pub timeout: u64,
+    pub gmem: Arc<RwLock<ToyMemory>>,
 }
 
 impl CyclotronTop {
@@ -91,22 +90,27 @@ impl CyclotronTop {
         let imem = Arc::new(RwLock::new(ElfBackedMem::new(&elf_path)));
         let mut clusters = Vec::new();
         let cluster_config = Arc::new(config.cluster_config.clone());
+
+        let gmem = Arc::new(RwLock::new(ToyMemory::default()));
+        
+        gmem.write()
+            .expect("gmem poisoned")
+            .set_fallthrough(Arc::clone(&imem));
+
+        gmem.write()
+            .expect("gmem poisoned")
+            .set_config(config.mem_config);
+
         for id in 0..1 {
-            clusters.push(Cluster::new(cluster_config.clone(), id, logger));
+            clusters.push(Cluster::new(cluster_config.clone(), id, logger, gmem.clone()));
         }
         let top = CyclotronTop {
             cproc: CommandProcessor::new(Arc::new(config.cluster_config.muon_config.clone()),
                 1 /*FIXME: properly get thread dimension*/),
             clusters,
             timeout: config.timeout,
+            gmem,
         };
-        GMEM.write()
-            .expect("gmem poisoned")
-            .set_fallthrough(Arc::clone(&imem));
-
-        GMEM.write()
-            .expect("gmem poisoned")
-            .set_config(config.mem_config);
 
         top
     }
@@ -136,7 +140,7 @@ impl ModuleBehaviors for CyclotronTop {
     }
 
     fn reset(&mut self) {
-        GMEM.write().expect("lock poisoned").reset();
+        self.gmem.write().expect("lock poisoned").reset();
         self.clusters.iter_mut().for_each(Cluster::reset);
     }
 }

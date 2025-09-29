@@ -1,11 +1,11 @@
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::fmt::Debug;
 use num_derive::FromPrimitive;
 use num_traits::ToPrimitive;
 pub use num_traits::WrappingAdd;
 use crate::base::mem::HasMemory;
 use crate::muon::decode::{sign_ext, DecodedInst, RegFile};
-use crate::sim::top::GMEM;
+use crate::sim::toy_mem::ToyMemory;
 use log::debug;
 use crate::utils::BitSlice;
 use phf::phf_map;
@@ -373,7 +373,7 @@ impl ExecuteUnit {
         taken.then_some(branch_target)
     }
 
-    pub fn load(decoded_inst: &DecodedInst, rf: &mut RegFile) -> Option<u32> {
+    pub fn load(decoded_inst: &DecodedInst, rf: &mut RegFile, gmem: &mut Arc<RwLock<ToyMemory>>) -> Option<u32> {
         // TODO: simplify this to have the phf_map only provide the instruction name
         static INSTS: phf::Map<u8, InstImp<2>> = phf_map! {
             0u8 => InstImp("lb",  |[a, b]| { a.wrapping_add(b) }),
@@ -396,7 +396,7 @@ impl ExecuteUnit {
         let load_addr = alu_result >> 2 << 2;
         assert_eq!(alu_result >> 2, (alu_result + (1 << load_size) - 1) >> 2, "misaligned load");
 
-        let load_data_bytes = GMEM.write().expect("lock poisoned").read::<4>(
+        let load_data_bytes = gmem.write().expect("lock poisoned").read::<4>(
             load_addr as usize).expect("store failed");
 
         let raw_load = u32::from_le_bytes(*load_data_bytes);
@@ -415,7 +415,7 @@ impl ExecuteUnit {
         Some(masked_load)
     }
 
-    pub fn store(decoded_inst: &DecodedInst, rf: &RegFile) -> Option<u32> {
+    pub fn store(decoded_inst: &DecodedInst, rf: &RegFile, gmem: &mut Arc<RwLock<ToyMemory>>) -> Option<u32> {
         static INSTS: phf::Map<u8, InstImp<2>> = phf_map! {
             0u8 => InstImp("sb", |[a, imm]| { a.wrapping_add(imm) }),
             1u8 => InstImp("sh", |[a, imm]| { a.wrapping_add(imm) }),
@@ -430,7 +430,7 @@ impl ExecuteUnit {
             ]))
         }).expect("unimplemented");
 
-        let mut gmem = GMEM.write().expect("lock poisoned");
+        let mut gmem = gmem.write().expect("lock poisoned");
         let addr = alu_result as usize;
         let data = rf.read_gpr(decoded_inst.rs2_addr).to_le_bytes();
         match decoded_inst.f3 & 3 {
@@ -514,9 +514,9 @@ impl ExecuteUnit {
     }
 
     #[inline]
-    fn execute_lanes<F>(func: F, tmask: u32, rf: &mut Vec<&mut RegFile>) -> Vec<Option<u32>>
+    fn execute_lanes<F>(mut func: F, tmask: u32, rf: &mut Vec<&mut RegFile>) -> Vec<Option<u32>>
     where
-        F: Fn(&mut RegFile) -> Option<u32>
+        F: FnMut(&mut RegFile) -> Option<u32>
     {
         rf.iter_mut().enumerate().map(|(i, lrf)| {
             match tmask.bit(i) {
@@ -528,7 +528,7 @@ impl ExecuteUnit {
 
     pub fn execute(decoded: DecodedInst, cid: usize, wid: usize, tmask: u32,
                    rf: &mut Vec<&mut RegFile>, csrf: &mut Vec<&mut CSRFile>,
-                   scheduler: &mut Scheduler, neutrino: &mut Neutrino) -> Writeback {
+                   scheduler: &mut Scheduler, neutrino: &mut Neutrino, gmem: &mut Arc<RwLock<ToyMemory>>) -> Writeback {
         // let isa = ISA::get_insts();
         // let (op, alu_result, actions) = isa.iter().map(|inst_group| {
         //     inst_group.execute(&decoded)
@@ -567,10 +567,10 @@ impl ExecuteUnit {
                 Self::execute_lanes(|_| { Some(decoded.pc + 8) }, tmask, rf)
             }
             Opcode::LOAD => {
-                Self::execute_lanes(|lrf| ExecuteUnit::load(&decoded, lrf), tmask, rf)
+                Self::execute_lanes(|lrf| ExecuteUnit::load(&decoded, lrf, gmem), tmask, rf)
             }
             Opcode::STORE => {
-                Self::execute_lanes(|lrf| ExecuteUnit::store(&decoded, lrf), tmask, rf)
+                Self::execute_lanes(|lrf| ExecuteUnit::store(&decoded, lrf, gmem), tmask, rf)
             }
             Opcode::MISC_MEM => {
                 let imp = match decoded.f3 {

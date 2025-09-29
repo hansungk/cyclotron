@@ -6,10 +6,10 @@ use crate::muon::csr::CSRFile;
 use crate::muon::decode::{DecodeUnit, DecodedInst, InstBufEntry, RegFile};
 use crate::muon::execute::ExecuteUnit;
 use crate::muon::scheduler::{Schedule, Scheduler};
-use crate::sim::top::GMEM;
 use crate::sim::log::Logger;
 use crate::info;
-use std::sync::Arc;
+use crate::sim::toy_mem::ToyMemory;
+use std::sync::{Arc, RwLock};
 use crate::neutrino::neutrino::Neutrino;
 
 #[derive(Debug, Default)]
@@ -22,6 +22,7 @@ pub struct Warp {
     base: ModuleBase<WarpState, MuonConfig>,
     pub wid: usize,
     logger: Arc<Logger>,
+    gmem: Arc<RwLock<ToyMemory>>,
 }
 
 impl ModuleBehaviors for Warp {
@@ -74,7 +75,7 @@ impl Writeback {
 }
 
 impl Warp {
-    pub fn new(config: Arc<MuonConfig>, logger: &Arc<Logger>) -> Warp {
+    pub fn new(config: Arc<MuonConfig>, logger: &Arc<Logger>, gmem: Arc<RwLock<ToyMemory>>) -> Warp {
         let num_lanes = config.num_lanes;
         let mut me = Warp {
             base: ModuleBase {
@@ -86,6 +87,7 @@ impl Warp {
             },
             wid: config.lane_config.warp_id,
             logger: logger.clone(),
+            gmem,
         };
         me.init_conf(config);
         me
@@ -97,7 +99,7 @@ impl Warp {
 
     pub fn frontend(&mut self, schedule: Schedule) -> InstBufEntry {
         // fetch
-        let inst_data = *GMEM.write()
+        let inst_data = *self.gmem.write()
             .expect("gmem poisoned")
             .read::<8>(schedule.pc as usize)
             .expect("failed to fetch instruction");
@@ -128,6 +130,7 @@ impl Warp {
              &mut csrf,
              scheduler,
              neutrino,
+             &mut self.gmem,
         );
 
         Self::writeback(&writeback, &mut rf);

@@ -8,6 +8,6 @@ io_cout_addr = 0xFF080000
 io_cout_size = 64
 
 [sim]
-elf = "test/vecadd.elf"
+elf = "test/pathtracer.elf"
 timeout = 1000000
 trace = false

@@ -1,7 +1,8 @@
 use crate::base::behavior::*;
 use crate::muon::core::MuonCore;
+use crate::sim::toy_mem::ToyMemory;
 use log::info;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use crate::neutrino::neutrino::Neutrino;
 use crate::sim::top::ClusterConfig;
 use crate::sim::log::Logger;
@@ -14,10 +15,10 @@ pub struct Cluster {
 }
 
 impl Cluster {
-    pub fn new(config: Arc<ClusterConfig>, id: usize, logger: &Arc<Logger>) -> Self {
+    pub fn new(config: Arc<ClusterConfig>, id: usize, logger: &Arc<Logger>, gmem: Arc<RwLock<ToyMemory>>) -> Self {
         let mut cores = Vec::new();
         for cid in 0..config.muon_config.num_cores {
-            cores.push(MuonCore::new(Arc::new(config.muon_config), cid, logger));
+            cores.push(MuonCore::new(Arc::new(config.muon_config), cid, logger, gmem.clone()));
         }
         Cluster {
             id,
