@@ -62,6 +62,15 @@ impl Sim {
         }
         Err(0)
     }
+
+    /// Advances all cores by one instruction.
+    pub fn tick(&mut self) {
+        self.top.tick_one();
+        if self.top.finished() {
+            return;
+        }
+        // TODO: report cycle
+    }
 }
 
 pub struct CyclotronConfig {

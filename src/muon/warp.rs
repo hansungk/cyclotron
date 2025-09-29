@@ -42,16 +42,16 @@ module!(Warp, WarpState, MuonConfig,
 #[derive(Debug)]
 pub struct Writeback {
     pub inst: DecodedInst,
+    pub tmask: u32,
     pub rd_addr: u8,
     pub rd_data: Vec<Option<u32>>,
 }
 
-// not deriving default here since if this changes in the future
-// there needs to be a conscious adjustment
 impl Default for Writeback {
     fn default() -> Self {
         Writeback {
             inst: Default::default(),
+            tmask: 0,
             rd_addr: 0,
             rd_data: Vec::new(),
         }
@@ -115,7 +115,7 @@ impl Warp {
         InstBufEntry { inst, tmask }
     }
 
-    pub fn backend(&mut self, ibuf: &InstBufEntry, scheduler: &mut Scheduler, neutrino: &mut Neutrino) {
+    pub fn backend(&mut self, ibuf: &InstBufEntry, scheduler: &mut Scheduler, neutrino: &mut Neutrino) -> Writeback {
         let inst = ibuf.inst;
         let tmask = ibuf.tmask;
         let core_id = self.conf().lane_config.core_id;
@@ -142,6 +142,8 @@ impl Warp {
               writeback.rd_addr,
               // writeback.rd_data_str(),
               writeback.num_rd_data());
+
+        writeback
     }
 
     /// Fast-path that fuses frontend/backend for every warp instead of two-stage schedule/ibuf

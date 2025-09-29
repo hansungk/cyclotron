@@ -1,5 +1,6 @@
 use std::sync::{Arc, RwLock};
 use crate::sim::log::Logger;
+use crate::sim::trace::Tracer;
 use crate::info;
 use crate::base::{behavior::*, module::*};
 use crate::muon::config::{LaneConfig, MuonConfig};
@@ -13,11 +14,12 @@ use crate::sim::toy_mem::ToyMemory;
 pub struct MuonState {}
 
 pub struct MuonCore {
-    pub base: ModuleBase<MuonState, MuonConfig>,
+    base: ModuleBase<MuonState, MuonConfig>,
     pub id: usize,
     pub scheduler: Scheduler,
-    pub warps: Vec<Warp>,
+    warps: Vec<Warp>,
     logger: Arc<Logger>,
+    tracer: Arc<Tracer>,
 }
 
 impl MuonCore {
@@ -36,6 +38,7 @@ impl MuonCore {
                 ..*config
             }), logger, gmem.clone())).collect(),
             logger: logger.clone(),
+            tracer: Arc::new(Tracer::new(&config)),
         };
 
         info!(core.logger, "muon core {} instantiated!", config.lane_config.core_id);
@@ -71,15 +74,20 @@ impl MuonCore {
                 warp.frontend(s.clone())
             })
         });
+
         InstBuf(ibuf_entries.collect())
     }
 
     pub fn backend(&mut self, ibuf: &InstBuf, neutrino: &mut Neutrino) {
-        self.warps.iter_mut().zip(&ibuf.0).for_each(|(warp, ibuf)| {
+        let writebacks = self.warps.iter_mut().zip(&ibuf.0).map(|(warp, ibuf)| {
             ibuf.as_ref().map(|ib| {
-                warp.backend(ib, &mut self.scheduler, neutrino);
-            });
+                warp.backend(ib, &mut self.scheduler, neutrino)
+            })
         });
+
+        let tracer = Arc::get_mut(&mut self.tracer).expect("failed to get tracer");
+        tracer.trace(&writebacks.collect());
+
         self.scheduler.tick_one();
         self.warps.iter_mut().for_each(Warp::tick_one);
     }
