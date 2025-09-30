@@ -98,4 +98,26 @@ impl ToyMemory {
     pub fn reset(&mut self) {
         self.mem.clear();
     }
+
+    pub fn read_byte(&mut self, addr: usize) -> Option<u8> {
+        let word_addr = addr & !0x3;
+        let byte_index = (addr & 0x3) as usize;
+
+        let word_bytes = self.read::<4>(word_addr)?;
+        Some(word_bytes[byte_index])
+    }
+
+    pub fn write_byte(&mut self, addr: usize, value: u8) -> Result<(), String> {
+        let word_addr = addr & !0x3;
+        let byte_index = (addr & 0x3) as usize;
+
+        let mut word_bytes = self
+            .read::<4>(word_addr)
+            .map(|bytes| bytes.as_ref().to_vec())
+            .unwrap_or_else(|| vec![0; 4]);
+
+        word_bytes[byte_index] = value;
+
+        self.write(word_addr, &word_bytes)
+    }
 }
