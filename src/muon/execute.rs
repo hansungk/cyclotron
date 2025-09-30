@@ -435,13 +435,13 @@ impl ExecuteUnit {
         let data = rf.read_gpr(decoded_inst.rs2_addr).to_le_bytes();
         match decoded_inst.f3 & 3 {
             0 => {
-                gmem.write::<1>(addr, Arc::new(data[0..1].try_into().unwrap()))
+                gmem.write(addr, &data[0..1].to_vec())
             },
             1 => {
-                gmem.write::<2>(addr, Arc::new(data[0..2].try_into().unwrap()))
+                gmem.write(addr, &data[0..2].to_vec())
             },
             2 => {
-                gmem.write::<4>(addr, Arc::new(data[0..4].try_into().unwrap()))
+                gmem.write(addr, &data[0..4].to_vec())
             },
             _ => panic!("unimplemented store type"),
         }.expect("store failed");

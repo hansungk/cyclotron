@@ -17,7 +17,7 @@ impl HasMemory for ElfBackedMem {
         })
     }
 
-    fn write<const N: usize>(&mut self, _addr: usize, _data: Arc<[u8; N]>) -> Result<(), String> {
+    fn write(&mut self, _addr: usize, _data: &Vec<u8>) -> Result<(), String> {
         Err("elf backed memory cannot be written to".to_string())
     }
 }

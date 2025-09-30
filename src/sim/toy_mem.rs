@@ -46,7 +46,7 @@ impl HasMemory for ToyMemory {
         Some(Arc::new(byte_array.try_into().unwrap()))
     }
 
-    fn write<const N: usize>(&mut self, addr: usize, data: Arc<[u8; N]>) -> Result<(), String> {
+    fn write(&mut self, addr: usize, data: &Vec<u8>) -> Result<(), String> {
         // Check if this is a write to the I/O console address range
         if let Some(config) = &self.config {
             if addr >= config.io_cout_addr && addr < config.io_cout_addr + config.io_cout_size {
@@ -63,8 +63,9 @@ impl HasMemory for ToyMemory {
             }
         }
 
-        if N < 4 {
-            assert!((addr % 3) + N - 1 < 4, "misaligned store across word boundary");
+        let n: usize = data.len();
+        if n < 4 {
+            assert!((addr % 3) + n - 1 < 4, "misaligned store across word boundary");
             let word_addr = addr >> 2 << 2;
             if !self.mem.contains_key(&word_addr) {
                 let read_value = u32::from_le_bytes(*(self.read::<4>(addr >> 2 << 2).unwrap()));
@@ -72,7 +73,7 @@ impl HasMemory for ToyMemory {
             }
             let curr = self.mem.entry(word_addr).or_insert(0u32);
 
-            for i in 0..N {
+            for i in 0..n {
                 let shift = ((addr & 3) + i) * 8;
                 if shift >= 32 {
                     return Err("sh across word boundary".into());
@@ -83,8 +84,8 @@ impl HasMemory for ToyMemory {
             
             Ok(())
         } else {
-            assert!((N % 4 == 0) && N > 0, "word sized requests only");
-            (0..N).step_by(4).for_each(|a| {
+            assert!((n % 4 == 0) && n > 0, "word sized requests only");
+            (0..n).step_by(4).for_each(|a| {
                 let write_slice = &data[a..a + 4];
                 self.mem.insert(addr + a, u32::from_le_bytes(write_slice.try_into().unwrap()));
             });
