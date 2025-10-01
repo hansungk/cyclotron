@@ -1,12 +1,13 @@
 use crate::muon::config::MuonConfig;
 use crate::muon::warp::Writeback;
+use std::collections::VecDeque;
 use std::iter::zip;
 
+/// Queues instruction traces from a core into a buffer, and provides a per-warp consume()
+/// interface to dequeue instructions from the buffer in program-order.
 pub struct Tracer {
     /// per-warp program-order buffer of lines
-    bufs: Vec<Vec<Line>>,
-    /// current lines being traced at the frontend
-    cursor: Vec<Line>,
+    bufs: Vec<VecDeque<Line>>,
 }
 
 #[derive(Default)]
@@ -35,16 +36,14 @@ impl Tracer {
     pub fn new(muon_config: &MuonConfig) -> Tracer {
         let mut tracer = Tracer {
             bufs: Vec::new(),
-            cursor: Vec::new(),
         };
         (0..muon_config.num_warps).for_each(|_| {
-            tracer.bufs.push(Vec::new());
-            tracer.cursor.push(Line::default());
+            tracer.bufs.push(VecDeque::new());
         });
         tracer
     }
 
-    pub fn trace(&mut self, writebacks: &Vec<Option<Writeback>>) {
+    pub fn record(&mut self, writebacks: &Vec<Option<Writeback>>) {
         zip(writebacks.iter(), self.bufs.as_mut_slice())
             .enumerate()
             .for_each(|(_wid, (wb, buf))| {
@@ -66,9 +65,13 @@ impl Tracer {
                         tmask: wb.tmask,
                         ..Line::default() // TODO: rs1/2/3/4_data
                     };
-                    buf.push(line);
+                    buf.push_back(line);
                     // println!("trace: pushed line to buf for warp={}; len={}", wid, buf.len());
                 }
             })
+    }
+
+    pub fn consume(&mut self, warp_id: usize) -> Option<Line> {
+        self.bufs[warp_id].pop_front()
     }
 }

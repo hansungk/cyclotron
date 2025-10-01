@@ -83,10 +83,10 @@ impl MuonCore {
             ibuf.as_ref().map(|ib| {
                 warp.backend(ib, &mut self.scheduler, neutrino)
             })
-        });
+        }).collect();
 
-        let tracer = Arc::get_mut(&mut self.tracer).expect("failed to get tracer");
-        tracer.trace(&writebacks.collect());
+        let tracer = self.get_tracer();
+        tracer.record(&writebacks);
 
         self.scheduler.tick_one();
         self.warps.iter_mut().for_each(Warp::tick_one);
@@ -96,6 +96,10 @@ impl MuonCore {
         let schedules = self.schedule();
         let ibuf = self.frontend(&schedules);
         self.backend(&ibuf, neutrino);
+    }
+
+    pub fn get_tracer(&mut self) -> &mut Tracer {
+        Arc::get_mut(&mut self.tracer).expect("failed to get tracer")
     }
 }
 

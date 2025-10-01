@@ -82,6 +82,16 @@ pub fn cyclotron_tick_rs(
     let mut context_guard = CELL.write().unwrap();
     let context = context_guard.as_mut().expect("DPI context not initialized!");
     let sim = &mut context.sim;
+    assert!(sim.top.clusters.len() == 1, "currently assumes model has 1 cluster and 1 core");
+    assert!(sim.top.clusters[0].cores.len() == 1, "currently assumes model has 1 cluster and 1 core");
+    let core = &mut sim.top.clusters[0].cores[0];
+
+    // TODO: match interface with DUT
+    // TODO: get warp from DUT, consume that warp's buffer from model, and do diff-test
+
+    let inst = core.get_tracer().consume(0);
+
+    sim.tick();
 
     let slice_a_ready = unsafe { std::slice::from_raw_parts(raw_a_ready, conf.num_lanes) };
     let slice_a_valid = unsafe { std::slice::from_raw_parts_mut(raw_a_valid, conf.num_lanes) };
