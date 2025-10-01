@@ -67,11 +67,11 @@ impl Scheduler {
         self.base.state.active_warps = 1;
     }
 
-    pub fn spawn_all_warps(&mut self, pc: u32) {
+    pub fn spawn_n_warps(&mut self, pc: u32, n: usize) {
         let all_ones = u32::MAX; // 0xFFFF
         self.state().thread_masks = [all_ones].repeat(self.conf().num_warps);
         self.state().pc = [pc].repeat(self.conf().num_warps);
-        self.base.state.active_warps = self.conf().num_warps as u32;
+        self.base.state.active_warps = n as u32;
     }
 
     pub fn take_branch(&mut self, wid: usize, target_pc: u32) {

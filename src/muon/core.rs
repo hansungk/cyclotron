@@ -52,8 +52,8 @@ impl MuonCore {
         self.scheduler.spawn_single_warp()
     }
 
-    pub fn spawn_all_warps(&mut self, pc: u32) {
-        self.scheduler.spawn_all_warps(pc)
+    pub fn spawn_n_warps(&mut self, pc: u32, n: usize) {
+        self.scheduler.spawn_n_warps(pc, n)
     }
 
     // TODO: This should differentiate between different threadblocks.
