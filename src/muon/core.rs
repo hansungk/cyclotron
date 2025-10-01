@@ -41,7 +41,7 @@ impl MuonCore {
             tracer: Arc::new(Tracer::new(&config)),
         };
 
-        info!(core.logger, "muon core {} instantiated!", config.lane_config.core_id);
+        info!(core.logger, "muon core {} instantiated!", id);
 
         core.init_conf(Arc::clone(&config));
         core
