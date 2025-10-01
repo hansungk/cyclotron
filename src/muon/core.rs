@@ -1,26 +1,31 @@
-use std::sync::Arc;
-use log::{debug, info};
+use std::sync::{Arc, RwLock};
+use crate::sim::log::Logger;
+use crate::sim::trace::Tracer;
+use crate::info;
 use crate::base::{behavior::*, module::*};
 use crate::muon::config::{LaneConfig, MuonConfig};
-use crate::muon::scheduler::Scheduler;
+use crate::muon::scheduler::{Schedule, Scheduler};
 use crate::muon::warp::Warp;
+use crate::muon::decode::InstBuf;
 use crate::neutrino::neutrino::Neutrino;
+use crate::sim::toy_mem::ToyMemory;
 
 #[derive(Debug, Default)]
 pub struct MuonState {}
 
-#[derive(Debug, Default)]
 pub struct MuonCore {
-    pub base: ModuleBase<MuonState, MuonConfig>,
+    base: ModuleBase<MuonState, MuonConfig>,
     pub id: usize,
     pub scheduler: Scheduler,
-    pub warps: Vec<Warp>,
+    warps: Vec<Warp>,
+    logger: Arc<Logger>,
+    tracer: Arc<Tracer>,
 }
 
 impl MuonCore {
-    pub fn new(config: Arc<MuonConfig>, id: usize) -> Self {
+    pub fn new(config: Arc<MuonConfig>, id: usize, logger: &Arc<Logger>, gmem: Arc<RwLock<ToyMemory>>) -> Self {
         let num_warps = config.num_warps;
-        let mut me = MuonCore {
+        let mut core = MuonCore {
             base: Default::default(),
             id,
             scheduler: Scheduler::new(Arc::clone(&config), id),
@@ -31,19 +36,24 @@ impl MuonCore {
                     ..config.lane_config
                 },
                 ..*config
-            }))).collect(),
+            }), logger, gmem.clone())).collect(),
+            logger: logger.clone(),
+            tracer: Arc::new(Tracer::new(&config)),
         };
 
-        info!("muon core {} instantiated!", config.lane_config.core_id);
+        info!(core.logger, "muon core {} instantiated!", id);
 
-        me.init_conf(Arc::clone(&config));
-        me
+        core.init_conf(Arc::clone(&config));
+        core
     }
 
-    /// Spawn a warp in this core.  Invoked by the command processor to schedule a threadblock to
-    /// the cluster.
-    pub fn spawn_warp(&mut self) {
-        self.scheduler.spawn_warp()
+    /// Spawn a single warp to this core.
+    pub fn spawn_single_warp(&mut self) {
+        self.scheduler.spawn_single_warp()
+    }
+
+    pub fn spawn_n_warps(&mut self, pc: u32, n: usize) {
+        self.scheduler.spawn_n_warps(pc, n)
     }
 
     // TODO: This should differentiate between different threadblocks.
@@ -51,21 +61,41 @@ impl MuonCore {
         self.scheduler.all_warps_retired()
     }
 
-    pub fn execute(&mut self, neutrino: &mut Neutrino) {
-        // important to gather all schedules before executing any
+    pub fn schedule(&mut self) -> Vec<Option<Schedule>> {
         let schedules = (0..self.conf().num_warps)
-            .map(|wid| self.scheduler.get_schedule(wid))
+            .map(|wid| { self.scheduler.get_schedule(wid) })
             .collect::<Vec<_>>();
-        self.warps.iter_mut().zip(schedules).for_each(|(warp, s)| {
-            if let Some(sched) = s {
-                debug!("warp {} schedule=0x{:08x}", warp.wid, sched.pc);
-                warp.execute(sched, &mut self.scheduler, neutrino);
-            }
+        schedules
+    }
+
+    pub fn frontend(&mut self, schedules: &Vec<Option<Schedule>>) -> InstBuf {
+        let ibuf_entries = self.warps.iter_mut().zip(schedules).map(|(warp, sched)| {
+            sched.as_ref().map(|s| {
+                warp.frontend(s.clone())
+            })
         });
+
+        InstBuf(ibuf_entries.collect())
+    }
+
+    pub fn backend(&mut self, ibuf: &InstBuf, neutrino: &mut Neutrino) {
+        let writebacks = self.warps.iter_mut().zip(&ibuf.0).map(|(warp, ibuf)| {
+            ibuf.as_ref().map(|ib| {
+                warp.backend(ib, &mut self.scheduler, neutrino)
+            })
+        });
+
+        let tracer = Arc::get_mut(&mut self.tracer).expect("failed to get tracer");
+        tracer.trace(&writebacks.collect());
+
         self.scheduler.tick_one();
-
         self.warps.iter_mut().for_each(Warp::tick_one);
+    }
 
+    pub fn execute(&mut self, neutrino: &mut Neutrino) {
+        let schedules = self.schedule();
+        let ibuf = self.frontend(&schedules);
+        self.backend(&ibuf, neutrino);
     }
 }
 

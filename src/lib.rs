@@ -1,6 +1,5 @@
-pub mod memfuzz;
-pub mod dpi;
 pub mod sim;
+pub mod ui;
 pub mod base;
 pub mod cluster;
 pub mod command_proc;
@@ -8,4 +7,6 @@ pub mod muon;
 pub mod builtin;
 pub mod utils;
 pub mod neutrino;
+pub mod dpi;
+pub mod memfuzz;
 pub mod timeq;

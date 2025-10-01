@@ -24,6 +24,13 @@ pub struct DecodedInst {
     pub raw: u64,
 }
 
+// per-warp
+pub struct InstBufEntry {
+    pub inst: DecodedInst,
+    pub tmask: u32,
+}
+pub struct InstBuf(pub Vec<Option<InstBufEntry>>);
+
 impl std::fmt::Display for DecodedInst {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(
@@ -56,6 +63,7 @@ impl Default for RegFileState {
     }
 }
 
+/// Register file for a single SIMT lane.
 #[derive(Debug, Default)]
 pub struct RegFile {
     base: ModuleBase<RegFileState, MuonConfig>,

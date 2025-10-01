@@ -1,42 +1,18 @@
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::fmt::Debug;
-use log::{debug, error, info};
 use num_derive::FromPrimitive;
 use num_traits::ToPrimitive;
 pub use num_traits::WrappingAdd;
 use crate::base::mem::HasMemory;
 use crate::muon::decode::{sign_ext, DecodedInst, RegFile};
-use crate::sim::top::GMEM;
+use crate::sim::toy_mem::ToyMemory;
+use log::debug;
 use crate::utils::BitSlice;
 use phf::phf_map;
 use crate::muon::csr::CSRFile;
 use crate::muon::scheduler::Scheduler;
+use crate::muon::warp::Writeback;
 use crate::neutrino::neutrino::Neutrino;
-
-#[derive(Debug)]
-pub struct Writeback {
-    pub inst: DecodedInst,
-    pub rd_addr: u8,
-    pub rd_data: u32,
-    pub set_pc: Option<u32>,
-    pub sfu_type: Option<SFUType>,
-    pub csr_type: Option<CSRType>,
-}
-
-// not deriving default here since if this changes in the future
-// there needs to be a conscious adjustment
-impl Default for Writeback {
-    fn default() -> Self {
-        Self {
-            inst: Default::default(),
-            rd_addr: 0,
-            rd_data: 0,
-            set_pc: None,
-            sfu_type: None,
-            csr_type: None,
-        }
-    }
-}
 
 #[derive(Debug, Clone)]
 pub struct Opcode;
@@ -151,12 +127,10 @@ pub struct InstDef<T> (
 pub struct ExecuteUnit;
 
 impl ExecuteUnit {
-
-    pub fn alu(decoded_inst: &DecodedInst, rf: &mut RegFile) {
+    pub fn alu(decoded_inst: &DecodedInst, rf: &mut RegFile) -> Option<u32> {
         fn check_zero(b: u32) -> bool {
             if b == 0 {
-                error!("divide by zero");
-                true
+                panic!("divide by zero");
             } else {
                 false
             }
@@ -239,13 +213,13 @@ impl ExecuteUnit {
             _ => { panic!("unreachable"); }
         };
 
-        rf.write_gpr(decoded_inst.rd, rd_data.expect("unimplemented"));
+        rd_data
     }
 
-    pub fn fpu(decoded_inst: &DecodedInst, rf: &mut RegFile) {
+    pub fn fpu(decoded_inst: &DecodedInst, rf: &mut RegFile) -> Option<u32> {
         fn fp_op(a: u32, b: u32, op: fn(f32, f32) -> f32) -> u32 {
             let result = op(f32::from_bits(a), f32::from_bits(b)).to_bits();
-            info!("result of the fp operation is {:08x}", result);
+            // info!("result of the fp operation is {:08x}", result);
             if [0xffc00000, 0x7fffffff, 0xffffffff].contains(&result) {
                 0x7fc00000 // risc-v only ever generates this qNaNf
             } else {
@@ -376,9 +350,10 @@ impl ExecuteUnit {
             _ => { panic!("unreachable"); }
         };
 
-        rf.write_gpr(decoded_inst.rd, rd_data.expect("unimplemented"));
+        rd_data
     }
 
+    /// Returns Some(target PC) if branch is taken, None otherwise.
     pub fn branch(decoded_inst: &DecodedInst, rf: &mut RegFile) -> Option<u32> {
         let rs1 = rf.read_gpr(decoded_inst.rs1_addr);
         let rs2 = rf.read_gpr(decoded_inst.rs2_addr);
@@ -398,7 +373,7 @@ impl ExecuteUnit {
         taken.then_some(branch_target)
     }
 
-    pub fn load(decoded_inst: &DecodedInst, rf: &mut RegFile) {
+    pub fn load(decoded_inst: &DecodedInst, rf: &mut RegFile, gmem: &mut Arc<RwLock<ToyMemory>>) -> Option<u32> {
         // TODO: simplify this to have the phf_map only provide the instruction name
         static INSTS: phf::Map<u8, InstImp<2>> = phf_map! {
             0u8 => InstImp("lb",  |[a, b]| { a.wrapping_add(b) }),
@@ -421,7 +396,7 @@ impl ExecuteUnit {
         let load_addr = alu_result >> 2 << 2;
         assert_eq!(alu_result >> 2, (alu_result + (1 << load_size) - 1) >> 2, "misaligned load");
 
-        let load_data_bytes = GMEM.write().expect("lock poisoned").read::<4>(
+        let load_data_bytes = gmem.write().expect("lock poisoned").read::<4>(
             load_addr as usize).expect("store failed");
 
         let raw_load = u32::from_le_bytes(*load_data_bytes);
@@ -429,18 +404,18 @@ impl ExecuteUnit {
         let sext = !decoded_inst.f3.bit(2);
         let opt_sext = |f: fn(u32) -> i32, x: u32| { if sext { f(x) as u32 } else { x } };
         let masked_load = match load_size {
-            0 => opt_sext(sign_ext::<8>, raw_load.sel(7 + offset, offset)),
-            1 => opt_sext(sign_ext::<16>, raw_load.sel(15 + offset, offset)),
-            2 => raw_load,
+            0 => opt_sext(sign_ext::<8>, raw_load.sel(7 + offset, offset)),   // load byte
+            1 => opt_sext(sign_ext::<16>, raw_load.sel(15 + offset, offset)), // load half
+            2 => raw_load,                                                    // load word
             _ => panic!("unimplemented load type"),
         };
-        info!("load f3={} M[0x{:08x}] -> raw 0x{:08x} masked 0x{:08x}",
-                decoded_inst.f3, load_addr, raw_load, masked_load);
+        // info!("load f3={} M[0x{:08x}] -> raw 0x{:08x} masked 0x{:08x}",
+        //         decoded_inst.f3, load_addr, raw_load, masked_load);
 
-        rf.write_gpr(decoded_inst.rd, masked_load);
+        Some(masked_load)
     }
 
-    pub fn store(decoded_inst: &DecodedInst, rf: &RegFile) {
+    pub fn store(decoded_inst: &DecodedInst, rf: &RegFile, gmem: &mut Arc<RwLock<ToyMemory>>) -> Option<u32> {
         static INSTS: phf::Map<u8, InstImp<2>> = phf_map! {
             0u8 => InstImp("sb", |[a, imm]| { a.wrapping_add(imm) }),
             1u8 => InstImp("sh", |[a, imm]| { a.wrapping_add(imm) }),
@@ -455,24 +430,26 @@ impl ExecuteUnit {
             ]))
         }).expect("unimplemented");
 
-        let mut gmem = GMEM.write().expect("lock poisoned");
+        let mut gmem = gmem.write().expect("lock poisoned");
         let addr = alu_result as usize;
         let data = rf.read_gpr(decoded_inst.rs2_addr).to_le_bytes();
         match decoded_inst.f3 & 3 {
             0 => {
-                gmem.write::<1>(addr, Arc::new(data[0..1].try_into().unwrap()))
+                gmem.write(addr, &data[0..1].to_vec())
             },
             1 => {
-                gmem.write::<2>(addr, Arc::new(data[0..2].try_into().unwrap()))
+                gmem.write(addr, &data[0..2].to_vec())
             },
             2 => {
-                gmem.write::<4>(addr, Arc::new(data[0..4].try_into().unwrap()))
+                gmem.write(addr, &data[0..4].to_vec())
             },
             _ => panic!("unimplemented store type"),
         }.expect("store failed");
+
+        None
     }
 
-    pub fn csr(decoded_inst: &DecodedInst, rf: &mut RegFile, csr: &mut CSRFile) {
+    pub fn csr(decoded_inst: &DecodedInst, rf: &mut RegFile, csr: &mut CSRFile) -> Option<u32> {
         let csr_type = print_and_unwrap!(match decoded_inst.f3 {
             1 => InstDef("csrrw",  CSRType::RW),
             2 => InstDef("csrrs",  CSRType::RS),
@@ -499,8 +476,9 @@ impl ExecuteUnit {
             panic!("unimplemented thread mask write using csr");
         }
         let old_val = csr.user_access(addr, new_val, csr_type);
-        rf.write_gpr(decoded_inst.rd, old_val);
         debug!("csr read address {:04x} => value {}", addr, old_val);
+
+        Some(old_val)
     }
 
     pub fn sfu(decoded_inst: &DecodedInst, wid: usize, first_lid: usize,
@@ -535,9 +513,22 @@ impl ExecuteUnit {
             rf.iter().map(|lrf| lrf.read_gpr(decoded_inst.rs2_addr)).collect());
     }
 
+    #[inline]
+    fn execute_lanes<F>(mut func: F, tmask: u32, rf: &mut Vec<&mut RegFile>) -> Vec<Option<u32>>
+    where
+        F: FnMut(&mut RegFile) -> Option<u32>
+    {
+        rf.iter_mut().enumerate().map(|(i, lrf)| {
+            match tmask.bit(i) {
+                true => func(lrf),
+                false => None,
+            }
+        }).collect()
+    }
+
     pub fn execute(decoded: DecodedInst, cid: usize, wid: usize, tmask: u32,
-                   rf: &mut Vec<&mut RegFile>, csr: &mut Vec<&mut CSRFile>,
-                   scheduler: &mut Scheduler, neutrino: &mut Neutrino) {
+                   rf: &mut Vec<&mut RegFile>, csrf: &mut Vec<&mut CSRFile>,
+                   scheduler: &mut Scheduler, neutrino: &mut Neutrino, gmem: &mut Arc<RwLock<ToyMemory>>) -> Writeback {
         // let isa = ISA::get_insts();
         // let (op, alu_result, actions) = isa.iter().map(|inst_group| {
         //     inst_group.execute(&decoded)
@@ -546,47 +537,40 @@ impl ExecuteUnit {
         //     prev.or(curr)
         // }).expect(&format!("unimplemented instruction {}", &decoded));
 
+        let num_lanes = rf.len();
         // lane id of first active thread
         let first_lid = tmask.trailing_zeros() as usize;
 
-        info!("execute pc 0x{:08x} {}", decoded.pc, decoded);
+        debug!("execute pc 0x{:08x} {}", decoded.pc, decoded);
 
-        macro_rules! masked_execute {
-            ($closure:expr) => {
-                rf.iter_mut().enumerate().for_each(|(i, lrf)| {
-                    if tmask.bit(i) {
-                        $closure(lrf)
-                    }
-                });
-            };
-        }
-
-        match decoded.opcode {
+        let empty = vec!(None::<u32>; num_lanes);
+        let collected_rds = match decoded.opcode {
             Opcode::OP | Opcode::OP_IMM | Opcode::LUI | Opcode::AUIPC => {
-                masked_execute!(|lrf| ExecuteUnit::alu(&decoded, lrf));
+                Self::execute_lanes(|lrf| ExecuteUnit::alu(&decoded, lrf), tmask, rf)
             }
             Opcode::OP_FP | Opcode::MADD | Opcode::MSUB | Opcode::NM_ADD | Opcode::NM_SUB => {
-                masked_execute!(|lrf| ExecuteUnit::fpu(&decoded, lrf));
+                Self::execute_lanes(|lrf| ExecuteUnit::fpu(&decoded, lrf), tmask, rf)
             }
             Opcode::BRANCH => {
                 if let Some(target) = ExecuteUnit::branch(&decoded, rf[first_lid]) {
-                    scheduler.branch(wid, target);
+                    scheduler.take_branch(wid, target);
                 }
+                empty
             }
             Opcode::JAL => {
-                scheduler.branch(wid, decoded.pc.wrapping_add(decoded.imm32));
-                masked_execute!(|lrf: &mut RegFile| lrf.write_gpr(decoded.rd, decoded.pc + 8));
+                scheduler.take_branch(wid, decoded.pc.wrapping_add(decoded.imm32));
+                Self::execute_lanes(|_| { Some(decoded.pc + 8) }, tmask, rf)
             }
             Opcode::JALR => {
                 let target = rf[first_lid].read_gpr(decoded.rs1_addr).wrapping_add(decoded.imm32);
-                scheduler.branch(wid, target);
-                masked_execute!(|lrf: &mut RegFile| lrf.write_gpr(decoded.rd, decoded.pc + 8));
+                scheduler.take_branch(wid, target);
+                Self::execute_lanes(|_| { Some(decoded.pc + 8) }, tmask, rf)
             }
             Opcode::LOAD => {
-                masked_execute!(|lrf| ExecuteUnit::load(&decoded, lrf));
+                Self::execute_lanes(|lrf| ExecuteUnit::load(&decoded, lrf, gmem), tmask, rf)
             }
             Opcode::STORE => {
-                masked_execute!(|lrf| ExecuteUnit::store(&decoded, lrf));
+                Self::execute_lanes(|lrf| ExecuteUnit::store(&decoded, lrf, gmem), tmask, rf)
             }
             Opcode::MISC_MEM => {
                 let imp = match decoded.f3 {
@@ -596,32 +580,49 @@ impl ExecuteUnit {
                 };
                 print_and_unwrap!(imp);
                 // TODO fence
+                empty
             }
             Opcode::SYSTEM => {
                 if decoded.f3 == 0 { // tohost
+                    // FIXME: tmask?
                     ExecuteUnit::sfu(&decoded, wid, first_lid, rf, scheduler);
+                    empty
                 } else { // csr
-                    rf.iter_mut().zip(csr.iter_mut()).enumerate().for_each(|(i, (lrf, lcsr))| {
-                        if tmask.bit(i) {
-                            ExecuteUnit::csr(&decoded, lrf, lcsr);
-                        }
-                    });
+                    let wb = rf.iter_mut().zip(csrf.iter_mut()).enumerate()
+                        .map(|(i, (lrf, lcsrf))| {
+                            match tmask.bit(i) {
+                                true => ExecuteUnit::csr(&decoded, lrf, lcsrf),
+                                false => None,
+                            }
+                        }).collect();
+                    wb
                 }
             }
             Opcode::CUSTOM0 => {
+                // FIXME: tmask?
                 ExecuteUnit::sfu(&decoded, wid, first_lid, rf, scheduler);
+                empty
             }
             Opcode::CUSTOM1 => {
                 // 0b000_0000000u16 => InstImp("vx_tex",  |[a, b, c]| { }),
                 // 0b001_0000000u16 => InstImp("vx_cmov", |[a, b, c]| { }),
                 // 0b001_0000001u16 => InstImp("vx_rop",  |[a, b, c]| { }),
-                todo!()
+                todo!("graphics ops unimplemented")
             }
             Opcode::CUSTOM2 => {
                 neutrino.execute(&decoded, cid, wid, tmask, rf[first_lid]);
+                empty
             }
 
             _ => { panic!("unimplemented opcode 0x{:x}", decoded.opcode); }
+        };
+
+        Writeback {
+            inst: decoded,
+            tmask: tmask,
+            rd_addr: decoded.rd,
+            rd_data: collected_rds,
+            ..Writeback::default()
         }
     }
 }

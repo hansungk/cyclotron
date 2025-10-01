@@ -24,6 +24,7 @@ pub struct SchedulerState {
     ipdom_stack: Vec<VecDeque<IpdomEntry>>,
 }
 
+/// Per-warp info of which instruction to fetch next
 #[derive(Debug, Default, Clone)]
 pub struct Schedule {
     pub pc: u32,
@@ -60,13 +61,20 @@ impl Scheduler {
         me
     }
 
-    pub fn spawn_warp(&mut self) {
+    pub fn spawn_single_warp(&mut self) {
         let all_ones = u32::MAX; // 0xFFFF
         self.state().thread_masks = [all_ones].repeat(self.conf().num_warps);
         self.base.state.active_warps = 1;
     }
 
-    pub fn branch(&mut self, wid: usize, target_pc: u32) {
+    pub fn spawn_n_warps(&mut self, pc: u32, n: usize) {
+        let all_ones = u32::MAX; // 0xFFFF
+        self.state().thread_masks = [all_ones].repeat(self.conf().num_warps);
+        self.state().pc = [pc].repeat(self.conf().num_warps);
+        self.base.state.active_warps = n as u32;
+    }
+
+    pub fn take_branch(&mut self, wid: usize, target_pc: u32) {
         self.base.state.pc[wid] = target_pc;
         if target_pc == 0 { // returned from main
             self.base.state.thread_masks[wid] = 0;
