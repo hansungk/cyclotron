@@ -1,6 +1,7 @@
 use crate::muon::config::MuonConfig;
 use crate::muon::warp::Writeback;
 use std::collections::VecDeque;
+use std::fmt;
 use std::iter::zip;
 
 /// Queues instruction traces from a core into a buffer, and provides a per-warp consume()
@@ -8,10 +9,13 @@ use std::iter::zip;
 pub struct Tracer {
     /// per-warp program-order buffer of lines
     bufs: Vec<VecDeque<Line>>,
+    /// round-robin warp selector for consumption
+    rr: usize,
 }
 
-#[derive(Default)]
+#[derive(Default, Clone, Debug)]
 pub struct Line {
+    pub warp_id: u32,
     pub pc: u32,
     pub opcode: u16,
     pub rd_addr: u8,
@@ -32,10 +36,21 @@ pub struct Line {
     pub tmask: u32,
 }
 
+impl fmt::Display for Line {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "TraceLine: (warp:{}, pc:0x{:x}, opcode:{}, rd:{})",
+            self.warp_id, self.pc, self.opcode, self.rd_addr
+        )
+    }
+}
+
 impl Tracer {
     pub fn new(muon_config: &MuonConfig) -> Tracer {
         let mut tracer = Tracer {
             bufs: Vec::new(),
+            rr: 0,
         };
         (0..muon_config.num_warps).for_each(|_| {
             tracer.bufs.push(VecDeque::new());
@@ -46,9 +61,10 @@ impl Tracer {
     pub fn record(&mut self, writebacks: &Vec<Option<Writeback>>) {
         zip(writebacks.iter(), self.bufs.as_mut_slice())
             .enumerate()
-            .for_each(|(_wid, (wb, buf))| {
+            .for_each(|(wid, (wb, buf))| {
                 if let Some(wb) = wb {
                     let line = Line {
+                        warp_id: wid as u32,
                         pc: wb.inst.pc,
                         opcode: wb.inst.opcode,
                         rd_addr: wb.inst.rd,
@@ -71,7 +87,34 @@ impl Tracer {
             })
     }
 
+    /// Peek at an instruction at a specific warp's buffer.
+    pub fn peek(&mut self, warp_id: usize) -> Option<&Line> {
+        self.bufs[warp_id].front()
+    }
+
+    /// Consume an instruction from a specific warp's buffer.
     pub fn consume(&mut self, warp_id: usize) -> Option<Line> {
         self.bufs[warp_id].pop_front()
+    }
+
+    /// Consume an instruction from any warp's buffer, round-robinning the warp selection.
+    pub fn consume_round_robin(&mut self) -> Option<Line> {
+        for i in 0..self.bufs.len() {
+            let wid = self.rr + i;
+            let buf = &self.bufs[wid];
+            if buf.len() == 0 {
+                continue;
+            }
+            return self.consume(wid);
+        }
+        None
+    }
+
+    pub fn len(&self, warp_id: usize) -> usize {
+        self.bufs[warp_id].len()
+    }
+
+    pub fn all_empty(&self) -> bool {
+        self.bufs.iter().all(|buf| buf.len() == 0)
     }
 }

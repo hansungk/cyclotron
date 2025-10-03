@@ -5,11 +5,7 @@ use crate::base::port::*;
 use crate::sim::top::Sim;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::{OnceLock, RwLock};
-
-struct Config {
-    num_lanes: usize,
-}
+use std::sync::RwLock;
 
 struct Context {
     sim: Sim,
@@ -17,7 +13,6 @@ struct Context {
     _mem_resp: Port<OutputPort, mem::MemResponse>,
 }
 
-static CONFIG_CELL: OnceLock<Config> = OnceLock::new();
 /// Global singleton to maintain simulator context across independent DPI calls.
 static CELL: RwLock<Option<Context>> = RwLock::new(None);
 
@@ -34,11 +29,7 @@ struct RespBundle {
 }
 
 #[no_mangle]
-pub fn cyclotron_init_rs(num_lanes: i32) {
-    CONFIG_CELL.get_or_init(|| Config {
-        num_lanes: num_lanes as usize,
-    });
-
+pub fn cyclotron_init_rs() {
     let toml_path = PathBuf::from("config.toml");
     let toml_string = crate::ui::read_toml(&toml_path);
     let sim = crate::ui::make_sim(&toml_string, None);
@@ -61,82 +52,77 @@ pub fn cyclotron_init_rs(num_lanes: i32) {
 
 #[no_mangle]
 pub fn cyclotron_tick_rs(
-    raw_a_ready: *const u8,
-    raw_a_valid: *mut u8,
-    raw_a_address: *mut u64,
-    _raw_a_is_store: *mut u8,
-    raw_a_size: *mut u32,
-    _raw_a_data: *mut u64,
-
-    raw_d_ready: *mut u8,
-    raw_d_valid: *const u8,
-    _raw_d_is_store: *const u8,
-    raw_d_size: *const u32,
-    raw_d_data: *const u64,
-
-    _inflight: u8,
-    raw_finished: *mut u8,
+    ibuf_ready_ptr: *const u8,
+    ibuf_valid_ptr: *mut u8,
+    ibuf_pc_ptr: *mut u32,
+    ibuf_op_ptr: *mut u32,
+    ibuf_rd_ptr: *mut u32,
+    finished_ptr: *mut u8,
 ) {
-    let conf = CONFIG_CELL.get().unwrap();
-
     let mut context_guard = CELL.write().unwrap();
     let context = context_guard.as_mut().expect("DPI context not initialized!");
     let sim = &mut context.sim;
     assert!(sim.top.clusters.len() == 1, "currently assumes model has 1 cluster and 1 core");
     assert!(sim.top.clusters[0].cores.len() == 1, "currently assumes model has 1 cluster and 1 core");
-    let core = &mut sim.top.clusters[0].cores[0];
-
-    // TODO: match interface with DUT
-    // TODO: get warp from DUT, consume that warp's buffer from model, and do diff-test
-
-    let inst = core.get_tracer().consume(0);
 
     sim.tick();
+    println!("cyclotron_tick_rs: sim tick!");
 
-    let slice_a_ready = unsafe { std::slice::from_raw_parts(raw_a_ready, conf.num_lanes) };
-    let slice_a_valid = unsafe { std::slice::from_raw_parts_mut(raw_a_valid, conf.num_lanes) };
-    let slice_a_address = unsafe { std::slice::from_raw_parts_mut(raw_a_address, conf.num_lanes) };
-    let slice_a_size = unsafe { std::slice::from_raw_parts_mut(raw_a_size, conf.num_lanes) };
-    let slice_d_ready = unsafe { std::slice::from_raw_parts_mut(raw_d_ready, conf.num_lanes) };
-    let _finished = unsafe { std::slice::from_raw_parts_mut(raw_finished, 1) };
+    let core = &mut sim.top.clusters[0].cores[0];
+    let config = *core.conf();
+    let warp_insts: Vec<_> = (0..config.num_warps).map(|w| {
+        core.get_tracer().peek(w).cloned() // @perf: expensive?
+    }).collect();
 
-    // FIXME: only warp 0 is fed
-    let req_bundles = Vec::with_capacity(1);
-    todo!("no more imem ports");
+    let ibuf_ready = unsafe { std::slice::from_raw_parts(ibuf_ready_ptr, config.num_warps) };
+    let ibuf_valid = unsafe { std::slice::from_raw_parts_mut(ibuf_valid_ptr, config.num_warps) };
+    let ibuf_pc = unsafe { std::slice::from_raw_parts_mut(ibuf_pc_ptr, config.num_warps) };
+    let ibuf_op = unsafe { std::slice::from_raw_parts_mut(ibuf_op_ptr, config.num_warps) };
+    let ibuf_rd = unsafe { std::slice::from_raw_parts_mut(ibuf_rd_ptr, config.num_warps) };
+    let finished = unsafe { std::slice::from_raw_parts_mut(finished_ptr, 1) };
 
-    req_bundles_to_rtl(
-        &req_bundles,
-        slice_a_valid,
-        slice_a_address,
-        slice_a_size,
-        slice_d_ready,
-    );
-
-    let slice_d_ready = unsafe { std::slice::from_raw_parts_mut(raw_d_ready, conf.num_lanes) };
-    let slice_d_valid = unsafe { std::slice::from_raw_parts(raw_d_valid, conf.num_lanes) };
-    let slice_d_size = unsafe { std::slice::from_raw_parts(raw_d_size, conf.num_lanes) };
-    let slice_d_data = unsafe { std::slice::from_raw_parts(raw_d_data, conf.num_lanes) };
-
-    // FIXME: work with 1 lane for now
-    let mut resp_bundles = Vec::with_capacity(1);
-    for i in 0..1 {
-        slice_d_ready[i] = 1; // bogus?
-        resp_bundles.push(RespBundle {
-            valid: (slice_d_valid[i] != 0),
-            _size: slice_d_size[i],
-            data: slice_d_data[i].to_le_bytes(),
-        });
+    for (w, maybe_inst) in warp_insts.iter().enumerate() {
+        match maybe_inst {
+            Some(inst) => {
+                ibuf_valid[w] = 1;
+                ibuf_pc[w] = inst.pc;
+                ibuf_op[w] = inst.opcode as u32;
+                ibuf_rd[w] = inst.rd_addr as u32;
+            },
+            None => {
+                ibuf_valid[w] = 0;
+            }
+        }
     }
 
-    todo!("no more imem ports");
-    // let fsm = &mut context.fsm;
-    // push_mem_resp(fsm, &resp_bundles[0]);
-    // fsm.tick_one();
+    // TODO: look at ibuf_ready, and consume from rust side
 
-    // println!("[@{}] cyclotron_tick_rs()", muon.base.cycle);
+    let trace_empty = core.get_tracer().all_empty();
+    finished[0] = trace_empty as u8;
 
-    // // push_mem_resp(&mut muon.imem_resp[0], &resp_bundles[0]);
-    // muon.tick_one();
+    // debug
+    for maybe_inst in warp_insts.iter() {
+        match maybe_inst {
+            Some(inst) => { println!("trace: {}", inst); },
+            _ => (),
+        }
+    }
+}
+
+// unwrap arrays-of-structs to structs-of-arrays
+fn req_bundles_to_rtl(
+    bundles: &[ReqBundle],
+    slice_a_valid: &mut [u8],
+    slice_a_address: &mut [u64],
+    slice_a_size: &mut [u32],
+    slice_d_ready: &mut [u8],
+) {
+    for i in 0..bundles.len() {
+        slice_a_valid[i] = if bundles[i].valid { 1 } else { 0 };
+        slice_a_address[i] = bundles[i].address;
+        slice_a_size[i] = bundles[i].size;
+        slice_d_ready[i] = 1; // FIXME: bogus
+    }
 }
 
 fn push_mem_resp(resp_port: &mut Port<InputPort, mem::MemResponse>, resp: &RespBundle) {
@@ -175,22 +161,6 @@ fn get_mem_req(
         }
     });
     req
-}
-
-// unwrap arrays-of-structs to structs-of-arrays
-fn req_bundles_to_rtl(
-    bundles: &[ReqBundle],
-    slice_a_valid: &mut [u8],
-    slice_a_address: &mut [u64],
-    slice_a_size: &mut [u32],
-    slice_d_ready: &mut [u8],
-) {
-    for i in 0..bundles.len() {
-        slice_a_valid[i] = if bundles[i].valid { 1 } else { 0 };
-        slice_a_address[i] = bundles[i].address;
-        slice_a_size[i] = bundles[i].size;
-        slice_d_ready[i] = 1; // FIXME: bogus
-    }
 }
 
 #[cfg(test)]

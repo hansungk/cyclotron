@@ -14,7 +14,7 @@ use crate::sim::toy_mem::ToyMemory;
 pub struct MuonState {}
 
 pub struct MuonCore {
-    base: ModuleBase<MuonState, MuonConfig>,
+    pub base: ModuleBase<MuonState, MuonConfig>,
     pub id: usize,
     pub scheduler: Scheduler,
     warps: Vec<Warp>,

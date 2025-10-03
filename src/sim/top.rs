@@ -69,6 +69,11 @@ impl Sim {
         if self.top.finished() {
             return;
         }
+
+        assert!(self.top.clusters.len() == 1, "Sim::tick() only supports 1-cluster 1-core config as of now.");
+        assert!(self.top.clusters[0].cores.len() == 1, "Sim::tick() only supports 1-cluster 1-core config as of now.");
+
+        // now the tracer should hold the instructions
         // TODO: report cycle
     }
 }
