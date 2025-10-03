@@ -99,8 +99,7 @@ pub fn cyclotron_tick_rs(
 
     // TODO: look at ibuf_ready, and consume from rust side
 
-    let trace_empty = core.get_tracer().all_empty();
-    finished[0] = trace_empty as u8;
+    finished[0] = sim.finished() as u8;
 
     // debug
     for maybe_inst in warp_insts.iter() {
