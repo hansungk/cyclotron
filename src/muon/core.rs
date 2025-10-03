@@ -5,7 +5,7 @@ use crate::info;
 use crate::base::{behavior::*, module::*};
 use crate::muon::config::{LaneConfig, MuonConfig};
 use crate::muon::scheduler::{Schedule, Scheduler};
-use crate::muon::warp::Warp;
+use crate::muon::warp::{ExecErr, Warp, Writeback};
 use crate::muon::decode::InstBuf;
 use crate::neutrino::neutrino::Neutrino;
 use crate::sim::toy_mem::ToyMemory;
@@ -78,24 +78,29 @@ impl MuonCore {
         InstBuf(ibuf_entries.collect())
     }
 
-    pub fn backend(&mut self, ibuf: &InstBuf, neutrino: &mut Neutrino) {
-        let writebacks = self.warps.iter_mut().zip(&ibuf.0).map(|(warp, ibuf)| {
-            ibuf.as_ref().map(|ib| {
-                warp.backend(ib, &mut self.scheduler, neutrino)
-            })
-        }).collect();
+    pub fn backend(&mut self, ibuf: &InstBuf, neutrino: &mut Neutrino) -> Result<(), ExecErr> {
+        let mut writebacks: Vec<Option<Writeback>> = Vec::with_capacity(self.warps.len());
+        for (warp, ibuf) in self.warps.iter_mut().zip(&ibuf.0) {
+            let wb = match ibuf.as_ref() {
+                Some(ib) => Some(warp.backend(ib, &mut self.scheduler, neutrino)?),
+                None => None,
+            };
+            writebacks.push(wb);
+        }
 
-        let tracer = self.get_tracer();
+        let tracer = Arc::get_mut(&mut self.tracer).expect("failed to get tracer");
         tracer.record(&writebacks);
 
         self.scheduler.tick_one();
         self.warps.iter_mut().for_each(Warp::tick_one);
+
+        Ok(())
     }
 
-    pub fn execute(&mut self, neutrino: &mut Neutrino) {
+    pub fn execute(&mut self, neutrino: &mut Neutrino) -> Result<(), ExecErr> {
         let schedules = self.schedule();
         let ibuf = self.frontend(&schedules);
-        self.backend(&ibuf, neutrino);
+        self.backend(&ibuf, neutrino)
     }
 
     pub fn get_tracer(&mut self) -> &mut Tracer {

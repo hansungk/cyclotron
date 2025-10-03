@@ -58,7 +58,7 @@ impl ModuleBehaviors for Cluster {
     fn tick_one(&mut self) {
         for core in &mut self.cores {
             core.tick_one();
-            core.execute(&mut self.neutrino);
+            core.execute(&mut self.neutrino).unwrap();
         }
         self.neutrino.tick_one();
         self.neutrino.update(&mut self.cores.iter_mut()

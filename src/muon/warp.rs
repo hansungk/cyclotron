@@ -9,6 +9,7 @@ use crate::muon::scheduler::{Schedule, Scheduler};
 use crate::sim::log::Logger;
 use crate::info;
 use crate::sim::toy_mem::ToyMemory;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{Arc, RwLock};
 use crate::neutrino::neutrino::Neutrino;
 
@@ -45,6 +46,13 @@ pub struct Writeback {
     pub tmask: u32,
     pub rd_addr: u8,
     pub rd_data: Vec<Option<u32>>,
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct ExecErr {
+    pub pc: u32,
+    pub warp_id: usize,
+    pub message: Option<String>,
 }
 
 impl Default for Writeback {
@@ -115,43 +123,58 @@ impl Warp {
         InstBufEntry { inst, tmask }
     }
 
-    pub fn backend(&mut self, ibuf: &InstBufEntry, scheduler: &mut Scheduler, neutrino: &mut Neutrino) -> Writeback {
+    pub fn backend(&mut self, ibuf: &InstBufEntry, scheduler: &mut Scheduler, neutrino: &mut Neutrino) -> Result<Writeback, ExecErr> {
         let inst = ibuf.inst;
         let tmask = ibuf.tmask;
         let core_id = self.conf().lane_config.core_id;
         let mut rf = self.base.state.reg_file.iter_mut().collect::<Vec<_>>();
         let mut csrf = self.base.state.csr_file.iter_mut().collect::<Vec<_>>();
 
-        let writeback = ExecuteUnit::execute(inst,
-             core_id,
-             self.wid,
-             tmask,
-             &mut rf,
-             &mut csrf,
-             scheduler,
-             neutrino,
-             &mut self.gmem,
-        );
+        let writeback = catch_unwind(AssertUnwindSafe(|| {
+            ExecuteUnit::execute(
+                inst,
+                core_id,
+                self.wid,
+                tmask,
+                &mut rf,
+                &mut csrf,
+                scheduler,
+                neutrino,
+                &mut self.gmem,
+            )
+        }));
 
-        Self::writeback(&writeback, &mut rf);
+        match writeback {
+            Ok(writeback) => {
+                Self::writeback(&writeback, &mut rf);
 
-        info!(self.logger, "@t={} [{}] PC=0x{:08x}, rd={:3}, data=[{} lanes valid]",
-              self.base.cycle,
-              self.name(),
-              inst.pc,
-              writeback.rd_addr,
-              // writeback.rd_data_str(),
-              writeback.num_rd_data());
+                info!(self.logger, "@t={} [{}] PC=0x{:08x}, rd={:3}, data=[{} lanes valid]",
+                    self.base.cycle,
+                    self.name(),
+                    inst.pc,
+                    writeback.rd_addr,
+                    writeback.num_rd_data()
+                );
 
-        writeback
+                Ok(writeback)
+            }
+            Err(payload) => {
+                let message = payload.downcast::<String>().ok().map(|s| *s);
+                Err(ExecErr {
+                    pc: inst.pc,
+                    warp_id: self.wid,
+                    message,
+                })
+            }
+        }
     }
 
     /// Fast-path that fuses frontend/backend for every warp instead of two-stage schedule/ibuf
     /// iteration.
     pub fn execute(&mut self, schedule: Schedule,
-                   scheduler: &mut Scheduler, neutrino: &mut Neutrino) {
+                   scheduler: &mut Scheduler, neutrino: &mut Neutrino) -> Result<(), ExecErr> {
         let ibuf = self.frontend(schedule.clone());
-        self.backend(&ibuf, scheduler, neutrino);
+        self.backend(&ibuf, scheduler, neutrino).map(|_| ())
     }
 
     pub fn writeback(wb: &Writeback, rf: &mut Vec<&mut RegFile>) {
@@ -160,4 +183,5 @@ impl Warp {
             ldata.map(|data| lrf.write_gpr(rd_addr, data));
         });
     }
+
 }
