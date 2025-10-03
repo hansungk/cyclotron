@@ -28,11 +28,11 @@ pub trait IsModule: ModuleBehaviors {
 
     fn base_ref(&self) -> &ModuleBase<Self::StateType, Self::ConfigType>;
 
-    fn state(&mut self) -> &mut Self::StateType{
+    fn state_mut(&mut self) -> &mut Self::StateType{
         &mut self.base().state
     }
 
-    fn state_ref(&self) -> &Self::StateType {
+    fn state(&self) -> &Self::StateType {
         &self.base_ref().state
     }
 

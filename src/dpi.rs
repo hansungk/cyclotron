@@ -65,7 +65,9 @@ pub fn cyclotron_tick_rs(
     assert!(sim.top.clusters.len() == 1, "currently assumes model has 1 cluster and 1 core");
     assert!(sim.top.clusters[0].cores.len() == 1, "currently assumes model has 1 cluster and 1 core");
 
-    sim.tick();
+    if !sim.finished() {
+        sim.tick();
+    }
     println!("cyclotron_tick_rs: sim tick!");
 
     let core = &mut sim.top.clusters[0].cores[0];

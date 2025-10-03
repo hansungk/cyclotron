@@ -16,6 +16,9 @@ pub struct IpdomEntry {
 
 #[derive(Debug, Default)]
 pub struct SchedulerState {
+    /// differentiates between the initial and the final state, in both of which no active warps
+    /// exist
+    pub started: bool,
     pub active_warps: u32,
     pub stalled_warps: u32,
     thread_masks: Vec<u32>,
@@ -46,6 +49,7 @@ impl Scheduler {
         let mut me = Scheduler {
             base: ModuleBase::<SchedulerState, MuonConfig> {
                 state: SchedulerState {
+                    started: false,
                     active_warps: 0,
                     stalled_warps: 0,
                     thread_masks: vec![0u32; num_warps],
@@ -63,14 +67,15 @@ impl Scheduler {
 
     pub fn spawn_single_warp(&mut self) {
         let all_ones = u32::MAX; // 0xFFFF
-        self.state().thread_masks = [all_ones].repeat(self.conf().num_warps);
-        self.base.state.active_warps = 1;
+        self.state_mut().started = true;
+        self.state_mut().thread_masks = [all_ones].repeat(self.conf().num_warps);
+        self.state_mut().active_warps = 1;
     }
 
     pub fn spawn_n_warps(&mut self, pc: u32, n: usize) {
         let all_ones = u32::MAX; // 0xFFFF
-        self.state().thread_masks = [all_ones].repeat(self.conf().num_warps);
-        self.state().pc = [pc].repeat(self.conf().num_warps);
+        self.state_mut().thread_masks = [all_ones].repeat(self.conf().num_warps);
+        self.state_mut().pc = [pc].repeat(self.conf().num_warps);
         self.base.state.active_warps = n as u32;
     }
 
@@ -208,18 +213,18 @@ impl Scheduler {
                 mask: self.base.state.thread_masks[wid],
                 active_warps: self.base.state.active_warps, // for csr writing
             };
-            self.state().pc[wid] = pc.wrapping_add(8);
+            self.state_mut().pc[wid] = pc.wrapping_add(8);
             sched
         })
     }
 
     pub fn neutrino_stall(&mut self, stalls: Vec<bool>) {
-        self.state().stalled_warps = stalls.to_u32();
+        self.state_mut().stalled_warps = stalls.to_u32();
     }
 
     // TODO: This should differentiate between different threadblocks.
     pub fn all_warps_retired(&self) -> bool {
-        self.base.state.active_warps == 0
+        self.state().started && (self.state().active_warps == 0)
     }
 }
 
@@ -235,7 +240,7 @@ impl ModuleBehaviors for Scheduler {
 
     fn reset(&mut self) {
         let all_ones = u32::MAX; // 0xFFFF
-        self.state().thread_masks = [all_ones].repeat(self.conf().num_warps);
+        self.state_mut().thread_masks = [all_ones].repeat(self.conf().num_warps);
         self.base.state.active_warps = 0;
         self.base.state.stalled_warps = 0;
     }

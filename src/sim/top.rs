@@ -45,10 +45,9 @@ impl Sim {
     pub fn simulate(&mut self) -> Result<(), u32> {
         self.top.reset();
         for cycle in 0..self.top.timeout {
-            self.top.tick_one();
             if self.top.finished() {
                 println!("simulation finished after {} cycles", cycle + 1);
-                if let Some(mut tohost) = self.top.clusters[0].cores[0].scheduler.state().tohost {
+                if let Some(mut tohost) = self.top.clusters[0].cores[0].scheduler.state_mut().tohost {
                     if tohost > 0 {
                         tohost >>= 1;
                         println!("failed test case {}", tohost);
@@ -59,22 +58,27 @@ impl Sim {
                 }
                 return Ok(());
             }
+            self.top.tick_one();
         }
         Err(0)
     }
 
     /// Advances all cores by one instruction.
     pub fn tick(&mut self) {
-        self.top.tick_one();
         if self.top.finished() {
             return;
         }
+        self.top.tick_one();
 
         assert!(self.top.clusters.len() == 1, "Sim::tick() only supports 1-cluster 1-core config as of now.");
         assert!(self.top.clusters[0].cores.len() == 1, "Sim::tick() only supports 1-cluster 1-core config as of now.");
 
         // now the tracer should hold the instructions
         // TODO: report cycle
+    }
+
+    pub fn finished(&self) -> bool {
+        self.top.finished()
     }
 }
 
@@ -147,6 +151,8 @@ impl ModuleBehaviors for CyclotronTop {
 
         self.clusters.iter_mut().for_each(Cluster::tick_one);
 
+        // FIXME: if tick_one() is called after finished() is true, the retire() call might result
+        // in an underflow.
         for id in 0..num_clusters {
             let retired_tb = self.clusters[id].retired_threadblock();
             self.cproc.retire(id, retired_tb);

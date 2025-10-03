@@ -14,7 +14,7 @@ use crate::sim::toy_mem::ToyMemory;
 pub struct MuonState {}
 
 pub struct MuonCore {
-    pub base: ModuleBase<MuonState, MuonConfig>,
+    base: ModuleBase<MuonState, MuonConfig>,
     pub id: usize,
     pub scheduler: Scheduler,
     warps: Vec<Warp>,
@@ -50,10 +50,6 @@ impl MuonCore {
     /// Spawn a single warp to this core.
     pub fn spawn_single_warp(&mut self) {
         self.scheduler.spawn_single_warp()
-    }
-
-    pub fn spawn_n_warps(&mut self, pc: u32, n: usize) {
-        self.scheduler.spawn_n_warps(pc, n)
     }
 
     // TODO: This should differentiate between different threadblocks.

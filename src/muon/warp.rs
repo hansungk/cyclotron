@@ -32,8 +32,8 @@ impl ModuleBehaviors for Warp {
     }
 
     fn reset(&mut self) {
-        self.state().reg_file.iter_mut().for_each(|x| x.reset());
-        self.state().csr_file.iter_mut().for_each(|x| x.reset());
+        self.state_mut().reg_file.iter_mut().for_each(|x| x.reset());
+        self.state_mut().csr_file.iter_mut().for_each(|x| x.reset());
     }
 }
 
@@ -112,7 +112,7 @@ impl Warp {
             .read::<8>(schedule.pc as usize)
             .expect("failed to fetch instruction");
 
-        self.state().csr_file.iter_mut().for_each(|c| {
+        self.state_mut().csr_file.iter_mut().for_each(|c| {
             c.emu_access(0xcc3, schedule.active_warps);
             c.emu_access(0xcc4, schedule.mask);
         });

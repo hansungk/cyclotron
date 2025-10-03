@@ -41,11 +41,7 @@ impl Cluster {
     }
 
     pub fn retired_threadblock(&self) -> usize {
-        if self.all_cores_retired() {
-            1
-        } else {
-            0
-        }
+        self.all_cores_retired() as usize
     }
 
     // TODO: This should differentiate between different threadblocks.

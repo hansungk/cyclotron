@@ -33,7 +33,7 @@ impl<T: Default, const N: usize> Stack<T, N> {
 impl<T: Default, const N: usize> ModuleBehaviors for Stack<T, N> {
     fn tick_one(&mut self) {}
     fn reset(&mut self) {
-        self.state().size = 0;
+        self.state_mut().size = 0;
     }
 }
 
@@ -45,25 +45,25 @@ impl<T: Default, const N: usize> IsModule for Stack<T, N> {
 // TODO: add locks and stuff
 impl<T: Default + Clone, const N: usize> Stack<T, N> {
     pub fn try_push(&mut self, data: &T) -> bool {
-        let size = self.state().size;
-        let max_size = self.state().max_size;
+        let size = self.state_mut().size;
+        let max_size = self.state_mut().max_size;
         if size >= max_size {
             return false;
         }
-        self.state().storage[size] = data.clone();
-        self.state().size += 1;
+        self.state_mut().storage[size] = data.clone();
+        self.state_mut().size += 1;
         true
     }
 
     pub fn try_pop(&mut self) -> Option<T> where T: Clone {
-        let size = self.state().size;
+        let size = self.state_mut().size;
         (size > 0).then(|| {
-            self.state().size -= 1;
-            self.state().storage[size - 1].clone()
+            self.state_mut().size -= 1;
+            self.state_mut().storage[size - 1].clone()
         })
     }
 
     pub fn resize(&mut self, size: usize) {
-        self.state().max_size = size;
+        self.state_mut().max_size = size;
     }
 }
