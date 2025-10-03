@@ -3,6 +3,7 @@ use crate::base::behavior::*;
 use crate::base::mem;
 use crate::base::port::*;
 use crate::sim::top::Sim;
+use std::iter::zip;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::RwLock;
@@ -97,7 +98,19 @@ pub fn cyclotron_tick_rs(
         }
     }
 
-    // TODO: look at ibuf_ready, and consume from rust side
+    // consume if RTL ready was true
+    // this has to happen after the pin drive above so that the consumed line is not lost
+    zip(warp_insts, ibuf_ready).enumerate().for_each(|(w, (line, rdy))| {
+        if line.is_some() && *rdy == 1 {
+            println!("cyclotron_tick_rs: consumed warp {}", w);
+            core.get_tracer().consume(w);
+        }
+    });
+
+    let config = *core.conf();
+    let warp_insts: Vec<_> = (0..config.num_warps).map(|w| {
+        core.get_tracer().peek(w).cloned() // @perf: expensive?
+    }).collect();
 
     finished[0] = sim.finished() as u8;
 
