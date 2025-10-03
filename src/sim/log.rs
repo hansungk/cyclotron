@@ -57,9 +57,9 @@ macro_rules! log {
 }
 #[macro_export]
 macro_rules! info {
-    ($logger:expr, $($arg:tt)+) => ( crate::log!($logger, crate::sim::log::LogLevel::INFO, $($arg)+); )
+    ($logger:expr, $($arg:tt)+) => ( $crate::log!($logger, $crate::sim::log::LogLevel::INFO, $($arg)+); )
 }
 #[macro_export]
 macro_rules! debug {
-    ($logger:expr, $($arg:tt)+) => ( crate::log!($logger, crate::sim::log::LogLevel::DEBUG, $($arg)+); )
+    ($logger:expr, $($arg:tt)+) => ( $crate::log!($logger, $crate::sim::log::LogLevel::DEBUG, $($arg)+); )
 }
