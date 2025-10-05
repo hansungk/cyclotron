@@ -105,20 +105,25 @@ impl Warp {
         format!("core {} warp {}", self.conf().lane_config.core_id, self.conf().lane_config.warp_id)
     }
 
+    /// Returns un-decoded instruction bits at a given PC.
+    pub fn fetch(&self, pc: u32) -> u64 {
+        let inst_bytes = *self.gmem.write()
+            .expect("gmem poisoned")
+            .read::<8>(pc as usize)
+            .expect("failed to fetch instruction");
+        u64::from_le_bytes(inst_bytes)
+    }
+
     pub fn frontend(&mut self, schedule: Schedule) -> InstBufEntry {
         // fetch
-        let inst_data = *self.gmem.write()
-            .expect("gmem poisoned")
-            .read::<8>(schedule.pc as usize)
-            .expect("failed to fetch instruction");
-
+        let inst = self.fetch(schedule.pc);
         self.state_mut().csr_file.iter_mut().for_each(|c| {
             c.emu_access(0xcc3, schedule.active_warps);
             c.emu_access(0xcc4, schedule.mask);
         });
 
         // decode
-        let inst = DecodeUnit::decode(inst_data, schedule.pc);
+        let inst = DecodeUnit::decode(inst, schedule.pc);
         let tmask = schedule.mask;
         InstBufEntry { inst, tmask }
     }

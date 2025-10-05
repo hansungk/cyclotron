@@ -30,10 +30,14 @@ struct RespBundle {
 }
 
 #[no_mangle]
+/// Entry point to the DPI interface.  This must be called from Verilog once at the start in an
+/// initial block.
 pub fn cyclotron_init_rs() {
     let toml_path = PathBuf::from("config.toml");
     let toml_string = crate::ui::read_toml(&toml_path);
     let sim = crate::ui::make_sim(&toml_string, None);
+    assert!(sim.top.clusters.len() == 1, "currently assumes model has 1 cluster and 1 core");
+    assert!(sim.top.clusters[0].cores.len() == 1, "currently assumes model has 1 cluster and 1 core");
 
     println!("cyclotron_init_rs: created sim object from {}", toml_path.display());
 
@@ -52,24 +56,39 @@ pub fn cyclotron_init_rs() {
 }
 
 #[no_mangle]
-pub fn cyclotron_tick_rs(
-    ibuf_ready_ptr: *const u8,
-    ibuf_valid_ptr: *mut u8,
-    ibuf_pc_ptr: *mut u32,
-    ibuf_op_ptr: *mut u32,
-    ibuf_rd_ptr: *mut u32,
+/// Get un-decoded instruction bits from the instruction trace.
+pub fn cyclotron_fetch_rs(
+    fetch_pc: u32,
+    fetch_warp: u32,
+    inst_ptr: *mut u64,
+) {
+    let mut context_guard = CELL.write().unwrap();
+    let context = context_guard.as_mut().expect("DPI context not initialized!");
+    let sim = &mut context.sim;
+    let core = &mut sim.top.clusters[0].cores[0];
+    let inst = core.fetch(fetch_warp, fetch_pc);
+
+    let inst_slice = unsafe { std::slice::from_raw_parts_mut(inst_ptr, 1) };
+    inst_slice[0] = inst;
+}
+
+#[no_mangle]
+/// Get a decoded instruction bundle from the instruction trace.
+/// All signals are arrays that map all num_lanes.
+pub fn cyclotron_decode_rs(
+    ready_ptr: *const u8,
+    valid_ptr: *mut u8,
+    pc_ptr: *mut u32,
+    op_ptr: *mut u32,
+    rd_ptr: *mut u32,
     finished_ptr: *mut u8,
 ) {
     let mut context_guard = CELL.write().unwrap();
     let context = context_guard.as_mut().expect("DPI context not initialized!");
     let sim = &mut context.sim;
-    assert!(sim.top.clusters.len() == 1, "currently assumes model has 1 cluster and 1 core");
-    assert!(sim.top.clusters[0].cores.len() == 1, "currently assumes model has 1 cluster and 1 core");
 
-    if !sim.finished() {
-        sim.tick();
-    }
-    println!("cyclotron_tick_rs: sim tick!");
+    // advance simulation to have decode completed
+    sim.tick();
 
     let core = &mut sim.top.clusters[0].cores[0];
     let config = *core.conf();
@@ -77,32 +96,39 @@ pub fn cyclotron_tick_rs(
         core.get_tracer().peek(w).cloned() // @perf: expensive?
     }).collect();
 
-    let ibuf_ready = unsafe { std::slice::from_raw_parts(ibuf_ready_ptr, config.num_warps) };
-    let ibuf_valid = unsafe { std::slice::from_raw_parts_mut(ibuf_valid_ptr, config.num_warps) };
-    let ibuf_pc = unsafe { std::slice::from_raw_parts_mut(ibuf_pc_ptr, config.num_warps) };
-    let ibuf_op = unsafe { std::slice::from_raw_parts_mut(ibuf_op_ptr, config.num_warps) };
-    let ibuf_rd = unsafe { std::slice::from_raw_parts_mut(ibuf_rd_ptr, config.num_warps) };
+    let ready = unsafe { std::slice::from_raw_parts(ready_ptr, config.num_warps) };
+    let valid = unsafe { std::slice::from_raw_parts_mut(valid_ptr, config.num_warps) };
+    let pc = unsafe { std::slice::from_raw_parts_mut(pc_ptr, config.num_warps) };
+    let op = unsafe { std::slice::from_raw_parts_mut(op_ptr, config.num_warps) };
+    let rd = unsafe { std::slice::from_raw_parts_mut(rd_ptr, config.num_warps) };
     let finished = unsafe { std::slice::from_raw_parts_mut(finished_ptr, 1) };
 
     for (w, maybe_inst) in warp_insts.iter().enumerate() {
         match maybe_inst {
             Some(inst) => {
-                ibuf_valid[w] = 1;
-                ibuf_pc[w] = inst.pc;
-                ibuf_op[w] = inst.opcode as u32;
-                ibuf_rd[w] = inst.rd_addr as u32;
+                valid[w] = 1;
+                pc[w] = inst.pc;
+                op[w] = inst.opcode as u32;
+                rd[w] = inst.rd_addr as u32;
             },
             None => {
-                ibuf_valid[w] = 0;
+                valid[w] = 0;
             }
+        }
+    }
+
+    // debug
+    for maybe_inst in warp_insts.iter() {
+        match maybe_inst {
+            Some(inst) => { println!("trace: {}", inst); },
+            _ => (),
         }
     }
 
     // consume if RTL ready was true
     // this has to happen after the pin drive above so that the consumed line is not lost
-    zip(warp_insts, ibuf_ready).enumerate().for_each(|(w, (line, rdy))| {
+    zip(warp_insts, ready).enumerate().for_each(|(w, (line, rdy))| {
         if line.is_some() && *rdy == 1 {
-            println!("cyclotron_tick_rs: consumed warp {}", w);
             core.get_tracer().consume(w);
         }
     });
@@ -113,14 +139,6 @@ pub fn cyclotron_tick_rs(
     }).collect();
 
     finished[0] = sim.finished() as u8;
-
-    // debug
-    for maybe_inst in warp_insts.iter() {
-        match maybe_inst {
-            Some(inst) => { println!("trace: {}", inst); },
-            _ => (),
-        }
-    }
 }
 
 // unwrap arrays-of-structs to structs-of-arrays

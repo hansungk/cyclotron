@@ -99,6 +99,12 @@ impl MuonCore {
         self.backend(&ibuf, neutrino)
     }
 
+    /// Exposes a non-mutating fetch interface for the core.
+    pub fn fetch(&self, warp: u32, pc: u32) -> u64 {
+        // TODO: `warp` is not really necessary
+        self.warps[warp as usize].fetch(pc)
+    }
+
     pub fn get_tracer(&mut self) -> &mut Tracer {
         Arc::get_mut(&mut self.tracer).expect("failed to get tracer")
     }

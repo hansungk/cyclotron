@@ -87,12 +87,10 @@ impl Tracer {
             })
     }
 
-    /// Peek at an instruction at a specific warp's buffer.
     pub fn peek(&mut self, warp_id: usize) -> Option<&Line> {
         self.bufs[warp_id].front()
     }
 
-    /// Consume an instruction from a specific warp's buffer.
     pub fn consume(&mut self, warp_id: usize) -> Option<Line> {
         self.bufs[warp_id].pop_front()
     }

@@ -113,9 +113,7 @@ impl RegFile {
 pub struct DecodeUnit;
 
 impl DecodeUnit {
-    pub fn decode(inst_data: [u8; 8], pc: u32) -> DecodedInst {
-        let inst = u64::from_le_bytes(inst_data);
-
+    pub fn decode(inst: u64, pc: u32) -> DecodedInst {
         let _pred: u8 = inst.sel(63, 60) as u8;
         let rs1_addr: u8 = inst.sel(27, 20) as u8;
         let rs2_addr: u8 = inst.sel(35, 28) as u8;
