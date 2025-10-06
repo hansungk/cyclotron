@@ -464,6 +464,7 @@ impl ExecuteUnit {
                 rf.read_gpr(decoded_inst.rs1_addr)
             }
             CSRType::RWI | CSRType::RSI | CSRType::RCI => {
+                // CSR immediate is stored in the same field as rs1_addr
                 decoded_inst.rs1_addr as u32
             }
         };

@@ -32,7 +32,6 @@ pub struct Line {
     pub f7: u8,
     pub imm32: u32,
     pub imm24: i32,
-    pub imm8: i32,
     pub tmask: u32,
 }
 
@@ -77,7 +76,6 @@ impl Tracer {
                         f7: wb.inst.f7,
                         imm32: wb.inst.imm32,
                         imm24: wb.inst.imm24,
-                        imm8: wb.inst.imm8,
                         tmask: wb.tmask,
                         ..Line::default() // TODO: rs1/2/3/4_data
                     };

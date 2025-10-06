@@ -19,7 +19,6 @@ pub struct DecodedInst {
     pub f7: u8,
     pub imm32: u32,
     pub imm24: i32,
-    pub imm8: i32,
     pub pc: u32,
     pub raw: u64,
 }
@@ -120,7 +119,6 @@ impl DecodeUnit {
         let rs3_addr: u8 = inst.sel(43, 36) as u8;
         let rs4_addr: u8 = inst.sel(51, 44) as u8;
 
-        let imm8: i32 = sign_ext::<8>(rs1_addr as u32);
         let imm24: i32 = sign_ext::<24>(inst.sel(59, 36) as u32);
         let uimm32: u32 = (inst.sel(59, 36) as u32) | ((inst.sel(35, 28) as u32) << 24);
 
@@ -138,7 +136,6 @@ impl DecodeUnit {
             f7: inst.sel(58, 52) as u8,
             imm32: uimm32,
             imm24,
-            imm8,
             pc,
             raw: inst,
         }
@@ -161,7 +158,6 @@ pub const RS2_MASK: u64 = bit_mask(35, 28);
 pub const RS3_MASK: u64 = bit_mask(43, 36);
 pub const RS4_MASK: u64 = bit_mask(51, 44);
 
-pub const IMM8_MASK: u64 = RS1_MASK;
 pub const IMM24_MASK: u64 = bit_mask(59, 36);
 pub const UIMM32_MASK: u64 = IMM24_MASK | RS2_MASK; // actual value is swizzled
 pub const IMM12_1_MASK: u64 = bit_mask(47, 36);
@@ -185,7 +181,6 @@ macro_rules! make_bitpat {
                 RS3_MASK,
                 RS4_MASK,
         
-                IMM8_MASK,
                 IMM24_MASK,
                 UIMM32_MASK,
                 IMM12_1_MASK,
