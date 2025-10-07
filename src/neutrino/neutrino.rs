@@ -93,9 +93,9 @@ impl Neutrino {
         // TODO: are writing back for non-invokes?
         let job_id = self.scoreboard.arrive(&cmd, cid, wid);
         let job_id_u32 = self.scoreboard.u32_from_job_id(job_id);
-        rf.write_gpr(decoded.rd, job_id_u32);
+        rf.write_gpr(decoded.rd_addr, job_id_u32);
 
-        info!("{} has job id {} written to x{}", cmd, job_id_u32, decoded.rd);
+        info!("{} has job id {} written to x{}", cmd, job_id_u32, decoded.rd_addr);
     }
 
     pub fn update(&mut self, schedulers: &mut Vec<&mut Scheduler>) {

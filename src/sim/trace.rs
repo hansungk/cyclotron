@@ -66,7 +66,7 @@ impl Tracer {
                         warp_id: wid as u32,
                         pc: wb.inst.pc,
                         opcode: wb.inst.opcode,
-                        rd_addr: wb.inst.rd,
+                        rd_addr: wb.inst.rd_addr,
                         rs1_addr: wb.inst.rs1_addr,
                         rs2_addr: wb.inst.rs2_addr,
                         rs3_addr: wb.inst.rs3_addr,

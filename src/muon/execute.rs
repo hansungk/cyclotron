@@ -621,7 +621,7 @@ impl ExecuteUnit {
         Writeback {
             inst: decoded,
             tmask: tmask,
-            rd_addr: decoded.rd,
+            rd_addr: decoded.rd_addr,
             rd_data: collected_rds,
             ..Writeback::default()
         }

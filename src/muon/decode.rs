@@ -10,12 +10,29 @@ use std::sync::Arc;
 #[derive(Debug, Default, Copy, Clone)]
 pub struct DecodedInst {
     pub opcode: u16,
-    pub rd: u8,
+    pub rd_addr: u8,
     pub f3: u8,
     pub rs1_addr: u8,
     pub rs2_addr: u8,
     pub rs3_addr: u8,
     pub rs4_addr: u8,
+    pub f7: u8,
+    pub imm32: u32,
+    pub imm24: i32,
+    pub pc: u32,
+    pub raw: u64,
+}
+
+#[derive(Debug, Default, Copy, Clone)]
+/// Instruction bundle after operand collection, i.e. rs_addr -> rs_data
+pub struct IssuedInst {
+    pub opcode: u16,
+    pub rd_addr: u8,
+    pub f3: u8,
+    pub rs1_data: u32,
+    pub rs2_data: u32,
+    pub rs3_data: u32,
+    pub rs4_data: u32,
     pub f7: u8,
     pub imm32: u32,
     pub imm24: i32,
@@ -36,7 +53,7 @@ impl std::fmt::Display for DecodedInst {
             f,
             "inst {:#010x} [ op: 0x{:x}, f3: {}, f7: {}, rd=x{}, rs1=x{}, x{}, x{}, rs4=x{} ]",
             self.raw, self.opcode, self.f3, self.f7,
-            self.rd, self.rs1_addr, self.rs2_addr, self.rs3_addr, self.rs4_addr
+            self.rd_addr, self.rs1_addr, self.rs2_addr, self.rs3_addr, self.rs4_addr
         )
     }
 }
@@ -127,7 +144,7 @@ impl DecodeUnit {
 
         DecodedInst {
             opcode: inst.sel(8, 0) as u16,
-            rd: inst.sel(16, 9) as u8,
+            rd_addr: inst.sel(16, 9) as u8,
             f3: inst.sel(19, 17) as u8,
             rs1_addr,
             rs2_addr,
