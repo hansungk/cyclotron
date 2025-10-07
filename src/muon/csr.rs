@@ -17,6 +17,8 @@ pub struct CSRFile {
     base: ModuleBase<CSRState, MuonConfig>,
     lock: RwLock<()>,
     lane_id: usize,
+    grid_idx: (u16, u16, u16),
+    block_idx: (u16, u16, u16),
 }
 
 impl ModuleBehaviors for CSRFile {
@@ -116,6 +118,12 @@ impl CSRFile {
             0xfc0, self.conf().num_lanes as u32; // num_threads
             0xfc1, self.conf().num_warps as u32; // num_warps
             0xfc2, self.conf().num_cores as u32; // num_cores
+            0xfc3, self.grid_idx.0 as u32; // grid_idx.x
+            0xfc4, self.grid_idx.1 as u32; // grid_idx.y
+            0xfc5, self.grid_idx.2 as u32; // grid_idx.z
+            0xfc6, self.block_idx.0 as u32; // block_idx.x
+            0xfc7, self.block_idx.1 as u32; // block_idx.y
+            0xfc8, self.block_idx.2 as u32; // block_idx.z
         ])
     }
 
@@ -183,5 +191,10 @@ impl CSRFile {
                 *self.csr_rw_ref_user(0x002).unwrap() = (value & 0xe0) >> 5; // frm
             }
         }
+    }
+
+    pub fn set_grid_block(&mut self, grid_idx: (u16, u16, u16), block_idx: (u16, u16, u16)) {
+        self.grid_idx = grid_idx;
+        self.block_idx = block_idx;
     }
 }
