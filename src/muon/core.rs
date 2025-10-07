@@ -52,6 +52,13 @@ impl MuonCore {
         self.scheduler.spawn_single_warp()
     }
 
+    pub fn spawn_n_warps(&mut self, pc: u32, grid_idx: (u16, u16, u16), block_idxs: Vec<Vec<(u16, u16, u16)>>) {
+        self.scheduler.spawn_n_warps(pc, block_idxs.len());
+        self.warps.iter_mut().zip(block_idxs.iter()).for_each(|(warp, warp_block_idxs)| {
+            warp.set_grid_blocks(grid_idx, warp_block_idxs);
+        } );
+    }
+
     // TODO: This should differentiate between different threadblocks.
     pub fn all_warps_retired(&self) -> bool {
         self.scheduler.all_warps_retired()
