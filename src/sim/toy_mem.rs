@@ -60,6 +60,7 @@ impl HasMemory for ToyMemory {
                     }
                 }
                 std::io::stdout().flush().unwrap();
+                return Ok(());
             }
         }
 
