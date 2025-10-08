@@ -189,10 +189,10 @@ impl Warp {
         });
     }
 
-    pub fn set_grid_blocks(&mut self, grid_idx: (u16, u16, u16), block_idxs: &Vec<(u16, u16, u16)>) {
-        assert_eq!(self.base.state.csr_file.len(), block_idxs.len());
-        self.base.state.csr_file.iter_mut().zip(block_idxs.iter()).for_each(|(csr_file, block_idx)| {
-            csr_file.set_grid_block(grid_idx, *block_idx);
+    pub fn set_block_threads(&mut self, block_idx: (u16, u16, u16), thread_idxs: &Vec<(u16, u16, u16)>) {
+        assert_eq!(self.base.state.csr_file.len(), thread_idxs.len());
+        self.base.state.csr_file.iter_mut().zip(thread_idxs.iter()).for_each(|(csr_file, thread_idx)| {
+            csr_file.set_block_thread(block_idx, *thread_idx);
         });
     }
 
