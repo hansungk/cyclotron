@@ -189,7 +189,7 @@ impl Warp {
         });
     }
 
-    pub fn set_block_threads(&mut self, block_idx: (u16, u16, u16), thread_idxs: &Vec<(u16, u16, u16)>) {
+    pub fn set_block_threads(&mut self, block_idx: (u32, u32, u32), thread_idxs: &Vec<(u32, u32, u32)>) {
         assert_eq!(self.base.state.csr_file.len(), thread_idxs.len());
         self.base.state.csr_file.iter_mut().zip(thread_idxs.iter()).for_each(|(csr_file, thread_idx)| {
             csr_file.set_block_thread(block_idx, *thread_idx);
