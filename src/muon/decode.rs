@@ -23,16 +23,19 @@ pub struct DecodedInst {
     pub raw: u64,
 }
 
-#[derive(Debug, Default, Copy, Clone)]
 /// Instruction bundle after operand collection, i.e. rs_addr -> rs_data
 pub struct IssuedInst {
     pub opcode: u16,
     pub rd_addr: u8,
     pub f3: u8,
-    pub rs1_data: u32,
-    pub rs2_data: u32,
-    pub rs3_data: u32,
-    pub rs4_data: u32,
+    pub rs1_addr: u8,
+    pub rs2_addr: u8,
+    pub rs3_addr: u8,
+    pub rs4_addr: u8,
+    pub rs1_data: Vec<Option<u32>>,
+    pub rs2_data: Vec<Option<u32>>,
+    pub rs3_data: Vec<Option<u32>>,
+    pub rs4_data: Vec<Option<u32>>,
     pub f7: u8,
     pub imm32: u32,
     pub imm24: i32,

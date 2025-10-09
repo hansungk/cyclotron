@@ -4,7 +4,7 @@ use log::info;
 use crate::base::behavior::*;
 use crate::base::module::{module, ModuleBase, IsModule};
 use crate::muon::config::MuonConfig;
-use crate::muon::decode::DecodedInst;
+use crate::muon::decode::IssuedInst;
 use crate::muon::execute::SFUType;
 use crate::utils::{BitMask, BitSlice};
 
@@ -89,7 +89,7 @@ impl Scheduler {
     }
 
     pub fn sfu(&mut self, wid: usize, first_lid: usize, sfu: SFUType,
-               decoded_inst: &DecodedInst, rs1: Vec<u32>, rs2: Vec<u32>) {
+               decoded_inst: &IssuedInst, rs1: Vec<u32>, rs2: Vec<u32>) {
         // for warp-wide operations, we take lane 0 to be the truth
         self.base.state.pc[wid] = decoded_inst.pc + 8; // flush
         info!("processing writeback for {}: resetting next pc to 0x{:08x}", wid, decoded_inst.pc + 8);

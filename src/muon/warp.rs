@@ -3,7 +3,7 @@ use crate::base::mem::HasMemory;
 use crate::base::module::{module, IsModule, ModuleBase};
 use crate::muon::config::MuonConfig;
 use crate::muon::csr::CSRFile;
-use crate::muon::decode::{DecodeUnit, DecodedInst, InstBufEntry, RegFile};
+use crate::muon::decode::{DecodeUnit, IssuedInst, InstBufEntry, RegFile};
 use crate::muon::execute::ExecuteUnit;
 use crate::muon::scheduler::{Schedule, Scheduler};
 use crate::sim::log::Logger;
@@ -40,9 +40,8 @@ impl ModuleBehaviors for Warp {
 module!(Warp, WarpState, MuonConfig,
 );
 
-#[derive(Debug)]
 pub struct Writeback {
-    pub inst: DecodedInst,
+    pub inst: IssuedInst,
     pub tmask: u32,
     pub rd_addr: u8,
     pub rd_data: Vec<Option<u32>>,
@@ -53,17 +52,6 @@ pub struct ExecErr {
     pub pc: u32,
     pub warp_id: usize,
     pub message: Option<String>,
-}
-
-impl Default for Writeback {
-    fn default() -> Self {
-        Writeback {
-            inst: Default::default(),
-            tmask: 0,
-            rd_addr: 0,
-            rd_data: Vec::new(),
-        }
-    }
 }
 
 impl Writeback {
@@ -129,15 +117,18 @@ impl Warp {
     }
 
     pub fn backend(&mut self, ibuf: &InstBufEntry, scheduler: &mut Scheduler, neutrino: &mut Neutrino) -> Result<Writeback, ExecErr> {
-        let inst = ibuf.inst;
+        let decoded = ibuf.inst;
         let tmask = ibuf.tmask;
         let core_id = self.conf().lane_config.core_id;
         let mut rf = self.base.state.reg_file.iter_mut().collect::<Vec<_>>();
         let mut csrf = self.base.state.csr_file.iter_mut().collect::<Vec<_>>();
 
+        // operand collection
+        let issued = ExecuteUnit::collect(ibuf, &rf);
+
         let writeback = catch_unwind(AssertUnwindSafe(|| {
             ExecuteUnit::execute(
-                inst,
+                issued,
                 core_id,
                 self.wid,
                 tmask,
@@ -156,7 +147,7 @@ impl Warp {
                 info!(self.logger, "@t={} [{}] PC=0x{:08x}, rd={:3}, data=[{} lanes valid]",
                     self.base.cycle,
                     self.name(),
-                    inst.pc,
+                    decoded.pc,
                     writeback.rd_addr,
                     writeback.num_rd_data()
                 );
@@ -166,7 +157,7 @@ impl Warp {
             Err(payload) => {
                 let message = payload.downcast::<String>().ok().map(|s| *s);
                 Err(ExecErr {
-                    pc: inst.pc,
+                    pc: decoded.pc,
                     warp_id: self.wid,
                     message,
                 })
