@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::iter::{once, repeat};
 use std::sync::Arc;
 use log::info;
 use crate::base::behavior::*;
@@ -72,12 +73,17 @@ impl Scheduler {
         self.state_mut().active_warps = 1;
     }
 
-    pub fn spawn_n_warps(&mut self, pc: u32, n: usize) {
+    pub fn spawn_n_warps(&mut self, pc: u32, thread_idxs: &Vec<Vec<(u32, u32, u32)>>) {
         let all_ones = u32::MAX; // 0xFFFF
+        let last_warp_mask = thread_idxs.last().expect("last warp is empty").iter().enumerate().fold(0, |mask, (i, _)| mask | 1 << i);
+        let num_warps = thread_idxs.len();
+        let disabled_warps = self.conf().num_warps - num_warps;
+        assert!(disabled_warps <= self.conf().num_warps);
+
         self.state_mut().started = true;
-        self.state_mut().thread_masks = [all_ones].repeat(self.conf().num_warps);
-        self.state_mut().pc = [pc].repeat(self.conf().num_warps);
-        self.base.state.active_warps = n as u32;
+        self.state_mut().thread_masks = repeat(all_ones).take(num_warps - 1).chain(once(last_warp_mask)).chain(repeat(0).take(disabled_warps)).collect();
+        self.state_mut().pc = [pc].repeat(num_warps);
+        self.base.state.active_warps = num_warps as u32;
     }
 
     pub fn take_branch(&mut self, wid: usize, target_pc: u32) {
