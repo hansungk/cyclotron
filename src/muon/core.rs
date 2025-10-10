@@ -7,7 +7,7 @@ use crate::base::{behavior::*, module::*};
 use crate::muon::config::{LaneConfig, MuonConfig};
 use crate::muon::scheduler::{Schedule, Scheduler};
 use crate::muon::warp::{ExecErr, Warp, Writeback};
-use crate::muon::decode::InstBuf;
+use crate::muon::decode::{InstBuf, IssuedInst};
 use crate::neutrino::neutrino::Neutrino;
 use crate::sim::toy_mem::ToyMemory;
 
@@ -86,6 +86,8 @@ impl MuonCore {
         InstBuf(ibuf_entries.collect())
     }
 
+    /// Execute decoded instructions from all active warps, i.o.w. heads of the instruction buffer,
+    /// in the core backend.
     pub fn backend(&mut self, ibuf: &InstBuf, neutrino: &mut Neutrino) -> Result<(), ExecErr> {
         let mut writebacks: Vec<Option<Writeback>> = Vec::with_capacity(self.warps.len());
 
@@ -107,6 +109,16 @@ impl MuonCore {
         self.warps.iter_mut().for_each(Warp::tick_one);
 
         Ok(())
+    }
+
+    /// Execute an issued instruction from a single warp in the core's functional unit backend.
+    pub fn execute(&mut self, warp_id: usize, issued: IssuedInst, tmask: u32, neutrino: &mut Neutrino) -> Writeback {
+        let writeback = self.warps[warp_id].execute(issued, tmask, &mut self.scheduler, neutrino);
+        self.warps[warp_id].tick_one();
+
+        // no tracing done; instruction tracing is only enabled in the ISA-model mode
+
+        writeback
     }
 
     /// Process a single instruction in the core by sequencing both the frontend and the backend.

@@ -1,4 +1,4 @@
-use std::sync::{Arc, RwLock};
+use std::sync::RwLock;
 use std::fmt::Debug;
 use num_derive::FromPrimitive;
 use num_traits::ToPrimitive;
