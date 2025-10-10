@@ -42,7 +42,7 @@ impl HasMemory for FlatMemory {
 
 impl FlatMemory {
     fn new() -> Self {
-        let bytes = vec![0u8, 1 << 32];
+        let bytes = vec![0u8; 1 << 32];
         Self { bytes }
     }
 
