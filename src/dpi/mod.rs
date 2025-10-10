@@ -1,4 +1,4 @@
-#![allow(dead_code, unused_variables, unreachable_code)]
+// #![allow(dead_code, unreachable_code)]
 use crate::base::behavior::*;
 use crate::muon::decode::IssuedInst;
 use crate::sim::top::Sim;
@@ -13,18 +13,6 @@ struct Context {
 
 /// Global singleton to maintain simulator context across independent DPI calls.
 static CELL: RwLock<Option<Context>> = RwLock::new(None);
-
-struct ReqBundle {
-    valid: bool,
-    size: u32,
-    address: u64,
-}
-
-struct RespBundle {
-    valid: bool,
-    _size: u32,
-    data: [u8; 8],
-}
 
 pub fn assert_single_core(sim: &Sim) {
     assert!(sim.top.clusters.len() == 1, "currently assumes model has 1 cluster and 1 core");
@@ -169,8 +157,8 @@ pub fn cyclotron_backend_rs(
     issue_tmask: u32,
     issue_raw_inst: u64,
     writeback_valid_ptr: *mut u8,
-    writeback_tmask_ptr: *mut u8,
-    writeback_rd_addr_ptr: *mut u32,
+    writeback_tmask_ptr: *mut u32,
+    writeback_rd_addr_ptr: *mut u8,
     writeback_rd_data_ptr: *mut u32,
 ) {
     let mut context_guard = CELL.write().unwrap();
@@ -184,10 +172,11 @@ pub fn cyclotron_backend_rs(
     let issue_rs1_data = unsafe { std::slice::from_raw_parts(issue_rs1_data_ptr, config.num_lanes) };
     let issue_rs2_data = unsafe { std::slice::from_raw_parts(issue_rs2_data_ptr, config.num_lanes) };
     let issue_rs3_data = unsafe { std::slice::from_raw_parts(issue_rs3_data_ptr, config.num_lanes) };
-    let issue_pred = unsafe { std::slice::from_raw_parts(issue_pred_ptr, config.num_lanes) };
+    // predicates not used for now
+    let _issue_pred = unsafe { std::slice::from_raw_parts(issue_pred_ptr, config.num_lanes) };
     let writeback_valid = unsafe { writeback_valid_ptr.as_mut().expect("pointer was null") };
-    let writeback_tmask = unsafe { std::slice::from_raw_parts_mut(writeback_tmask_ptr, config.num_lanes) };
-    let writeback_rd_addr = unsafe { std::slice::from_raw_parts_mut(writeback_rd_addr_ptr, config.num_lanes) };
+    let writeback_tmask = unsafe { writeback_tmask_ptr.as_mut().expect("pointer was null") };
+    let writeback_rd_addr = unsafe { writeback_rd_addr_ptr.as_mut().expect("pointer was null") };
     let writeback_rd_data = unsafe { std::slice::from_raw_parts_mut(writeback_rd_data_ptr, config.num_lanes) };
 
     let issue_rs1_data_vec: Vec<_> = issue_rs1_data.iter().map(|u| { Some(*u) }).collect();
@@ -196,7 +185,7 @@ pub fn cyclotron_backend_rs(
     let issue_rs4_data_vec: Vec<_> = issue_rs3_data.iter().map(|_| { Some(0 /*unused*/) }).collect();
 
     if issue_valid != 1 {
-        // if no issue, tie off writeback and early-exit
+        // if no issue, tie off writeback and exit early
         *writeback_valid = 0 as u8;
         return;
     }
@@ -219,7 +208,12 @@ pub fn cyclotron_backend_rs(
         pc: issue_pc,
         raw: issue_raw_inst,
     };
-    let writeback = core.execute(issue_warp_id.into(), issued, issue_tmask, neutrino);
 
-    // core.backend(ibuf, neutrino);
+    let writeback = core.execute(issue_warp_id.into(), issued, issue_tmask, neutrino);
+    *writeback_valid = 1 as u8;
+    *writeback_tmask = writeback.tmask;
+    *writeback_rd_addr = writeback.rd_addr;
+    for (data_pin, owb) in zip(writeback_rd_data, writeback.rd_data) {
+        *data_pin = owb.unwrap_or(0);
+    }
 }
