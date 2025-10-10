@@ -86,10 +86,10 @@ impl HasMemory for ToyMemory {
             Ok(())
         } else {
             assert!((n % 4 == 0) && n > 0, "word sized requests only");
-            (0..n).step_by(4).for_each(|a| {
+            for a in (0..n).step_by(4) {
                 let write_slice = &data[a..a + 4];
                 self.mem.insert(addr + a, u32::from_le_bytes(write_slice.try_into().unwrap()));
-            });
+            }
             Ok(())
         }
     }

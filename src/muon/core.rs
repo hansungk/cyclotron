@@ -55,9 +55,9 @@ impl MuonCore {
     pub fn spawn_n_warps(&mut self, pc: u32, block_idx: (u32, u32, u32), thread_idxs: Vec<Vec<(u32, u32, u32)>>) {
         assert!(thread_idxs.len() <= self.conf().num_warps && thread_idxs.len() > 0);
         self.scheduler.spawn_n_warps(pc, &thread_idxs);
-        self.warps.iter_mut().zip(thread_idxs.iter()).for_each(|(warp, warp_thread_idxs)| {
+        for (warp, warp_thread_idxs) in self.warps.iter_mut().zip(thread_idxs.iter()) {
             warp.set_block_threads(block_idx, warp_thread_idxs);
-        } );
+        }
     }
 
     // TODO: This should differentiate between different threadblocks.
@@ -101,7 +101,8 @@ impl MuonCore {
         Ok(())
     }
 
-    pub fn execute(&mut self, neutrino: &mut Neutrino) -> Result<(), ExecErr> {
+    /// Process a single instruction in the core by sequencing both the frontend and the backend.
+    pub fn process(&mut self, neutrino: &mut Neutrino) -> Result<(), ExecErr> {
         let schedules = self.schedule();
         let ibuf = self.frontend(&schedules);
         self.backend(&ibuf, neutrino)

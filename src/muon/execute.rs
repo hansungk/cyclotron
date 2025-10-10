@@ -606,10 +606,10 @@ impl ExecuteUnit {
                 Self::execute_lanes(|_| { Some(issued.pc + 8) }, tmask, rf)
             }
             Opcode::LOAD => {
-                Self::execute_lanes(|lrf| ExecuteUnit::load(&issued, lrf, gmem), tmask, rf)
+                Self::execute_lanes(|lane| ExecuteUnit::load(&issued, lane, gmem), tmask, rf)
             }
             Opcode::STORE => {
-                Self::execute_lanes(|lrf| ExecuteUnit::store(&issued, lrf, gmem), tmask, rf)
+                Self::execute_lanes(|lane| ExecuteUnit::store(&issued, lane, gmem), tmask, rf)
             }
             Opcode::MISC_MEM => {
                 let imp = match issued.f3 {

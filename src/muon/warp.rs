@@ -9,6 +9,7 @@ use crate::muon::scheduler::{Schedule, Scheduler};
 use crate::sim::log::Logger;
 use crate::info;
 use crate::sim::toy_mem::ToyMemory;
+use std::iter::zip;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{Arc, RwLock};
 use crate::neutrino::neutrino::Neutrino;
@@ -105,10 +106,10 @@ impl Warp {
     pub fn frontend(&mut self, schedule: Schedule) -> InstBufEntry {
         // fetch
         let inst = self.fetch(schedule.pc);
-        self.state_mut().csr_file.iter_mut().for_each(|c| {
+        for c in self.state_mut().csr_file.iter_mut() {
             c.emu_access(0xcc3, schedule.active_warps);
             c.emu_access(0xcc4, schedule.mask);
-        });
+        }
 
         // decode
         let inst = DecodeUnit::decode(inst, schedule.pc);
@@ -118,36 +119,28 @@ impl Warp {
 
     pub fn backend(&mut self, ibuf: &InstBufEntry, scheduler: &mut Scheduler, neutrino: &mut Neutrino) -> Result<Writeback, ExecErr> {
         let decoded = ibuf.inst;
+        let pc = decoded.pc;
         let tmask = ibuf.tmask;
-        let core_id = self.conf().lane_config.core_id;
-        let mut rf = self.base.state.reg_file.iter_mut().collect::<Vec<_>>();
-        let mut csrf = self.base.state.csr_file.iter_mut().collect::<Vec<_>>();
 
         // operand collection
+        let rf = self.base.state.reg_file.iter_mut().collect::<Vec<_>>();
         let issued = ExecuteUnit::collect(ibuf, &rf);
 
+        // execute
         let writeback = catch_unwind(AssertUnwindSafe(|| {
-            ExecuteUnit::execute(
-                issued,
-                core_id,
-                self.wid,
-                tmask,
-                &mut rf,
-                &mut csrf,
-                scheduler,
-                neutrino,
-                &mut self.gmem,
-            )
+            self.execute(issued, tmask, scheduler, neutrino)
         }));
 
+        // writeback
         match writeback {
             Ok(writeback) => {
+                let mut rf = self.base.state.reg_file.iter_mut().collect::<Vec<_>>();
                 Self::writeback(&writeback, &mut rf);
 
                 info!(self.logger, "@t={} [{}] PC=0x{:08x}, rd={:3}, data=[{} lanes valid]",
                     self.base.cycle,
                     self.name(),
-                    decoded.pc,
+                    pc,
                     writeback.rd_addr,
                     writeback.num_rd_data()
                 );
@@ -157,7 +150,7 @@ impl Warp {
             Err(payload) => {
                 let message = payload.downcast::<String>().ok().map(|s| *s);
                 Err(ExecErr {
-                    pc: decoded.pc,
+                    pc,
                     warp_id: self.wid,
                     message,
                 })
@@ -165,9 +158,28 @@ impl Warp {
         }
     }
 
+    pub fn execute(&mut self, issued: IssuedInst, tmask: u32, scheduler: &mut Scheduler, neutrino: &mut Neutrino) -> Writeback {
+        let core_id = self.conf().lane_config.core_id;
+        let mut rf = self.base.state.reg_file.iter_mut().collect::<Vec<_>>();
+        let mut csrf = self.base.state.csr_file.iter_mut().collect::<Vec<_>>();
+
+        let writeback = ExecuteUnit::execute(
+            issued,
+            core_id,
+            self.wid,
+            tmask,
+            &mut rf,
+            &mut csrf,
+            scheduler,
+            neutrino,
+            &mut self.gmem,
+        );
+        writeback
+    }
+
     /// Fast-path that fuses frontend/backend for every warp instead of two-stage schedule/ibuf
     /// iteration.
-    pub fn execute(&mut self, schedule: Schedule,
+    pub fn process(&mut self, schedule: Schedule,
                    scheduler: &mut Scheduler, neutrino: &mut Neutrino) -> Result<(), ExecErr> {
         let ibuf = self.frontend(schedule.clone());
         self.backend(&ibuf, scheduler, neutrino).map(|_| ())
@@ -175,17 +187,17 @@ impl Warp {
 
     pub fn writeback(wb: &Writeback, rf: &mut Vec<&mut RegFile>) {
         let rd_addr = wb.rd_addr;
-        rf.iter_mut().zip(wb.rd_data.iter()).for_each(|(lrf, ldata)| {
+        for (lrf, ldata) in zip(rf.iter_mut(), wb.rd_data.iter()) {
             ldata.map(|data| lrf.write_gpr(rd_addr, data));
-        });
+        }
     }
 
     pub fn set_block_threads(&mut self, block_idx: (u32, u32, u32), thread_idxs: &Vec<(u32, u32, u32)>) {
         assert!(thread_idxs.len() <= self.base.state.csr_file.len());
         assert!(thread_idxs.len() > 0);
-        self.base.state.csr_file.iter_mut().zip(thread_idxs.iter()).for_each(|(csr_file, thread_idx)| {
+        for (csr_file, thread_idx) in zip(self.base.state.csr_file.iter_mut(), thread_idxs.iter()) {
             csr_file.set_block_thread(block_idx, *thread_idx);
-        });
+        }
     }
 
 }
