@@ -68,8 +68,8 @@ pub fn cyclotron_fetch_rs(
 #[no_mangle]
 /// Get a decoded instruction bundle from the instruction trace.  Also advances the ISA model by a
 /// single tick.
-/// All signals are arrays that map all num_warps.
-pub fn cyclotron_get_trace_rs(
+/// SAFETY: All signals are arrays of size num_warps.
+pub unsafe fn cyclotron_get_trace_rs(
     ready_ptr: *const u8,
     valid_ptr: *mut u8,
     pc_ptr: *mut u32,
@@ -90,6 +90,7 @@ pub fn cyclotron_get_trace_rs(
         core.get_tracer().peek(w).cloned() // @perf: expensive?
     }).collect();
 
+    // SAFETY: precondition of function guarantees this is valid
     let ready = unsafe { std::slice::from_raw_parts(ready_ptr, config.num_warps) };
     let valid = unsafe { std::slice::from_raw_parts_mut(valid_ptr, config.num_warps) };
     let pc = unsafe { std::slice::from_raw_parts_mut(pc_ptr, config.num_warps) };
@@ -129,3 +130,6 @@ pub fn cyclotron_get_trace_rs(
 
     finished[0] = sim.finished() as u8;
 }
+
+mod mem_model;
+mod backend_model;
