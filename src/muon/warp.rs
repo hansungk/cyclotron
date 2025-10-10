@@ -55,6 +55,10 @@ pub struct ExecErr {
     pub message: Option<String>,
 }
 
+// TODO: make ExecErr a proper error type by providing impls
+// impl Display for ExecErr
+// impl Error for ExecErr
+
 impl Writeback {
     pub fn rd_data_str(&self) -> String {
         let lanes: Vec<String> = self.rd_data.iter().map(|lrd| {
@@ -117,14 +121,14 @@ impl Warp {
         InstBufEntry { inst, tmask }
     }
 
-    pub fn backend(&mut self, ibuf: &InstBufEntry, scheduler: &mut Scheduler, neutrino: &mut Neutrino) -> Result<Writeback, ExecErr> {
+    pub fn backend(&mut self, ibuf: InstBufEntry, scheduler: &mut Scheduler, neutrino: &mut Neutrino) -> Result<Writeback, ExecErr> {
         let decoded = ibuf.inst;
         let pc = decoded.pc;
         let tmask = ibuf.tmask;
 
         // operand collection
-        let rf = self.base.state.reg_file.iter_mut().collect::<Vec<_>>();
-        let issued = ExecuteUnit::collect(ibuf, &rf);
+        let rf = self.base.state.reg_file.as_slice();
+        let issued = ExecuteUnit::collect(&ibuf, rf);
 
         // execute
         let writeback = catch_unwind(AssertUnwindSafe(|| {
@@ -134,8 +138,8 @@ impl Warp {
         // writeback
         match writeback {
             Ok(writeback) => {
-                let mut rf = self.base.state.reg_file.iter_mut().collect::<Vec<_>>();
-                Self::writeback(&writeback, &mut rf);
+                let rf_mut = self.base.state.reg_file.as_mut_slice();
+                Self::writeback(&writeback, rf_mut);
 
                 info!(self.logger, "@t={} [{}] PC=0x{:08x}, rd={:3}, data=[{} lanes valid]",
                     self.base.cycle,
@@ -160,19 +164,19 @@ impl Warp {
 
     pub fn execute(&mut self, issued: IssuedInst, tmask: u32, scheduler: &mut Scheduler, neutrino: &mut Neutrino) -> Writeback {
         let core_id = self.conf().lane_config.core_id;
-        let mut rf = self.base.state.reg_file.iter_mut().collect::<Vec<_>>();
-        let mut csrf = self.base.state.csr_file.iter_mut().collect::<Vec<_>>();
+        let rf = self.base.state.reg_file.as_mut_slice();
+        let csrf = self.base.state.csr_file.as_mut_slice();
 
         let writeback = ExecuteUnit::execute(
             issued,
             core_id,
             self.wid,
             tmask,
-            &mut rf,
-            &mut csrf,
+            rf,
+            csrf,
             scheduler,
             neutrino,
-            &mut self.gmem,
+            &self.gmem,
         );
         writeback
     }
@@ -181,13 +185,13 @@ impl Warp {
     /// iteration.
     pub fn process(&mut self, schedule: Schedule,
                    scheduler: &mut Scheduler, neutrino: &mut Neutrino) -> Result<(), ExecErr> {
-        let ibuf = self.frontend(schedule.clone());
-        self.backend(&ibuf, scheduler, neutrino).map(|_| ())
+        let ibuf = self.frontend(schedule);
+        self.backend(ibuf, scheduler, neutrino).map(|_| ())
     }
 
-    pub fn writeback(wb: &Writeback, rf: &mut Vec<&mut RegFile>) {
+    pub fn writeback(wb: &Writeback, rf: &mut [RegFile]) {
         let rd_addr = wb.rd_addr;
-        for (lrf, ldata) in zip(rf.iter_mut(), wb.rd_data.iter()) {
+        for (lrf, ldata) in zip(rf, &wb.rd_data) {
             ldata.map(|data| lrf.write_gpr(rd_addr, data));
         }
     }

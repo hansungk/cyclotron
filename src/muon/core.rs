@@ -1,3 +1,4 @@
+use std::iter::zip;
 use std::sync::{Arc, RwLock};
 use crate::sim::log::Logger;
 use crate::sim::trace::Tracer;
@@ -72,10 +73,13 @@ impl MuonCore {
         schedules
     }
 
-    pub fn frontend(&mut self, schedules: &Vec<Option<Schedule>>) -> InstBuf {
-        let ibuf_entries = self.warps.iter_mut().zip(schedules).map(|(warp, sched)| {
-            sched.as_ref().map(|s| {
-                warp.frontend(s.clone())
+    pub fn frontend(&mut self, schedules: &[Option<Schedule>]) -> InstBuf {
+        let warps = self.warps.iter_mut();
+        let schedules = schedules.iter().copied();
+
+        let ibuf_entries = zip(warps, schedules).map(|(warp, sched)| {
+            sched.map(|s| {
+                warp.frontend(s)
             })
         });
 
@@ -84,8 +88,12 @@ impl MuonCore {
 
     pub fn backend(&mut self, ibuf: &InstBuf, neutrino: &mut Neutrino) -> Result<(), ExecErr> {
         let mut writebacks: Vec<Option<Writeback>> = Vec::with_capacity(self.warps.len());
-        for (warp, ibuf) in self.warps.iter_mut().zip(&ibuf.0) {
-            let wb = match ibuf.as_ref() {
+
+        let warps = self.warps.iter_mut();
+        let ibuf_entries = ibuf.0.iter().copied();
+
+        for (warp, ibuf) in zip(warps, ibuf_entries) {
+            let wb = match ibuf {
                 Some(ib) => Some(warp.backend(ib, &mut self.scheduler, neutrino)?),
                 None => None,
             };

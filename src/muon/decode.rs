@@ -44,6 +44,7 @@ pub struct IssuedInst {
 }
 
 // per-warp
+#[derive(Debug, Clone, Copy)]
 pub struct InstBufEntry {
     pub inst: DecodedInst,
     pub tmask: u32,
@@ -160,78 +161,4 @@ impl DecodeUnit {
             raw: inst,
         }
     }
-}
-
-const fn bit_mask(msb: u64, lsb: u64) -> u64 {
-    let len = msb - lsb + 1;
-    let offset = lsb;
-
-    ((1 << len) - 1) << offset
-}
-
-pub const PRED_MASK: u64 = bit_mask(63, 60);
-pub const OPCODE_MASK: u64 = bit_mask(8, 0);
-
-pub const RD_MASK: u64 = bit_mask(16, 9);
-pub const RS1_MASK: u64 = bit_mask(27, 20);
-pub const RS2_MASK: u64 = bit_mask(35, 28);
-pub const RS3_MASK: u64 = bit_mask(43, 36);
-pub const RS4_MASK: u64 = bit_mask(51, 44);
-
-pub const IMM24_MASK: u64 = bit_mask(59, 36);
-pub const UIMM32_MASK: u64 = IMM24_MASK | RS2_MASK; // actual value is swizzled
-pub const IMM12_1_MASK: u64 = bit_mask(47, 36);
-pub const IMM12_2_MASK: u64 = bit_mask(59, 48);
-
-pub const F3_MASK: u64 = bit_mask(19, 17);
-pub const F7_MASK: u64 = bit_mask(58, 52);
-
-#[macro_export]
-macro_rules! make_bitpat {
-    ($($a:tt => $b:expr),+) => {
-        {
-            #[allow(unused_imports)]
-            use $crate::muon::decode::{
-                PRED_MASK,
-                OPCODE_MASK,
-        
-                RD_MASK,
-                RS1_MASK,
-                RS2_MASK,
-                RS3_MASK,
-                RS4_MASK,
-        
-                IMM24_MASK,
-                UIMM32_MASK,
-                IMM12_1_MASK,
-                IMM12_2_MASK,
-        
-                F3_MASK,
-                F7_MASK
-            };
-
-            make_bitpat!(DUMMY, $($a => $b),+)
-        }
-    };
-    
-
-    (DUMMY, $a:tt => $b:expr) => {
-        {
-            let mask = $crate::muon::decode::$a;
-            let pattern = $b << u64::trailing_zeros(mask);
-
-            (mask, pattern)
-        }
-    };
-
-    (DUMMY, $a:tt => $b:expr, $($c:tt => $d:expr),+) => {
-        {
-            let (inner_mask, inner_pattern) = make_bitpat!(DUMMY, $($c => $d),+);
-
-            let mask = $crate::muon::decode::$a;
-            let pattern = $b << u64::trailing_zeros(mask);
-
-            (inner_mask | mask, inner_pattern | pattern)
-        }
-    };
 }

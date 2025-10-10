@@ -29,7 +29,7 @@ pub struct SchedulerState {
 }
 
 /// Per-warp info of which instruction to fetch next
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, Copy)]
 pub struct Schedule {
     pub pc: u32,
     pub mask: u32,
@@ -214,7 +214,7 @@ impl Scheduler {
 
     pub fn get_schedule(&mut self, wid: usize) -> Option<Schedule> {
         (self.state().active_warps.bit(wid) && !self.state().stalled_warps.bit(wid)).then(|| {
-            let &pc = &self.state().pc[wid];
+            let pc = self.state().pc[wid];
             let sched = Schedule {
                 pc,
                 mask: self.base.state.thread_masks[wid],

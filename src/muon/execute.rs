@@ -373,7 +373,7 @@ impl ExecuteUnit {
         taken.then_some(branch_target)
     }
 
-    pub fn load(issued_inst: &IssuedInst, lane: usize, gmem: &mut Arc<RwLock<ToyMemory>>) -> Option<u32> {
+    pub fn load(issued_inst: &IssuedInst, lane: usize, gmem: &RwLock<ToyMemory>) -> Option<u32> {
         // TODO: simplify this to have the phf_map only provide the instruction name
         static INSTS: phf::Map<u8, InstImp<2>> = phf_map! {
             0u8 => InstImp("lb",  |[a, b]| { a.wrapping_add(b) }),
@@ -415,7 +415,7 @@ impl ExecuteUnit {
         Some(masked_load)
     }
 
-    pub fn store(issued_inst: &IssuedInst, lane: usize, gmem: &mut Arc<RwLock<ToyMemory>>) -> Option<u32> {
+    pub fn store(issued_inst: &IssuedInst, lane: usize, gmem: &RwLock<ToyMemory>) -> Option<u32> {
         static INSTS: phf::Map<u8, InstImp<2>> = phf_map! {
             0u8 => InstImp("sb", |[a, imm]| { a.wrapping_add(imm) }),
             1u8 => InstImp("sh", |[a, imm]| { a.wrapping_add(imm) }),
@@ -483,7 +483,7 @@ impl ExecuteUnit {
     }
 
     pub fn sfu(issued_inst: &IssuedInst, wid: usize, first_lid: usize,
-               rf: &Vec<&mut RegFile>, scheduler: &mut Scheduler) {
+               rf: &mut [RegFile], scheduler: &mut Scheduler) {
         let insts = phf_map! {
             // sets thread mask to rs1[NT-1:0]
             0b000_0000000u16 => InstDef("vx_tmc",   SFUType::TMC),
@@ -515,7 +515,7 @@ impl ExecuteUnit {
     }
 
     /// Collect source operand values from the regfile.
-    pub fn collect(ibuf: &InstBufEntry, rf: &Vec<&mut RegFile>) -> IssuedInst {
+    pub fn collect(ibuf: &InstBufEntry, rf: &[RegFile]) -> IssuedInst {
         let decoded = ibuf.inst;
         let tmask = ibuf.tmask;
 
@@ -553,7 +553,7 @@ impl ExecuteUnit {
     }
 
     #[inline]
-    fn execute_lanes<F>(mut func: F, tmask: u32, rf: &mut Vec<&mut RegFile>) -> Vec<Option<u32>>
+    fn execute_lanes<F>(mut func: F, tmask: u32, rf: &mut [RegFile]) -> Vec<Option<u32>>
     where
         F: FnMut(usize) -> Option<u32>
     {
@@ -566,15 +566,8 @@ impl ExecuteUnit {
     }
 
     pub fn execute(issued: IssuedInst, cid: usize, wid: usize, tmask: u32,
-                   rf: &mut Vec<&mut RegFile>, csrf: &mut Vec<&mut CSRFile>,
-                   scheduler: &mut Scheduler, neutrino: &mut Neutrino, gmem: &mut Arc<RwLock<ToyMemory>>) -> Writeback {
-        // let isa = ISA::get_insts();
-        // let (op, alu_result, actions) = isa.iter().map(|inst_group| {
-        //     inst_group.execute(&decoded)
-        // }).fold(None, |prev, curr| {
-        //     assert!(prev.clone().and(curr.clone()).is_none(), "multiple viable implementations for {}", &decoded);
-        //     prev.or(curr)
-        // }).expect(&format!("unimplemented instruction {}", &decoded));
+                   rf: &mut [RegFile], csrf: &mut [CSRFile],
+                   scheduler: &mut Scheduler, neutrino: &mut Neutrino, gmem: &RwLock<ToyMemory>) -> Writeback {
 
         let num_lanes = rf.len();
         // lane id of first active thread
@@ -582,7 +575,7 @@ impl ExecuteUnit {
 
         // debug!("execute pc 0x{:08x} {}", issued.pc, issued);
 
-        let empty = vec!(None::<u32>; num_lanes);
+        let empty = vec![None::<u32>; num_lanes];
         let collected_rds = match issued.opcode {
             Opcode::OP | Opcode::OP_IMM | Opcode::LUI | Opcode::AUIPC => {
                 Self::execute_lanes(|lane| ExecuteUnit::alu(&issued, lane), tmask, rf)
@@ -649,7 +642,7 @@ impl ExecuteUnit {
                 todo!("graphics ops unimplemented")
             }
             Opcode::CUSTOM2 => {
-                neutrino.execute(&issued, cid, wid, tmask, rf[first_lid]);
+                neutrino.execute(&issued, cid, wid, tmask, &mut rf[first_lid]);
                 empty
             }
 
