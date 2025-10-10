@@ -100,7 +100,7 @@ impl Warp {
 
     /// Returns un-decoded instruction bits at a given PC.
     pub fn fetch(&self, pc: u32) -> u64 {
-        let inst_bytes = *self.gmem.write()
+        let inst_bytes = self.gmem.write()
             .expect("gmem poisoned")
             .read::<8>(pc as usize)
             .expect("failed to fetch instruction");

@@ -24,13 +24,13 @@ impl ToyMemory {
 }
 
 impl HasMemory for ToyMemory {
-    fn read<const N: usize>(&mut self, addr: usize) -> Option<Arc<[u8; N]>> {
+    fn read<const N: usize>(&mut self, addr: usize) -> Option<[u8; N]> {
         assert!((N % 4 == 0) && N > 0, "word sized requests only");
         assert_eq!(addr & 0x3, 0, "misaligned load across word boundary");
         let words: Vec<_> = (addr..addr + N).step_by(4).map(|a| {
             (!self.mem.contains_key(&a)).then_some(()).and_then(|_| {
                 if let Some(elf) = &self.fallthrough {
-                    let d = elf.write().unwrap().read::<4>(a).map(|r| u32::from_le_bytes(*r));
+                    let d = elf.write().unwrap().read::<4>(a).map(|r| u32::from_le_bytes(r));
                     if d.is_some() {
                         self.mem.entry(a).or_insert(d.unwrap());
                     }
@@ -43,10 +43,10 @@ impl HasMemory for ToyMemory {
         }).collect();
 
         let byte_array: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
-        Some(Arc::new(byte_array.try_into().unwrap()))
+        Some(byte_array.try_into().unwrap())
     }
 
-    fn write(&mut self, addr: usize, data: &Vec<u8>) -> Result<(), String> {
+    fn write(&mut self, addr: usize, data: &[u8]) -> Result<(), String> {
         // Check if this is a write to the I/O console address range
         if let Some(config) = &self.config {
             if addr >= config.io_cout_addr && addr < config.io_cout_addr + config.io_cout_size {
@@ -69,7 +69,7 @@ impl HasMemory for ToyMemory {
             assert!((addr % 3) + n - 1 < 4, "misaligned store across word boundary");
             let word_addr = addr >> 2 << 2;
             if !self.mem.contains_key(&word_addr) {
-                let read_value = u32::from_le_bytes(*(self.read::<4>(addr >> 2 << 2).unwrap()));
+                let read_value = u32::from_le_bytes(self.read::<4>(addr >> 2 << 2).unwrap());
                 self.mem.insert(word_addr, read_value);
             }
             let curr = self.mem.entry(word_addr).or_insert(0u32);

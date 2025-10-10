@@ -399,7 +399,7 @@ impl ExecuteUnit {
         let load_data_bytes = gmem.write().expect("lock poisoned").read::<4>(
             load_addr as usize).expect("store failed");
 
-        let raw_load = u32::from_le_bytes(*load_data_bytes);
+        let raw_load = u32::from_le_bytes(load_data_bytes);
         let offset = ((alu_result & 3) * 8) as usize;
         let sext = !issued_inst.f3.bit(2);
         let opt_sext = |f: fn(u32) -> i32, x: u32| { if sext { f(x) as u32 } else { x } };

@@ -2,9 +2,8 @@ use std::sync::Arc;
 use crate::base::port::*;
 
 pub trait HasMemory {
-    fn read<const N: usize>(&mut self, addr: usize) -> Option<Arc<[u8; N]>>;
-
-    fn write(&mut self, addr: usize, data: &Vec<u8>) -> Result<(), String>;
+    fn read<const N: usize>(&mut self, addr: usize) -> Option<[u8; N]>;
+    fn write(&mut self, addr: usize, data: &[u8]) -> Result<(), String>;
 }
 
 #[derive(Debug, Default, Clone)]
