@@ -17,7 +17,7 @@ pub struct Tracer {
 pub struct Line {
     pub warp_id: u32,
     pub pc: u32,
-    pub opcode: u16,
+    pub opcode: u8,
     pub rd_addr: u8,
     pub rs1_addr: u8,
     pub rs2_addr: u8,

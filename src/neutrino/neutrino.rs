@@ -51,7 +51,8 @@ impl Neutrino {
                    rf: &mut RegFile) {
 
         // decode neutrino instruction
-        let imp = match issued.opcode {
+        let extended_opcode = issued.opcode as u16 | ((issued.opext as u16) << 7);
+        let imp = match extended_opcode {
             Opcode::NU_INVOKE => InstDef("nu.invoke", NeutrinoCmdType::Invoke),
             Opcode::NU_PAYLOAD => InstDef("nu.payload", NeutrinoCmdType::Payload),
             Opcode::NU_COMPLETE => InstDef("nu.complete", NeutrinoCmdType::Complete),

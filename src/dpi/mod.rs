@@ -141,7 +141,8 @@ pub fn cyclotron_backend_rs(
     issue_valid: u8,
     issue_warp_id: u8,
     issue_pc: u32,
-    issue_op: u16,
+    issue_op: u8,
+    issue_opext: u8,
     issue_f3: u8,
     issue_rd_addr: u8,
     issue_rs1_addr: u8,
@@ -192,6 +193,7 @@ pub fn cyclotron_backend_rs(
 
     let issued = IssuedInst {
         opcode: issue_op,
+        opext: issue_opext,
         rd_addr: issue_rd_addr,
         f3: issue_f3,
         rs1_addr: issue_rs1_addr,

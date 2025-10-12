@@ -9,7 +9,8 @@ use std::sync::Arc;
 
 #[derive(Debug, Default, Copy, Clone)]
 pub struct DecodedInst {
-    pub opcode: u16,
+    pub opcode: u8,
+    pub opext: u8,
     pub rd_addr: u8,
     pub f3: u8,
     pub rs1_addr: u8,
@@ -25,7 +26,8 @@ pub struct DecodedInst {
 
 /// Instruction bundle after operand collection, i.e. rs_addr -> rs_data
 pub struct IssuedInst {
-    pub opcode: u16,
+    pub opcode: u8,
+    pub opext: u8,
     pub rd_addr: u8,
     pub f3: u8,
     pub rs1_addr: u8,
@@ -147,7 +149,8 @@ impl DecodeUnit {
         let _imm12_2: i32 = sign_ext::<12>(inst.sel(59, 48) as u32);
 
         DecodedInst {
-            opcode: inst.sel(8, 0) as u16,
+            opcode: inst.sel(6, 0) as u8,
+            opext: inst.sel(8, 7) as u8,
             rd_addr: inst.sel(16, 9) as u8,
             f3: inst.sel(19, 17) as u8,
             rs1_addr,

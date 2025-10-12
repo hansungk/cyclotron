@@ -17,32 +17,32 @@ use crate::neutrino::neutrino::Neutrino;
 #[derive(Debug, Clone)]
 pub struct Opcode;
 impl Opcode {
-    pub const LOAD: u16 = 0b0000011u16;
-    pub const LOAD_FP: u16 = 0b0000111u16;
-    pub const CUSTOM0: u16 = 0b0001011u16;
-    pub const MISC_MEM: u16 = 0b0001111u16;
-    pub const OP_IMM: u16 = 0b0010011u16;
-    pub const AUIPC: u16 = 0b0010111u16;
-    //  pub const OpImm32 : u16 = 0b0011011u16;
-    pub const STORE: u16 = 0b0100011u16;
-    pub const STORE_FP: u16 = 0b0100111u16;
-    pub const CUSTOM1: u16 = 0b0101011u16;
-    //  pub const Amo     : u16 = 0b0101111u16;
-    pub const OP: u16 = 0b0110011u16;
-    pub const LUI: u16 = 0b0110111u16;
-    pub const OP32: u16 = 0b0111011u16;
-    pub const MADD: u16 = 0b1000011u16;
-    pub const MSUB: u16 = 0b1000111u16;
-    pub const NM_SUB: u16 = 0b1001011u16;
-    pub const NM_ADD: u16 = 0b1001111u16;
-    pub const OP_FP: u16 = 0b1010011u16;
-    //  pub const OpV     : u16 = 0b1010111u16;
-    pub const CUSTOM2: u16 = 0b1011011u16;
-    pub const BRANCH: u16 = 0b1100011u16;
-    pub const JALR: u16 = 0b1100111u16;
-    pub const JAL: u16 = 0b1101111u16;
-    pub const SYSTEM: u16 = 0b1110011u16;
-    pub const CUSTOM3: u16 = 0b1111011u16;
+    pub const LOAD: u8 = 0b0000011u8;
+    pub const LOAD_FP: u8 = 0b0000111u8;
+    pub const CUSTOM0: u8 = 0b0001011u8;
+    pub const MISC_MEM: u8 = 0b0001111u8;
+    pub const OP_IMM: u8 = 0b0010011u8;
+    pub const AUIPC: u8 = 0b0010111u8;
+    //  pub const OpImm32 : u8 = 0b0011011u8;
+    pub const STORE: u8 = 0b0100011u8;
+    pub const STORE_FP: u8 = 0b0100111u8;
+    pub const CUSTOM1: u8 = 0b0101011u8;
+    //  pub const Amo     : u8 = 0b0101111u8;
+    pub const OP: u8 = 0b0110011u8;
+    pub const LUI: u8 = 0b0110111u8;
+    pub const OP32: u8 = 0b0111011u8;
+    pub const MADD: u8 = 0b1000011u8;
+    pub const MSUB: u8 = 0b1000111u8;
+    pub const NM_SUB: u8 = 0b1001011u8;
+    pub const NM_ADD: u8 = 0b1001111u8;
+    pub const OP_FP: u8 = 0b1010011u8;
+    //  pub const OpV     : u8 = 0b1010111u8;
+    pub const CUSTOM2: u8 = 0b1011011u8;
+    pub const BRANCH: u8 = 0b1100011u8;
+    pub const JALR: u8 = 0b1100111u8;
+    pub const JAL: u8 = 0b1101111u8;
+    pub const SYSTEM: u8 = 0b1110011u8;
+    pub const CUSTOM3: u8 = 0b1111011u8;
 
     pub const NU_INVOKE: u16 = 0b001011011u16;
     pub const NU_INVOKE_IMM: u16 = 0b001111011u16;
@@ -374,23 +374,35 @@ impl ExecuteUnit {
     }
 
     pub fn load(issued_inst: &IssuedInst, lane: usize, gmem: &RwLock<ToyMemory>) -> Option<u32> {
-        // TODO: simplify this to have the phf_map only provide the instruction name
-        static INSTS: phf::Map<u8, InstImp<2>> = phf_map! {
-            0u8 => InstImp("lb",  |[a, b]| { a.wrapping_add(b) }),
-            1u8 => InstImp("lh",  |[a, b]| { a.wrapping_add(b) }),
-            2u8 => InstImp("lw",  |[a, b]| { a.wrapping_add(b) }),
-            3u8 => InstImp("ld",  |[a, b]| { a.wrapping_add(b) }),
-            4u8 => InstImp("lbu", |[a, b]| { a.wrapping_add(b) }),
-            5u8 => InstImp("lhu", |[a, b]| { a.wrapping_add(b) }),
-            6u8 => InstImp("lwu", |[a, b]| { a.wrapping_add(b) }),
+        // cyclotron itself makes no distinction between global and shared accesses (for now)
+        // but this is nice for printing trace and testbench
+        static INSTS: phf::Map<(u8, u8), &'static str> = phf_map! {
+            (0u8, 0u8) => "lb.global",
+            (0u8, 1u8) => "lb.shared",
+            (1u8, 0u8) => "lh.global",
+            (1u8, 1u8) => "lh.shared",
+            (2u8, 0u8) => "lw.global",
+            (2u8, 1u8) => "lw.shared",
+            (3u8, 0u8) => "ld.global",
+            (3u8, 1u8) => "ld.shared",
+            (4u8, 0u8) => "lbu.global",
+            (4u8, 1u8) => "lbu.shared",
+            (5u8, 0u8) => "lhu.global",
+            (5u8, 1u8) => "lhu.shared",
+            (6u8, 0u8) => "lwu.global",
+            (6u8, 1u8) => "lwu.shared",
         };
 
-        let alu_result = INSTS.get(&issued_inst.f3).and_then(|imp| {
-            Some(print_and_execute!(imp, [
-                issued_inst.rs1_data[lane].unwrap(),
-                issued_inst.imm32
-            ]))
-        }).expect("unimplemented");
+        let key = (issued_inst.f3, issued_inst.opext);
+        let Some(&mnemonic) = INSTS.get(&key) else {
+            unimplemented!()
+        };
+
+        let inst_imp = InstImp(mnemonic, |[a, b]| { a.wrapping_add(b) });
+        let alu_result = print_and_execute!(inst_imp, [
+            issued_inst.rs1_data[lane].unwrap(),
+            issued_inst.imm32
+        ]);
 
         let load_size = issued_inst.f3 & 3;
         let load_addr = alu_result >> 2 << 2;
@@ -416,19 +428,25 @@ impl ExecuteUnit {
     }
 
     pub fn store(issued_inst: &IssuedInst, lane: usize, gmem: &RwLock<ToyMemory>) -> Option<u32> {
-        static INSTS: phf::Map<u8, InstImp<2>> = phf_map! {
-            0u8 => InstImp("sb", |[a, imm]| { a.wrapping_add(imm) }),
-            1u8 => InstImp("sh", |[a, imm]| { a.wrapping_add(imm) }),
-            2u8 => InstImp("sw", |[a, imm]| { a.wrapping_add(imm) }),
-            // 3u8 => InstImp("sd", |[a, imm]| { a.wrapping_add(imm) }),
+        static INSTS: phf::Map<(u8, u8), &'static str> = phf_map! {
+            (0u8, 0u8) => "sb.global",
+            (0u8, 1u8) => "sb.shared",
+            (1u8, 0u8) => "sh.global",
+            (1u8, 1u8) => "sh.shared",
+            (2u8, 0u8) => "sw.global",
+            (2u8, 1u8) => "sw.shared",
+        };
+        
+        let key = (issued_inst.f3, issued_inst.opext);
+        let Some(&mnemonic) = INSTS.get(&key) else {
+            unimplemented!()
         };
 
-        let alu_result = INSTS.get(&issued_inst.f3).and_then(|imp| {
-            Some(print_and_execute!(imp, [
-                issued_inst.rs1_data[lane].unwrap(),
-                issued_inst.imm24 as u32
-            ]))
-        }).expect("unimplemented");
+        let inst_imp = InstImp(mnemonic, |[a, b]| { a.wrapping_add(b) });
+        let alu_result = print_and_execute!(inst_imp, [
+            issued_inst.rs1_data[lane].unwrap(),
+            issued_inst.imm32
+        ]);
 
         let mut gmem = gmem.write().expect("lock poisoned");
         let addr = alu_result as usize;
@@ -534,6 +552,7 @@ impl ExecuteUnit {
 
         IssuedInst {
             opcode: decoded.opcode,
+            opext: decoded.opext,
             rd_addr: decoded.rd_addr,
             f3: decoded.f3,
             rs1_addr: decoded.rs1_addr,
