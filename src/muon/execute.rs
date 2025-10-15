@@ -487,7 +487,7 @@ impl ExecuteUnit {
                 rf.read_gpr(decoded_inst.rs1_addr)
             }
             CSRType::RWI | CSRType::RSI | CSRType::RCI => {
-                decoded_inst.rs1_addr as u32
+                decoded_inst.imm8 as u32
             }
         };
         let csrr = match csr_type {
