@@ -55,7 +55,7 @@ impl Scheduler {
                     stalled_warps: 0,
                     thread_masks: vec![0u32; num_warps],
                     tohost: None,
-                    pc: vec![0x80000000u32; num_warps],
+                    pc: vec![config.start_pc; num_warps],
                     ipdom_stack: (0..num_warps).map(|_| VecDeque::new()).collect(),
                 },
                 ..ModuleBase::default()

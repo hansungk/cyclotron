@@ -9,6 +9,8 @@ pub struct MuonConfig {
     pub num_warps: usize,
     #[serde(default)]
     pub num_cores: usize,
+    #[serde(default)]
+    pub start_pc: u32,
     #[serde(skip)]
     pub lane_config: LaneConfig,
 }
@@ -21,6 +23,7 @@ impl Default for MuonConfig {
             num_lanes: 4,
             num_warps: 1,
             num_cores: 1,
+            start_pc: 0x8000000u32,
             lane_config: LaneConfig::default(),
         }
     }
