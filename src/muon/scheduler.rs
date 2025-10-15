@@ -1,10 +1,11 @@
 use std::collections::VecDeque;
+use std::iter::{once, repeat};
 use std::sync::Arc;
 use log::info;
 use crate::base::behavior::*;
 use crate::base::module::{module, ModuleBase, IsModule};
 use crate::muon::config::MuonConfig;
-use crate::muon::decode::DecodedInst;
+use crate::muon::decode::IssuedInst;
 use crate::muon::execute::SFUType;
 use crate::utils::{BitMask, BitSlice};
 
@@ -16,6 +17,9 @@ pub struct IpdomEntry {
 
 #[derive(Debug, Default)]
 pub struct SchedulerState {
+    /// differentiates between the initial and the final state, in both of which no active warps
+    /// exist
+    pub started: bool,
     pub active_warps: u32,
     pub stalled_warps: u32,
     thread_masks: Vec<u32>,
@@ -24,7 +28,8 @@ pub struct SchedulerState {
     ipdom_stack: Vec<VecDeque<IpdomEntry>>,
 }
 
-#[derive(Debug, Default, Clone)]
+/// Per-warp info of which instruction to fetch next
+#[derive(Debug, Default, Clone, Copy)]
 pub struct Schedule {
     pub pc: u32,
     pub mask: u32,
@@ -45,6 +50,7 @@ impl Scheduler {
         let mut me = Scheduler {
             base: ModuleBase::<SchedulerState, MuonConfig> {
                 state: SchedulerState {
+                    started: false,
                     active_warps: 0,
                     stalled_warps: 0,
                     thread_masks: vec![0u32; num_warps],
@@ -60,13 +66,27 @@ impl Scheduler {
         me
     }
 
-    pub fn spawn_warp(&mut self) {
+    pub fn spawn_single_warp(&mut self) {
         let all_ones = u32::MAX; // 0xFFFF
-        self.state().thread_masks = [all_ones].repeat(self.conf().num_warps);
-        self.base.state.active_warps = 1;
+        self.state_mut().started = true;
+        self.state_mut().thread_masks = [all_ones].repeat(self.conf().num_warps);
+        self.state_mut().active_warps = 1;
     }
 
-    pub fn branch(&mut self, wid: usize, target_pc: u32) {
+    pub fn spawn_n_warps(&mut self, pc: u32, thread_idxs: &Vec<Vec<(u32, u32, u32)>>) {
+        let all_ones = u32::MAX; // 0xFFFF
+        let last_warp_mask = thread_idxs.last().expect("last warp is empty").iter().enumerate().fold(0, |mask, (i, _)| mask | 1 << i);
+        let num_warps = thread_idxs.len();
+        let disabled_warps = self.conf().num_warps - num_warps;
+        assert!(disabled_warps <= self.conf().num_warps);
+
+        self.state_mut().started = true;
+        self.state_mut().thread_masks = repeat(all_ones).take(num_warps - 1).chain(once(last_warp_mask)).chain(repeat(0).take(disabled_warps)).collect();
+        self.state_mut().pc = [pc].repeat(num_warps);
+        self.base.state.active_warps = num_warps as u32;
+    }
+
+    pub fn take_branch(&mut self, wid: usize, target_pc: u32) {
         self.base.state.pc[wid] = target_pc;
         if target_pc == 0 { // returned from main
             self.base.state.thread_masks[wid] = 0;
@@ -75,7 +95,7 @@ impl Scheduler {
     }
 
     pub fn sfu(&mut self, wid: usize, first_lid: usize, sfu: SFUType,
-               decoded_inst: &DecodedInst, rs1: Vec<u32>, rs2: Vec<u32>) {
+               decoded_inst: &IssuedInst, rs1: Vec<u32>, rs2: Vec<u32>) {
         // for warp-wide operations, we take lane 0 to be the truth
         self.base.state.pc[wid] = decoded_inst.pc + 8; // flush
         info!("processing writeback for {}: resetting next pc to 0x{:08x}", wid, decoded_inst.pc + 8);
@@ -91,7 +111,7 @@ impl Scheduler {
             SFUType::WSPAWN => {
                 let start_pc = rs2[first_lid];
                 info!("wspawn {} warps @pc={:08x}", rs1[first_lid], start_pc);
-                for i in 0..rs1[first_lid] as usize {
+                for i in 1..rs1[first_lid] as usize {
                     self.base.state.pc[i] = start_pc;
                     if !self.base.state.active_warps.bit(i) {
                         self.base.state.thread_masks[i] = u32::MAX;
@@ -160,7 +180,7 @@ impl Scheduler {
                 panic!("muon does not support vx_bar anymore, use neutrino insts")
             }
             SFUType::PRED => {
-                let invert = decoded_inst.rd == 1;
+                let invert = decoded_inst.rd_addr == 1;
                 // only stay active if (thread is active) AND (lsb of predicate is 1)
                 // let pred_mask: Vec<_> = wb.insts.iter()
                 //     .map(|d| d.is_some_and(|dd| dd.rs1.bit(0) ^ invert))
@@ -194,24 +214,24 @@ impl Scheduler {
 
     pub fn get_schedule(&mut self, wid: usize) -> Option<Schedule> {
         (self.state().active_warps.bit(wid) && !self.state().stalled_warps.bit(wid)).then(|| {
-            let &pc = &self.state().pc[wid];
+            let pc = self.state().pc[wid];
             let sched = Schedule {
                 pc,
                 mask: self.base.state.thread_masks[wid],
                 active_warps: self.base.state.active_warps, // for csr writing
             };
-            self.state().pc[wid] = pc.wrapping_add(8);
+            self.state_mut().pc[wid] = pc.wrapping_add(8);
             sched
         })
     }
 
     pub fn neutrino_stall(&mut self, stalls: Vec<bool>) {
-        self.state().stalled_warps = stalls.to_u32();
+        self.state_mut().stalled_warps = stalls.to_u32();
     }
 
     // TODO: This should differentiate between different threadblocks.
     pub fn all_warps_retired(&self) -> bool {
-        self.base.state.active_warps == 0
+        self.state().started && (self.state().active_warps == 0)
     }
 }
 
@@ -227,7 +247,7 @@ impl ModuleBehaviors for Scheduler {
 
     fn reset(&mut self) {
         let all_ones = u32::MAX; // 0xFFFF
-        self.state().thread_masks = [all_ones].repeat(self.conf().num_warps);
+        self.state_mut().thread_masks = [all_ones].repeat(self.conf().num_warps);
         self.base.state.active_warps = 0;
         self.base.state.stalled_warps = 0;
     }

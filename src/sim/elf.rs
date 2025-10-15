@@ -1,7 +1,6 @@
 use std::path::Path;
 use std::{collections::HashMap, fs};
-use std::sync::Arc;
-use goblin::elf::Elf;
+use goblin::elf::{section_header, Elf};
 use crate::base::mem::HasMemory;
 
 pub struct ElfBackedMem {
@@ -9,15 +8,15 @@ pub struct ElfBackedMem {
 }
 
 impl HasMemory for ElfBackedMem {
-    fn read<const N: usize>(&mut self, addr: usize) -> Option<Arc<[u8; N]>> {
+    fn read<const N: usize>(&mut self, addr: usize) -> Option<[u8; N]> {
         self.sections.iter().fold(None, |prev, (range, data)| {
             prev.or(((addr >= range.0) && (addr + N <= range.1)).then(|| {
-                Arc::new(data[(addr - range.0)..(addr - range.0 + N)].try_into().unwrap())
+                data[(addr - range.0)..(addr - range.0 + N)].try_into().unwrap()
             }))
         })
     }
 
-    fn write<const N: usize>(&mut self, _addr: usize, _data: Arc<[u8; N]>) -> Result<(), String> {
+    fn write(&mut self, _addr: usize, _data: &[u8]) -> Result<(), String> {
         Err("elf backed memory cannot be written to".to_string())
     }
 }
@@ -33,7 +32,7 @@ impl ElfBackedMem {
 
     pub fn read_inst(&mut self, addr: usize) -> Option<u64> {
         let slice = self.read::<8>(addr)?;
-        u64::from_le_bytes(*slice).into()
+        u64::from_le_bytes(slice).into()
     }
 
     pub fn load_path(&mut self, path: &Path) -> Result<(), String> {
@@ -53,7 +52,10 @@ impl ElfBackedMem {
                 // Extract the section bytes
                 let offset = section.sh_offset as usize;
                 let size = section.sh_size as usize;
-                if offset + size <= data.len() {
+                if section_header::SHT_NOBITS == section.sh_type {
+                    // SHT_NOBITS sections are implicitly zeroed, not on the file
+                    self.sections.insert(range, vec![0u8; size]);
+                } else if offset + size <= data.len() {
                     let bytes = data[offset..offset + size].to_vec();
                     self.sections.insert(range, bytes);
                 } else {

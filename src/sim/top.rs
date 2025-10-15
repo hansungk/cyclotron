@@ -2,19 +2,91 @@ use crate::base::behavior::*;
 use crate::cluster::Cluster;
 use crate::command_proc::CommandProcessor;
 use crate::muon::config::MuonConfig;
+use crate::base::module::IsModule;
+use crate::sim::config::{SimConfig, MemConfig};
 use crate::sim::elf::ElfBackedMem;
 use crate::sim::toy_mem::ToyMemory;
-use std::path::PathBuf;
-use std::sync::{Arc, LazyLock, RwLock};
+use crate::sim::log::Logger;
+use std::path::Path;
+use std::sync::{Arc, RwLock};
 use serde::Deserialize;
 use crate::neutrino::config::NeutrinoConfig;
 
-pub static GMEM: LazyLock<RwLock<ToyMemory>> = LazyLock::new(|| RwLock::new(ToyMemory::default()));
+pub struct Sim {
+    pub config: SimConfig,
+    pub top: CyclotronTop,
+    pub logger: Arc<Logger>,
+}
 
-pub struct CyclotronTopConfig {
-    pub timeout: u64,
-    pub elf_path: PathBuf,
+impl Sim {
+    pub fn new(sim_config: SimConfig, muon_config: MuonConfig,
+               neutrino_config: NeutrinoConfig,
+               mem_config: MemConfig) -> Sim {
+        let logger = Arc::new(Logger::new(sim_config.log_level));
+        let top = CyclotronTop::new(Arc::new(CyclotronConfig {
+            timeout: sim_config.timeout,
+            elf: sim_config.elf.clone(),
+            cluster_config: ClusterConfig {
+                muon_config,
+                neutrino_config,
+            },
+            mem_config,
+        }), &logger);
+
+        let mut sim = Sim {
+            config: sim_config,
+            top,
+            logger,
+        };
+        sim.top.reset();
+        sim
+    }
+
+    pub fn simulate(&mut self) -> Result<(), u32> {
+        self.top.reset();
+        for cycle in 0..self.top.timeout {
+            if self.top.finished() {
+                println!("simulation finished after {} cycles", cycle + 1);
+                if let Some(mut tohost) = self.top.clusters[0].cores[0].scheduler.state_mut().tohost {
+                    if tohost > 0 {
+                        tohost >>= 1;
+                        println!("failed test case {}", tohost);
+                        return Err(tohost)
+                    } else {
+                        println!("test passed");
+                    }
+                }
+                return Ok(());
+            }
+            self.top.tick_one();
+        }
+        Err(0)
+    }
+
+    /// Advances all cores by one instruction.
+    pub fn tick(&mut self) {
+        if self.top.finished() {
+            return;
+        }
+        self.top.tick_one();
+
+        assert!(self.top.clusters.len() == 1, "Sim::tick() only supports 1-cluster 1-core config as of now.");
+        assert!(self.top.clusters[0].cores.len() == 1, "Sim::tick() only supports 1-cluster 1-core config as of now.");
+
+        // now the tracer should hold the instructions
+        // TODO: report cycle
+    }
+
+    pub fn finished(&self) -> bool {
+        self.top.finished()
+    }
+}
+
+pub struct CyclotronConfig {
+    pub timeout: u64, // TODO: use sim
+    pub elf: String, // TODO: use sim
     pub cluster_config: ClusterConfig,
+    pub mem_config: MemConfig,
 }
 
 #[derive(Debug, Deserialize, Clone, Copy)]
@@ -27,25 +99,37 @@ pub struct CyclotronTop {
     pub cproc: CommandProcessor,
     pub clusters: Vec<Cluster>,
     pub timeout: u64,
+    pub gmem: Arc<RwLock<ToyMemory>>,
 }
 
 impl CyclotronTop {
-    pub fn new(config: Arc<CyclotronTopConfig>) -> CyclotronTop {
-        let imem = Arc::new(RwLock::new(ElfBackedMem::new(config.elf_path.as_path())));
+    pub fn new(config: Arc<CyclotronConfig>, logger: &Arc<Logger>) -> CyclotronTop {
+        let elf_path = Path::new(&config.elf);
+        let imem = Arc::new(RwLock::new(ElfBackedMem::new(&elf_path)));
         let mut clusters = Vec::new();
         let cluster_config = Arc::new(config.cluster_config.clone());
+
+        let gmem = Arc::new(RwLock::new(ToyMemory::default()));
+        
+        gmem.write()
+            .expect("gmem poisoned")
+            .set_fallthrough(Arc::clone(&imem));
+
+        gmem.write()
+            .expect("gmem poisoned")
+            .set_config(config.mem_config);
+
         for id in 0..1 {
-            clusters.push(Cluster::new(cluster_config.clone(), id));
+            clusters.push(Cluster::new(cluster_config.clone(), id, logger, gmem.clone()));
         }
         let top = CyclotronTop {
             cproc: CommandProcessor::new(Arc::new(config.cluster_config.muon_config.clone()),
                 1 /*FIXME: properly get thread dimension*/),
             clusters,
             timeout: config.timeout,
+            gmem,
         };
-        GMEM.write()
-            .expect("gmem poisoned")
-            .set_fallthrough(Arc::clone(&imem));
+
         top
     }
 
@@ -67,6 +151,8 @@ impl ModuleBehaviors for CyclotronTop {
 
         self.clusters.iter_mut().for_each(Cluster::tick_one);
 
+        // FIXME: if tick_one() is called after finished() is true, the retire() call might result
+        // in an underflow.
         for id in 0..num_clusters {
             let retired_tb = self.clusters[id].retired_threadblock();
             self.cproc.retire(id, retired_tb);
@@ -74,7 +160,7 @@ impl ModuleBehaviors for CyclotronTop {
     }
 
     fn reset(&mut self) {
-        GMEM.write().expect("lock poisoned").reset();
+        self.gmem.write().expect("lock poisoned").reset();
         self.clusters.iter_mut().for_each(Cluster::reset);
     }
 }

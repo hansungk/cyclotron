@@ -60,32 +60,33 @@ impl CommandProcessor {
     }
 
     pub fn schedule(&mut self) -> Vec<bool> {
+        let num_clusters = self.base.state.clusters.len();
+
         if self.base.state.remaining_threadblocks <= 0 {
             assert!(self.base.state.remaining_threadblocks == 0);
-            return vec![false];
+            return vec![false; num_clusters];
         }
-        let schedule_per_cluster = |cluster: &mut ClusterScheduleState| -> bool {
-            let new_regfile = cluster.regfile_usage + REGFILE_USAGE_PER_BLOCK;
-            let new_smem = cluster.smem_usage + SMEM_USAGE_PER_BLOCK;
-            if new_regfile <= REGFILE_SIZE_PER_CLUSTER && new_smem <= SMEM_SIZE_PER_CLUSTER {
-                // TODO: schedule more than 1 block at a time
-                cluster.running_threadblocks += 1;
-                cluster.regfile_usage = new_regfile;
-                cluster.smem_usage = new_smem;
-                true
-            } else {
-                false
-            }
+        
+        let can_schedule_per_cluster = |cluster: &mut ClusterScheduleState| -> usize {
+            let from_regfile_limit = (REGFILE_SIZE_PER_CLUSTER - cluster.regfile_usage) / REGFILE_USAGE_PER_BLOCK;
+            let from_smem_limit = (SMEM_SIZE_PER_CLUSTER - cluster.smem_usage) / SMEM_USAGE_PER_BLOCK;
+            std::cmp::min(from_regfile_limit, from_smem_limit) as usize
         };
-        let schedule: Vec<bool> = self
-            .base
-            .state
-            .clusters
-            .iter_mut()
-            .map(schedule_per_cluster)
-            .collect();
-        let schedule_count: isize = schedule.iter().map(|&b| b as isize).sum();
-        self.base.state.remaining_threadblocks -= schedule_count;
+        
+        // TODO: schedule more than one threadblock per cluster if possible
+        let mut schedule: Vec<bool> = Vec::with_capacity(self.base.state.clusters.len());
+        for cluster in self.base.state.clusters.iter_mut() {
+            if self.base.state.remaining_threadblocks > 0 && can_schedule_per_cluster(cluster) > 0 {
+                cluster.running_threadblocks += 1;
+                cluster.regfile_usage += REGFILE_USAGE_PER_BLOCK;
+                cluster.smem_usage += SMEM_USAGE_PER_BLOCK;
+                self.base.state.remaining_threadblocks -= 1;
+                schedule.push(true);
+            } else {
+                schedule.push(false);
+            }
+        }
+
         schedule
     }
 
@@ -94,6 +95,8 @@ impl CommandProcessor {
         cluster.running_threadblocks -= retired_threadblock as isize;
         cluster.regfile_usage -= REGFILE_USAGE_PER_BLOCK * retired_threadblock as isize;
         cluster.smem_usage -= SMEM_USAGE_PER_BLOCK * retired_threadblock as isize;
+
+        // Sanity checks
         assert!(cluster.running_threadblocks >= 0);
         assert!(cluster.regfile_usage >= 0);
         assert!(cluster.smem_usage >= 0);

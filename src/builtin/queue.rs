@@ -26,7 +26,7 @@ pub struct Queue<T, const N: usize> where T: Default {
 impl<T: Default, const N: usize> ModuleBehaviors for Queue<T, N> {
     fn tick_one(&mut self) {}
     fn reset(&mut self) {
-        self.state().storage.clear();
+        self.state_mut().storage.clear();
     }
 }
 
@@ -41,20 +41,20 @@ impl<T: Default + Clone, const N: usize> Queue<T, N> {
     }
 
     pub fn try_enq(&mut self, data: &T) -> bool {
-        let size = self.state().storage.len();
-        let max_size = self.state().max_size;
+        let size = self.state_mut().storage.len();
+        let max_size = self.state_mut().max_size;
         if size >= max_size {
             return false;
         }
-        self.state().storage.push_back(data.clone());
+        self.state_mut().storage.push_back(data.clone());
         true
     }
 
     pub fn try_deq(&mut self) -> Option<T> where T: Clone {
-        self.state().storage.pop_front()
+        self.state_mut().storage.pop_front()
     }
 
     pub fn resize(&mut self, size: usize) {
-        self.state().max_size = size;
+        self.state_mut().max_size = size;
     }
 }

@@ -1,26 +1,32 @@
-use std::sync::Arc;
-use log::info;
+use std::iter::zip;
+use std::sync::{Arc, RwLock};
+use crate::sim::log::Logger;
+use crate::sim::trace::Tracer;
+use crate::info;
 use crate::base::{behavior::*, module::*};
 use crate::muon::config::{LaneConfig, MuonConfig};
-use crate::muon::scheduler::Scheduler;
-use crate::muon::warp::Warp;
+use crate::muon::scheduler::{Schedule, Scheduler};
+use crate::muon::warp::{ExecErr, Warp, Writeback};
+use crate::muon::decode::{InstBuf, IssuedInst};
 use crate::neutrino::neutrino::Neutrino;
+use crate::sim::toy_mem::ToyMemory;
 
 #[derive(Debug, Default)]
 pub struct MuonState {}
 
-#[derive(Debug, Default)]
 pub struct MuonCore {
-    pub base: ModuleBase<MuonState, MuonConfig>,
+    base: ModuleBase<MuonState, MuonConfig>,
     pub id: usize,
     pub scheduler: Scheduler,
-    pub warps: Vec<Warp>,
+    warps: Vec<Warp>,
+    logger: Arc<Logger>,
+    tracer: Arc<Tracer>,
 }
 
 impl MuonCore {
-    pub fn new(config: Arc<MuonConfig>, id: usize) -> Self {
+    pub fn new(config: Arc<MuonConfig>, id: usize, logger: &Arc<Logger>, gmem: Arc<RwLock<ToyMemory>>) -> Self {
         let num_warps = config.num_warps;
-        let mut me = MuonCore {
+        let mut core = MuonCore {
             base: Default::default(),
             id,
             scheduler: Scheduler::new(Arc::clone(&config), id),
@@ -31,19 +37,28 @@ impl MuonCore {
                     ..config.lane_config
                 },
                 ..*config
-            }))).collect(),
+            }), logger, gmem.clone())).collect(),
+            logger: logger.clone(),
+            tracer: Arc::new(Tracer::new(&config)),
         };
 
-        info!("muon core {} instantiated!", config.lane_config.core_id);
+        info!(core.logger, "muon core {} instantiated!", id);
 
-        me.init_conf(Arc::clone(&config));
-        me
+        core.init_conf(Arc::clone(&config));
+        core
     }
 
-    /// Spawn a warp in this core.  Invoked by the command processor to schedule a threadblock to
-    /// the cluster.
-    pub fn spawn_warp(&mut self) {
-        self.scheduler.spawn_warp()
+    /// Spawn a single warp to this core.
+    pub fn spawn_single_warp(&mut self) {
+        self.scheduler.spawn_single_warp()
+    }
+
+    pub fn spawn_n_warps(&mut self, pc: u32, block_idx: (u32, u32, u32), thread_idxs: Vec<Vec<(u32, u32, u32)>>) {
+        assert!(thread_idxs.len() <= self.conf().num_warps && thread_idxs.len() > 0);
+        self.scheduler.spawn_n_warps(pc, &thread_idxs);
+        for (warp, warp_thread_idxs) in self.warps.iter_mut().zip(thread_idxs.iter()) {
+            warp.set_block_threads(block_idx, warp_thread_idxs);
+        }
     }
 
     // TODO: This should differentiate between different threadblocks.
@@ -51,21 +66,76 @@ impl MuonCore {
         self.scheduler.all_warps_retired()
     }
 
-    pub fn execute(&mut self, neutrino: &mut Neutrino) {
-        // important to gather all schedules before executing any
+    pub fn schedule(&mut self) -> Vec<Option<Schedule>> {
         let schedules = (0..self.conf().num_warps)
-            .map(|wid| self.scheduler.get_schedule(wid))
+            .map(|wid| { self.scheduler.get_schedule(wid) })
             .collect::<Vec<_>>();
-        self.warps.iter_mut().zip(schedules).for_each(|(warp, s)| {
-            if let Some(sched) = s {
-                info!("warp {} schedule=0x{:08x}", warp.wid, sched.pc);
-                warp.execute(sched, &mut self.scheduler, neutrino);
-            }
-        });
-        self.scheduler.tick_one();
+        schedules
+    }
 
+    pub fn frontend(&mut self, schedules: &[Option<Schedule>]) -> InstBuf {
+        let warps = self.warps.iter_mut();
+        let schedules = schedules.iter().copied();
+
+        let ibuf_entries = zip(warps, schedules).map(|(warp, sched)| {
+            sched.map(|s| {
+                warp.frontend(s)
+            })
+        });
+
+        InstBuf(ibuf_entries.collect())
+    }
+
+    /// Execute decoded instructions from all active warps, i.o.w. heads of the instruction buffer,
+    /// in the core backend.
+    pub fn backend(&mut self, ibuf: &InstBuf, neutrino: &mut Neutrino) -> Result<(), ExecErr> {
+        let mut writebacks: Vec<Option<Writeback>> = Vec::with_capacity(self.warps.len());
+
+        let warps = self.warps.iter_mut();
+        let ibuf_entries = ibuf.0.iter().copied();
+
+        for (warp, ibuf) in zip(warps, ibuf_entries) {
+            let wb = match ibuf {
+                Some(ib) => Some(warp.backend(ib, &mut self.scheduler, neutrino)?),
+                None => None,
+            };
+            writebacks.push(wb);
+        }
+
+        let tracer = Arc::get_mut(&mut self.tracer).expect("failed to get tracer");
+        tracer.record(&writebacks);
+
+        self.scheduler.tick_one();
         self.warps.iter_mut().for_each(Warp::tick_one);
 
+        Ok(())
+    }
+
+    /// Execute an issued instruction from a single warp in the core's functional unit backend.
+    pub fn execute(&mut self, warp_id: usize, issued: IssuedInst, tmask: u32, neutrino: &mut Neutrino) -> Writeback {
+        let writeback = self.warps[warp_id].execute(issued, tmask, &mut self.scheduler, neutrino);
+        self.warps[warp_id].tick_one();
+
+        // no tracing done; instruction tracing is only enabled in the ISA-model mode
+
+        writeback
+    }
+
+    /// Process a single instruction in the core by sequencing both the frontend and the backend.
+    pub fn process(&mut self, neutrino: &mut Neutrino) -> Result<(), ExecErr> {
+        let schedules = self.schedule();
+        let ibuf = self.frontend(&schedules);
+        self.backend(&ibuf, neutrino)
+    }
+
+    /// Exposes a non-mutating fetch interface for the core.
+    pub fn fetch(&self, warp: u32, pc: u32) -> u64 {
+        // TODO: `warp` is not really necessary
+        self.warps[warp as usize].fetch(pc)
+    }
+
+    pub fn get_tracer(&mut self) -> &mut Tracer {
+        Arc::get_mut(&mut self.tracer).expect("failed to get tracer")
     }
 }
 

@@ -17,6 +17,8 @@ pub struct CSRFile {
     base: ModuleBase<CSRState, MuonConfig>,
     lock: RwLock<()>,
     lane_id: usize,
+    block_idx: (u32, u32, u32),
+    thread_idx: (u32, u32, u32),
 }
 
 impl ModuleBehaviors for CSRFile {
@@ -116,6 +118,12 @@ impl CSRFile {
             0xfc0, self.conf().num_lanes as u32; // num_threads
             0xfc1, self.conf().num_warps as u32; // num_warps
             0xfc2, self.conf().num_cores as u32; // num_cores
+            0xfc3, self.block_idx.0; // block_idx.x
+            0xfc4, self.block_idx.1; // block_idx.y
+            0xfc5, self.block_idx.2; // block_idx.z
+            0xfc6, self.thread_idx.0; // thread_idx.x
+            0xfc7, self.thread_idx.1; // thread_idx.y
+            0xfc8, self.thread_idx.2; // thread_idx.z
         ])
     }
 
@@ -183,5 +191,10 @@ impl CSRFile {
                 *self.csr_rw_ref_user(0x002).unwrap() = (value & 0xe0) >> 5; // frm
             }
         }
+    }
+
+    pub fn set_block_thread(&mut self, block_idx: (u32, u32, u32), thread_idx: (u32, u32, u32)) {
+        self.block_idx = block_idx;
+        self.thread_idx = thread_idx;
     }
 }

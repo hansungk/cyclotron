@@ -3,12 +3,15 @@ use crate::base::mem::HasMemory;
 use crate::base::module::{module, IsModule, ModuleBase};
 use crate::muon::config::MuonConfig;
 use crate::muon::csr::CSRFile;
-use crate::muon::decode::{DecodeUnit, RegFile};
+use crate::muon::decode::{DecodeUnit, IssuedInst, InstBufEntry, RegFile};
 use crate::muon::execute::ExecuteUnit;
 use crate::muon::scheduler::{Schedule, Scheduler};
-use crate::sim::top::GMEM;
-use log::info;
-use std::sync::Arc;
+use crate::sim::log::Logger;
+use crate::info;
+use crate::sim::toy_mem::ToyMemory;
+use std::iter::zip;
+use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::sync::{Arc, RwLock};
 use crate::neutrino::neutrino::Neutrino;
 
 #[derive(Debug, Default)]
@@ -17,28 +20,63 @@ pub struct WarpState {
     pub csr_file: Vec<CSRFile>,
 }
 
-#[derive(Debug, Default)]
 pub struct Warp {
     base: ModuleBase<WarpState, MuonConfig>,
     pub wid: usize,
+    logger: Arc<Logger>,
+    gmem: Arc<RwLock<ToyMemory>>,
 }
 
 impl ModuleBehaviors for Warp {
     fn tick_one(&mut self) {
-        { self.base().cycle += 1; }
+        self.base().cycle += 1;
     }
 
     fn reset(&mut self) {
-        self.state().reg_file.iter_mut().for_each(|x| x.reset());
-        self.state().csr_file.iter_mut().for_each(|x| x.reset());
+        self.state_mut().reg_file.iter_mut().for_each(|x| x.reset());
+        self.state_mut().csr_file.iter_mut().for_each(|x| x.reset());
     }
 }
 
 module!(Warp, WarpState, MuonConfig,
 );
 
+pub struct Writeback {
+    pub inst: IssuedInst,
+    pub tmask: u32,
+    pub rd_addr: u8,
+    pub rd_data: Vec<Option<u32>>,
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct ExecErr {
+    pub pc: u32,
+    pub warp_id: usize,
+    pub message: Option<String>,
+}
+
+// TODO: make ExecErr a proper error type by providing impls
+// impl Display for ExecErr
+// impl Error for ExecErr
+
+impl Writeback {
+    pub fn rd_data_str(&self) -> String {
+        let lanes: Vec<String> = self.rd_data.iter().map(|lrd| {
+            match lrd {
+                Some(value) => format!("0x{:x}", value),
+                None => ".".to_string(),
+            }
+        }).collect();
+        format!("[{}]", lanes.join(","))
+    }
+
+    pub fn num_rd_data(&self) -> usize {
+        self.rd_data.iter().map(|lrd| lrd.is_some()).count()
+    }
+}
+
 impl Warp {
-    pub fn new(config: Arc<MuonConfig>) -> Warp {
+    pub fn new(config: Arc<MuonConfig>, logger: &Arc<Logger>, gmem: Arc<RwLock<ToyMemory>>) -> Warp {
         let num_lanes = config.num_lanes;
         let mut me = Warp {
             base: ModuleBase {
@@ -49,6 +87,8 @@ impl Warp {
                 ..ModuleBase::default()
             },
             wid: config.lane_config.warp_id,
+            logger: logger.clone(),
+            gmem,
         };
         me.init_conf(config);
         me
@@ -58,28 +98,110 @@ impl Warp {
         format!("core {} warp {}", self.conf().lane_config.core_id, self.conf().lane_config.warp_id)
     }
 
-    pub fn execute(&mut self, schedule: Schedule,
-                   scheduler: &mut Scheduler, neutrino: &mut Neutrino) {
-        info!("{} cycle={} fetch=0x{:08x}", self.name(), self.base.cycle, schedule.pc);
-
-        let inst_data = *GMEM.write()
+    /// Returns un-decoded instruction bits at a given PC.
+    pub fn fetch(&self, pc: u32) -> u64 {
+        let inst_bytes = self.gmem.write()
             .expect("gmem poisoned")
-            .read::<8>(schedule.pc as usize)
+            .read::<8>(pc as usize)
             .expect("failed to fetch instruction");
+        u64::from_le_bytes(inst_bytes)
+    }
 
-        self.state().csr_file.iter_mut().for_each(|c| {
+    pub fn frontend(&mut self, schedule: Schedule) -> InstBufEntry {
+        // fetch
+        let inst = self.fetch(schedule.pc);
+        for c in self.state_mut().csr_file.iter_mut() {
             c.emu_access(0xcc3, schedule.active_warps);
             c.emu_access(0xcc4, schedule.mask);
-        });
+        }
 
-        ExecuteUnit::execute(DecodeUnit::decode(inst_data, schedule.pc),
-             self.conf().lane_config.core_id,
-             self.wid,
-             schedule.mask,
-             &mut self.base.state.reg_file.iter_mut().collect::<Vec<_>>(),
-             &mut self.base.state.csr_file.iter_mut().collect::<Vec<_>>(),
-             scheduler,
-             neutrino,
-        );
+        // decode
+        let inst = DecodeUnit::decode(inst, schedule.pc);
+        let tmask = schedule.mask;
+        InstBufEntry { inst, tmask }
     }
+
+    pub fn backend(&mut self, ibuf: InstBufEntry, scheduler: &mut Scheduler, neutrino: &mut Neutrino) -> Result<Writeback, ExecErr> {
+        let decoded = ibuf.inst;
+        let pc = decoded.pc;
+        let tmask = ibuf.tmask;
+
+        // operand collection
+        let rf = self.base.state.reg_file.as_slice();
+        let issued = ExecuteUnit::collect(&ibuf, rf);
+
+        // execute
+        let writeback = catch_unwind(AssertUnwindSafe(|| {
+            self.execute(issued, tmask, scheduler, neutrino)
+        }));
+
+        // writeback
+        match writeback {
+            Ok(writeback) => {
+                let rf_mut = self.base.state.reg_file.as_mut_slice();
+                Self::writeback(&writeback, rf_mut);
+
+                info!(self.logger, "@t={} [{}] PC=0x{:08x}, rd={:3}, data=[{} lanes valid]",
+                    self.base.cycle,
+                    self.name(),
+                    pc,
+                    writeback.rd_addr,
+                    writeback.num_rd_data()
+                );
+
+                Ok(writeback)
+            }
+            Err(payload) => {
+                let message = payload.downcast::<String>().ok().map(|s| *s);
+                Err(ExecErr {
+                    pc,
+                    warp_id: self.wid,
+                    message,
+                })
+            }
+        }
+    }
+
+    pub fn execute(&mut self, issued: IssuedInst, tmask: u32, scheduler: &mut Scheduler, neutrino: &mut Neutrino) -> Writeback {
+        let core_id = self.conf().lane_config.core_id;
+        let rf = self.base.state.reg_file.as_mut_slice();
+        let csrf = self.base.state.csr_file.as_mut_slice();
+
+        let writeback = ExecuteUnit::execute(
+            issued,
+            core_id,
+            self.wid,
+            tmask,
+            rf,
+            csrf,
+            scheduler,
+            neutrino,
+            &self.gmem,
+        );
+        writeback
+    }
+
+    /// Fast-path that fuses frontend/backend for every warp instead of two-stage schedule/ibuf
+    /// iteration.
+    pub fn process(&mut self, schedule: Schedule,
+                   scheduler: &mut Scheduler, neutrino: &mut Neutrino) -> Result<(), ExecErr> {
+        let ibuf = self.frontend(schedule);
+        self.backend(ibuf, scheduler, neutrino).map(|_| ())
+    }
+
+    pub fn writeback(wb: &Writeback, rf: &mut [RegFile]) {
+        let rd_addr = wb.rd_addr;
+        for (lrf, ldata) in zip(rf, &wb.rd_data) {
+            ldata.map(|data| lrf.write_gpr(rd_addr, data));
+        }
+    }
+
+    pub fn set_block_threads(&mut self, block_idx: (u32, u32, u32), thread_idxs: &Vec<(u32, u32, u32)>) {
+        assert!(thread_idxs.len() <= self.base.state.csr_file.len());
+        assert!(thread_idxs.len() > 0);
+        for (csr_file, thread_idx) in zip(self.base.state.csr_file.iter_mut(), thread_idxs.iter()) {
+            csr_file.set_block_thread(block_idx, *thread_idx);
+        }
+    }
+
 }

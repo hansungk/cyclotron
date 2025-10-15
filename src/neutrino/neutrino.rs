@@ -1,9 +1,9 @@
-use log::info;
+use log::{debug, info};
 use std::sync::Arc;
 use crate::base::behavior::{ModuleBehaviors, Parameterizable};
 use crate::base::module::IsModule;
 use crate::base::module::{module, ModuleBase};
-use crate::muon::decode::{DecodedInst, RegFile};
+use crate::muon::decode::{IssuedInst, RegFile};
 use crate::muon::execute::{InstDef, Opcode};
 use crate::muon::scheduler::Scheduler;
 use crate::neutrino::config::NeutrinoConfig;
@@ -46,12 +46,13 @@ impl Neutrino {
         me
     }
     
-    pub fn execute(&mut self, decoded: &DecodedInst,
+    pub fn execute(&mut self, issued: &IssuedInst,
                    cid: usize, wid: usize, tmask: u32,
                    rf: &mut RegFile) {
 
         // decode neutrino instruction
-        let imp = match decoded.opcode {
+        let extended_opcode = issued.opcode as u16 | ((issued.opext as u16) << 7);
+        let imp = match extended_opcode {
             Opcode::NU_INVOKE => InstDef("nu.invoke", NeutrinoCmdType::Invoke),
             Opcode::NU_PAYLOAD => InstDef("nu.payload", NeutrinoCmdType::Payload),
             Opcode::NU_COMPLETE => InstDef("nu.complete", NeutrinoCmdType::Complete),
@@ -63,25 +64,25 @@ impl Neutrino {
                 NeutrinoCmd {
                     cmd_type,
                     job_id: None,
-                    task: rf.read_gpr(decoded.rs1_addr),
-                    deps: [decoded.rs2_addr, decoded.rs3_addr, decoded.rs4_addr].iter()
+                    task: rf.read_gpr(issued.rs1_addr),
+                    deps: [issued.rs2_addr, issued.rs3_addr, issued.rs4_addr].iter()
                         .filter_map(|&addr| (addr != 0).then(|| rf.read_gpr(addr)))
                         .filter_map(|r| (r != 0).then(|| self.scoreboard.job_id_from_u32(r)))
                         .collect::<Vec<_>>(),
-                    ret_mode: match decoded.raw.sel(19, 18) & 3 {
+                    ret_mode: match issued.raw.sel(19, 18) & 3 {
                         0 => NeutrinoRetMode::Immediate,
                         1 => NeutrinoRetMode::Hardware,
                         2 => NeutrinoRetMode::Manual,
                         _ => panic!("unimplemented"),
                     },
-                    part_mode: match decoded.raw.sel(53, 52) & 3 {
+                    part_mode: match issued.raw.sel(53, 52) & 3 {
                         0 => NeutrinoPartMode::Threads,
                         1 => NeutrinoPartMode::Warps,
                         2 => NeutrinoPartMode::ThreadBlocks,
                         _ => panic!("unimplemented"),
                     },
-                    num_elems: decoded.raw.sel(59, 54) as u32 + 1,
-                    sync: decoded.raw.bit(17),
+                    num_elems: issued.raw.sel(59, 54) as u32 + 1,
+                    sync: issued.raw.bit(17),
                     tmask
                 }
             }
@@ -93,9 +94,9 @@ impl Neutrino {
         // TODO: are writing back for non-invokes?
         let job_id = self.scoreboard.arrive(&cmd, cid, wid);
         let job_id_u32 = self.scoreboard.u32_from_job_id(job_id);
-        rf.write_gpr(decoded.rd, job_id_u32);
+        rf.write_gpr(issued.rd_addr, job_id_u32);
 
-        info!("{} has job id {} written to x{}", cmd, job_id_u32, decoded.rd);
+        info!("{} has job id {} written to x{}", cmd, job_id_u32, issued.rd_addr);
     }
 
     pub fn update(&mut self, schedulers: &mut Vec<&mut Scheduler>) {
