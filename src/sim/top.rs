@@ -5,9 +5,9 @@ use crate::muon::config::MuonConfig;
 use crate::base::module::IsModule;
 use crate::sim::config::{SimConfig, MemConfig};
 use crate::sim::elf::ElfBackedMem;
-use crate::sim::toy_mem::ToyMemory;
+use crate::sim::flat_mem::FlatMemory;
 use crate::sim::log::Logger;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use serde::Deserialize;
 use crate::neutrino::config::NeutrinoConfig;
@@ -84,7 +84,7 @@ impl Sim {
 
 pub struct CyclotronConfig {
     pub timeout: u64, // TODO: use sim
-    pub elf: String, // TODO: use sim
+    pub elf: PathBuf, // TODO: use sim
     pub cluster_config: ClusterConfig,
     pub mem_config: MemConfig,
 }
@@ -99,26 +99,23 @@ pub struct CyclotronTop {
     pub cproc: CommandProcessor,
     pub clusters: Vec<Cluster>,
     pub timeout: u64,
-    pub gmem: Arc<RwLock<ToyMemory>>,
+    pub gmem: Arc<RwLock<FlatMemory>>,
 }
 
 impl CyclotronTop {
     pub fn new(config: Arc<CyclotronConfig>, logger: &Arc<Logger>) -> CyclotronTop {
         let elf_path = Path::new(&config.elf);
-        let imem = Arc::new(RwLock::new(ElfBackedMem::new(&elf_path)));
+        let imem = ElfBackedMem::new(&elf_path);
         let mut clusters = Vec::new();
         let cluster_config = Arc::new(config.cluster_config.clone());
 
-        let gmem = Arc::new(RwLock::new(ToyMemory::default()));
+        // TODO: current implementation means imem is writable, but this is true
+        // in hardware too?
+        let mut gmem = FlatMemory::new(Some(config.mem_config));
+        gmem.copy_elf(&imem);
         
-        gmem.write()
-            .expect("gmem poisoned")
-            .set_fallthrough(Arc::clone(&imem));
-
-        gmem.write()
-            .expect("gmem poisoned")
-            .set_config(config.mem_config);
-
+        let gmem = Arc::new(RwLock::new(gmem));
+        
         for id in 0..1 {
             clusters.push(Cluster::new(cluster_config.clone(), id, logger, gmem.clone()));
         }
@@ -160,7 +157,7 @@ impl ModuleBehaviors for CyclotronTop {
     }
 
     fn reset(&mut self) {
-        self.gmem.write().expect("lock poisoned").reset();
+        // reset doesn't clear memory
         self.clusters.iter_mut().for_each(Cluster::reset);
     }
 }

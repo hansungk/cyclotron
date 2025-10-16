@@ -6,9 +6,9 @@ use crate::muon::csr::CSRFile;
 use crate::muon::decode::{DecodeUnit, IssuedInst, InstBufEntry, RegFile};
 use crate::muon::execute::ExecuteUnit;
 use crate::muon::scheduler::{Schedule, Scheduler};
+use crate::sim::flat_mem::FlatMemory;
 use crate::sim::log::Logger;
 use crate::info;
-use crate::sim::toy_mem::ToyMemory;
 use std::iter::zip;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{Arc, RwLock};
@@ -24,7 +24,7 @@ pub struct Warp {
     base: ModuleBase<WarpState, MuonConfig>,
     pub wid: usize,
     logger: Arc<Logger>,
-    gmem: Arc<RwLock<ToyMemory>>,
+    gmem: Arc<RwLock<FlatMemory>>,
 }
 
 impl ModuleBehaviors for Warp {
@@ -76,7 +76,7 @@ impl Writeback {
 }
 
 impl Warp {
-    pub fn new(config: Arc<MuonConfig>, logger: &Arc<Logger>, gmem: Arc<RwLock<ToyMemory>>) -> Warp {
+    pub fn new(config: Arc<MuonConfig>, logger: &Arc<Logger>, gmem: Arc<RwLock<FlatMemory>>) -> Warp {
         let num_lanes = config.num_lanes;
         let mut me = Warp {
             base: ModuleBase {
@@ -102,7 +102,7 @@ impl Warp {
     pub fn fetch(&self, pc: u32) -> u64 {
         let inst_bytes = self.gmem.write()
             .expect("gmem poisoned")
-            .read::<8>(pc as usize)
+            .read_n::<8>(pc as usize)
             .expect("failed to fetch instruction");
         u64::from_le_bytes(inst_bytes)
     }
