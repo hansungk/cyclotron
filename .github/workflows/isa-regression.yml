@@ -23,7 +23,7 @@ jobs:
 
       # Run isa tests
       - name: Run isa tests
-        run: bash test/isa-tests/run-tests.sh
+        run: bash test/run-isa-tests.sh
       
       - name: Upload logs
         if: ${{ failure() }}
