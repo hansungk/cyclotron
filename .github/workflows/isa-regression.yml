@@ -1,0 +1,33 @@
+name: isa-tests regression
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+
+    steps:
+      # Checkout code
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      # Build binary
+      - name: Build
+        run: cargo build
+
+      # Run isa tests
+      - name: Run isa tests
+        run: bash test/run-isa-tests.sh
+      
+      - name: Upload logs
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: failed-outputs
+          path: logs/

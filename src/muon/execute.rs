@@ -5,8 +5,8 @@ use num_traits::ToPrimitive;
 pub use num_traits::WrappingAdd;
 use crate::base::mem::HasMemory;
 use crate::muon::decode::{sign_ext, IssuedInst, InstBufEntry, RegFile};
-use crate::sim::toy_mem::ToyMemory;
-use log::debug;
+use crate::sim::flat_mem::FlatMemory;
+use log::{debug, error};
 use crate::utils::BitSlice;
 use phf::phf_map;
 use crate::muon::csr::CSRFile;
@@ -130,7 +130,9 @@ impl ExecuteUnit {
     pub fn alu(issued: &IssuedInst, lane: usize) -> Option<u32> {
         fn check_zero(b: u32) -> bool {
             if b == 0 {
-                panic!("divide by zero");
+                // we should not panic - real riscv returns -1 on division by 0
+                error!("divide by zero");
+                true
             } else {
                 false
             }
@@ -373,7 +375,7 @@ impl ExecuteUnit {
         taken.then_some(branch_target)
     }
 
-    pub fn load(issued_inst: &IssuedInst, lane: usize, gmem: &RwLock<ToyMemory>) -> Option<u32> {
+    pub fn load(issued_inst: &IssuedInst, lane: usize, gmem: &RwLock<FlatMemory>) -> Option<u32> {
         // cyclotron itself makes no distinction between global and shared accesses (for now)
         // but this is nice for printing trace and testbench
         static INSTS: phf::Map<(u8, u8), &'static str> = phf_map! {
@@ -408,8 +410,9 @@ impl ExecuteUnit {
         let load_addr = alu_result >> 2 << 2;
         assert_eq!(alu_result >> 2, (alu_result + (1 << load_size) - 1) >> 2, "misaligned load");
 
-        let load_data_bytes = gmem.write().expect("lock poisoned").read::<4>(
-            load_addr as usize).expect("store failed");
+        let load_data_bytes = gmem.read().expect("lock poisoned")
+            .read_n::<4>(load_addr as usize)
+            .expect("load failed");
 
         let raw_load = u32::from_le_bytes(load_data_bytes);
         let offset = ((alu_result & 3) * 8) as usize;
@@ -427,7 +430,7 @@ impl ExecuteUnit {
         Some(masked_load)
     }
 
-    pub fn store(issued_inst: &IssuedInst, lane: usize, gmem: &RwLock<ToyMemory>) -> Option<u32> {
+    pub fn store(issued_inst: &IssuedInst, lane: usize, gmem: &RwLock<FlatMemory>) -> Option<u32> {
         static INSTS: phf::Map<(u8, u8), &'static str> = phf_map! {
             (0u8, 0u8) => "sb.global",
             (0u8, 1u8) => "sb.shared",
@@ -445,7 +448,7 @@ impl ExecuteUnit {
         let inst_imp = InstImp(mnemonic, |[a, b]| { a.wrapping_add(b) });
         let alu_result = print_and_execute!(inst_imp, [
             issued_inst.rs1_data[lane].unwrap(),
-            issued_inst.imm32
+            issued_inst.imm24 as u32
         ]);
 
         let mut gmem = gmem.write().expect("lock poisoned");
@@ -586,7 +589,7 @@ impl ExecuteUnit {
 
     pub fn execute(issued: IssuedInst, cid: usize, wid: usize, tmask: u32,
                    rf: &mut [RegFile], csrf: &mut [CSRFile],
-                   scheduler: &mut Scheduler, neutrino: &mut Neutrino, gmem: &RwLock<ToyMemory>) -> Writeback {
+                   scheduler: &mut Scheduler, neutrino: &mut Neutrino, gmem: &RwLock<FlatMemory>) -> Writeback {
 
         let num_lanes = rf.len();
         // lane id of first active thread

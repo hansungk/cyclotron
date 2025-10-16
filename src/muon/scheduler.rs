@@ -59,6 +59,7 @@ impl Scheduler {
     pub fn new(config: Arc<MuonConfig>, cid: usize) -> Self {
         let num_warps = config.num_warps;
         info!("scheduler instantiated with {} warps!", num_warps);
+        info!("start_pc: {}", config.start_pc);
         let mut me = Scheduler {
             base: ModuleBase::<SchedulerState, MuonConfig> {
                 state: SchedulerState {
