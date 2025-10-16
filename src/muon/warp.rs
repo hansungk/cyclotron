@@ -5,7 +5,7 @@ use crate::muon::config::MuonConfig;
 use crate::muon::csr::CSRFile;
 use crate::muon::decode::{DecodeUnit, IssuedInst, InstBufEntry, RegFile};
 use crate::muon::execute::ExecuteUnit;
-use crate::muon::scheduler::{Schedule, Scheduler};
+use crate::muon::scheduler::{Schedule, Scheduler, SchedulerWriteback};
 use crate::sim::log::Logger;
 use crate::info;
 use crate::sim::toy_mem::ToyMemory;
@@ -21,7 +21,7 @@ pub struct WarpState {
 }
 
 pub struct Warp {
-    base: ModuleBase<WarpState, MuonConfig>,
+    pub base: ModuleBase<WarpState, MuonConfig>,
     pub wid: usize,
     logger: Arc<Logger>,
     gmem: Arc<RwLock<ToyMemory>>,
@@ -46,6 +46,7 @@ pub struct Writeback {
     pub tmask: u32,
     pub rd_addr: u8,
     pub rd_data: Vec<Option<u32>>,
+    pub sched_wb: SchedulerWriteback,
 }
 
 #[derive(Debug, Default, Clone)]

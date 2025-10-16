@@ -18,7 +18,7 @@ pub struct MuonCore {
     base: ModuleBase<MuonState, MuonConfig>,
     pub id: usize,
     pub scheduler: Scheduler,
-    warps: Vec<Warp>,
+    pub warps: Vec<Warp>,
     logger: Arc<Logger>,
     tracer: Arc<Tracer>,
 }

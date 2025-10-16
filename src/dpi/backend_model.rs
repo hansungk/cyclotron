@@ -1,0 +1,112 @@
+use crate::base::behavior::Parameterizable;
+use crate::dpi::CELL;
+use crate::muon::decode::IssuedInst;
+
+#[no_mangle]
+/// Issue a decoded instruction bundle to the backend model, and get the writeback bundle back.
+pub unsafe fn cyclotron_backend_rs(
+    issue_valid: u8,
+    issue_warp_id: u8,
+    issue_pc: u32,
+    issue_op: u8,
+    issue_opext: u8,
+    issue_f3: u8,
+    issue_rd_addr: u8,
+    issue_rs1_addr: u8,
+    issue_rs2_addr: u8,
+    issue_rs3_addr: u8,
+    issue_rs1_data_ptr: *const u32,
+    issue_rs2_data_ptr: *const u32,
+    issue_rs3_data_ptr: *const u32,
+    issue_f7: u8,
+    issue_imm32: u32,
+    issue_imm24: u32,
+    issue_csr_imm: u8,
+    issue_pred_ptr: *const u32,
+    issue_tmask: u32,
+    issue_raw_inst: u64,
+    writeback_valid_ptr: *mut u8,
+    writeback_pc_ptr: *mut u32,
+    writeback_tmask_ptr: *mut u32,
+    writeback_rd_addr_ptr: *mut u8,
+    writeback_rd_data_ptr: *mut u32,
+    writeback_set_pc_valid_ptr: *mut u8,
+    writeback_set_pc_ptr: *mut u32,
+    writeback_set_tmask_valid_ptr: *mut u8,
+    writeback_set_tmask_ptr: *mut u32,
+    writeback_wspawn_valid_ptr: *mut u8,
+    writeback_wspawn_count_ptr: *mut u32,
+    writeback_wspawn_pc_ptr: *mut u32,
+) {
+    let mut context_guard = CELL.write().unwrap();
+    let context = context_guard.as_mut().expect("DPI context not initialized!");
+    let sim = &mut context.sim_be;
+    let cluster = &mut sim.top.clusters[0];
+    let core = &mut cluster.cores[0];
+    let config = *core.conf();
+    let neutrino = &mut cluster.neutrino;
+
+    // let issue_rs1_data = unsafe { std::slice::from_raw_parts(issue_rs1_data_ptr, config.num_lanes) };
+    // let issue_rs2_data = unsafe { std::slice::from_raw_parts(issue_rs2_data_ptr, config.num_lanes) };
+    // let issue_rs3_data = unsafe { std::slice::from_raw_parts(issue_rs3_data_ptr, config.num_lanes) };
+    // predicates not used for now
+    // let _issue_pred = unsafe { std::slice::from_raw_parts(issue_pred_ptr, config.num_lanes) };
+    let writeback_valid = unsafe { writeback_valid_ptr.as_mut().expect("pointer was null") };
+    let writeback_pc = unsafe { writeback_pc_ptr.as_mut().expect("pointer was null") };
+    let writeback_tmask = unsafe { writeback_tmask_ptr.as_mut().expect("pointer was null") };
+    // let writeback_rd_addr = unsafe { writeback_rd_addr_ptr.as_mut().expect("pointer was null") };
+    // let writeback_rd_data = unsafe { std::slice::from_raw_parts_mut(writeback_rd_data_ptr, config.num_lanes) };
+    let writeback_set_pc_valid = unsafe { writeback_set_pc_valid_ptr.as_mut().expect("pointer was null") };
+    let writeback_set_pc = unsafe { writeback_set_pc_ptr.as_mut().expect("pointer was null") };
+    let writeback_set_tmask_valid = unsafe { writeback_set_tmask_valid_ptr.as_mut().expect("pointer was null") };
+    let writeback_set_tmask = unsafe { writeback_set_tmask_ptr.as_mut().expect("pointer was null") };
+    let writeback_wspawn_valid = unsafe { writeback_wspawn_valid_ptr.as_mut().expect("pointer was null") };
+    let writeback_wspawn_count = unsafe { writeback_wspawn_count_ptr.as_mut().expect("pointer was null") };
+    let writeback_wspawn_pc = unsafe { writeback_wspawn_pc_ptr.as_mut().expect("pointer was null") };
+
+    let to_vec = |slice: &[u32]| slice.iter().map(|u| Some(*u)).collect::<Vec<_>>();
+
+    if issue_valid != 1 {
+        // if no issue, tie off writeback and exit early
+        *writeback_valid = 0u8;
+        return;
+    }
+
+    let rf = &core.warps[issue_warp_id as usize].base.state.reg_file;
+    let issued = IssuedInst {
+        opcode: issue_op,
+        opext: issue_opext,
+        rd_addr: issue_rd_addr,
+        f3: issue_f3,
+        rs1_addr: issue_rs1_addr,
+        rs2_addr: issue_rs2_addr,
+        rs3_addr: issue_rs3_addr,
+        rs4_addr: 0, /* unused */
+        rs1_data: rf.iter().map(|r| Some(r.read_gpr(issue_rs1_addr))).collect::<Vec<_>>(),
+        rs2_data: rf.iter().map(|r| Some(r.read_gpr(issue_rs2_addr))).collect::<Vec<_>>(),
+        rs3_data: rf.iter().map(|r| Some(r.read_gpr(issue_rs3_addr))).collect::<Vec<_>>(),
+        rs4_data: rf.iter().map(|r| Some(r.read_gpr(issue_rs3_addr))).collect::<Vec<_>>(), /* unused */
+        f7: issue_f7,
+        imm32: issue_imm32,
+        imm24: issue_imm24 as i32,
+        csr_imm: issue_csr_imm,
+        pc: issue_pc,
+        raw: issue_raw_inst,
+    };
+
+    let writeback = core.execute(issue_warp_id.into(), issued, issue_tmask, neutrino);
+    *writeback_valid = 1u8;
+    *writeback_pc = writeback.inst.pc;
+    *writeback_tmask = writeback.tmask;
+    *writeback_set_pc_valid = writeback.sched_wb.pc_valid as u8;
+    *writeback_set_pc = writeback.sched_wb.pc;
+    *writeback_set_tmask_valid = writeback.sched_wb.tmask_valid as u8;
+    *writeback_set_tmask = writeback.sched_wb.tmask;
+    *writeback_wspawn_valid = writeback.sched_wb.wspawn_valid as u8;
+    *writeback_wspawn_count = writeback.sched_wb.wspawn_count;
+    *writeback_wspawn_pc = writeback.sched_wb.wspawn_pc;
+
+    // for (data_pin, owb) in zip(writeback_rd_data, writeback.rd_data) {
+    //     *data_pin = owb.unwrap_or(0);
+    // }
+}

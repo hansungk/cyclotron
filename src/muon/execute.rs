@@ -10,7 +10,7 @@ use log::debug;
 use crate::utils::BitSlice;
 use phf::phf_map;
 use crate::muon::csr::CSRFile;
-use crate::muon::scheduler::Scheduler;
+use crate::muon::scheduler::{Scheduler, SchedulerWriteback};
 use crate::muon::warp::Writeback;
 use crate::neutrino::neutrino::Neutrino;
 
@@ -500,7 +500,7 @@ impl ExecuteUnit {
     }
 
     pub fn sfu(issued_inst: &IssuedInst, wid: usize, first_lid: usize,
-               rf: &mut [RegFile], scheduler: &mut Scheduler) {
+               rf: &mut [RegFile], scheduler: &mut Scheduler) -> SchedulerWriteback {
         let insts = phf_map! {
             // sets thread mask to rs1[NT-1:0]
             0b000_0000000u16 => InstDef("vx_tmc",   SFUType::TMC),
@@ -528,7 +528,7 @@ impl ExecuteUnit {
 
         scheduler.sfu(wid, first_lid, sfu_type, issued_inst,
             rf.iter().map(|lrf| lrf.read_gpr(issued_inst.rs1_addr)).collect(),
-            rf.iter().map(|lrf| lrf.read_gpr(issued_inst.rs2_addr)).collect());
+            rf.iter().map(|lrf| lrf.read_gpr(issued_inst.rs2_addr)).collect())
     }
 
     /// Collect source operand values from the regfile.
@@ -595,33 +595,36 @@ impl ExecuteUnit {
         // debug!("execute pc 0x{:08x} {}", issued.pc, issued);
 
         let empty = vec![None::<u32>; num_lanes];
-        let collected_rds = match issued.opcode {
+        let empty_swb = SchedulerWriteback::default();
+        let (collected_rds, sched_wb) = match issued.opcode {
             Opcode::OP | Opcode::OP_IMM | Opcode::LUI | Opcode::AUIPC => {
-                Self::execute_lanes(|lane| ExecuteUnit::alu(&issued, lane), tmask, rf)
+                (Self::execute_lanes(|lane| ExecuteUnit::alu(&issued, lane), tmask, rf), empty_swb)
             }
             Opcode::OP_FP | Opcode::MADD | Opcode::MSUB | Opcode::NM_ADD | Opcode::NM_SUB => {
-                Self::execute_lanes(|lane| ExecuteUnit::fpu(&issued, lane), tmask, rf)
+                (Self::execute_lanes(|lane| ExecuteUnit::fpu(&issued, lane), tmask, rf), empty_swb)
             }
             Opcode::BRANCH => {
-                if let Some(target) = ExecuteUnit::branch(&issued, first_lid) {
-                    scheduler.take_branch(wid, target);
-                }
-                empty
+                (empty, match ExecuteUnit::branch(&issued, first_lid) {
+                    Some(target) => scheduler.take_branch(wid, target),
+                    None => empty_swb
+                })
             }
             Opcode::JAL => {
-                scheduler.take_branch(wid, issued.pc.wrapping_add(issued.imm32));
-                Self::execute_lanes(|_| { Some(issued.pc + 8) }, tmask, rf)
+                let sched_wb = scheduler.take_branch(wid, issued.pc.wrapping_add(issued.imm32));
+                (Self::execute_lanes(|_| { Some(issued.pc + 8) }, tmask, rf), sched_wb)
             }
             Opcode::JALR => {
                 let target = issued.rs1_data[first_lid].unwrap().wrapping_add(issued.imm32);
-                scheduler.take_branch(wid, target);
-                Self::execute_lanes(|_| { Some(issued.pc + 8) }, tmask, rf)
+                let sched_wb = scheduler.take_branch(wid, target);
+                (Self::execute_lanes(|_| { Some(issued.pc + 8) }, tmask, rf), sched_wb)
             }
             Opcode::LOAD => {
-                Self::execute_lanes(|lane| ExecuteUnit::load(&issued, lane, gmem), tmask, rf)
+                (Self::execute_lanes(|lane| ExecuteUnit::load(&issued, lane, gmem), tmask, rf),
+                empty_swb)
             }
             Opcode::STORE => {
-                Self::execute_lanes(|lane| ExecuteUnit::store(&issued, lane, gmem), tmask, rf)
+                (Self::execute_lanes(|lane| ExecuteUnit::store(&issued, lane, gmem), tmask, rf),
+                empty_swb)
             }
             Opcode::MISC_MEM => {
                 let imp = match issued.f3 {
@@ -631,28 +634,26 @@ impl ExecuteUnit {
                 };
                 print_and_unwrap!(imp);
                 // TODO fence
-                empty
+                (empty, empty_swb)
             }
             Opcode::SYSTEM => {
                 if issued.f3 == 0 { // tohost
                     // FIXME: tmask?
-                    ExecuteUnit::sfu(&issued, wid, first_lid, rf, scheduler);
-                    empty
+                    (empty, ExecuteUnit::sfu(&issued, wid, first_lid, rf, scheduler))
                 } else { // csr
-                    let wb = csrf.iter_mut().enumerate()
+                    let rds = csrf.iter_mut().enumerate()
                         .map(|(lane, lcsrf)| {
                             match tmask.bit(lane) {
                                 true => ExecuteUnit::csr(&issued, lane, lcsrf),
                                 false => None,
                             }
                         }).collect();
-                    wb
+                    (rds, empty_swb)
                 }
             }
             Opcode::CUSTOM0 => {
                 // FIXME: tmask?
-                ExecuteUnit::sfu(&issued, wid, first_lid, rf, scheduler);
-                empty
+                (empty, ExecuteUnit::sfu(&issued, wid, first_lid, rf, scheduler))
             }
             Opcode::CUSTOM1 => {
                 // 0b000_0000000u16 => InstImp("vx_tex",  |[a, b, c]| { }),
@@ -662,9 +663,8 @@ impl ExecuteUnit {
             }
             Opcode::CUSTOM2 => {
                 neutrino.execute(&issued, cid, wid, tmask, &mut rf[first_lid]);
-                empty
+                (empty, empty_swb)
             }
-
             _ => { panic!("unimplemented opcode 0x{:x}", issued.opcode); }
         };
 
@@ -674,6 +674,7 @@ impl ExecuteUnit {
             tmask,
             rd_addr: issued_rd_addr,
             rd_data: collected_rds,
+            sched_wb,
         }
     }
 }
