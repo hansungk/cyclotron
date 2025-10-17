@@ -108,7 +108,7 @@ pub extern "C" fn cyclotron_mem_init_rs(
 }
 
 // SAFETY: no other global function with this name exists
-#[unsafe(no_mangle)]
+#[no_mangle]
 /// DPI interface for issuing memory requests to a simulated memory subsystem.
 /// Sample the pins on negedge, then call this function
 pub extern "C" fn cyclotron_mem_rs(

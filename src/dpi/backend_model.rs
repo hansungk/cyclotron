@@ -1,9 +1,49 @@
 use crate::base::behavior::Parameterizable;
+use crate::base::mem::HasMemory;
 use crate::dpi::CELL;
 use crate::muon::decode::IssuedInst;
 
 #[no_mangle]
+pub unsafe fn cyclotron_imem_rs(
+    imem_req_ready_ptr: *mut u8,
+    imem_req_valid: u8,
+    imem_req_bits_store: u8,
+    imem_req_bits_address: u32,
+    imem_req_bits_size: u8,
+    imem_req_bits_tag: u8,
+    imem_req_bits_data: u64,
+    imem_req_bits_mask: u8,
+    imem_resp_ready: u8,
+    imem_resp_valid_ptr: *mut u8,
+    imem_resp_bits_tag_ptr: *mut u8,
+    imem_resp_bits_data_ptr: *mut u64,
+) {
+    let mut context_guard = CELL.write().unwrap();
+    let context = context_guard.as_mut().expect("DPI context not initialized!");
+    let sim = &mut context.sim_be;
+    let cluster = &mut sim.top.clusters[0];
+    let core = &mut cluster.cores[0];
+
+    let imem_req_ready = unsafe { imem_req_ready_ptr.as_mut().expect("pointer was null") };
+    let imem_resp_valid = unsafe { imem_resp_valid_ptr.as_mut().expect("pointer was null") };
+    let imem_resp_bits_tag = unsafe { imem_resp_bits_tag_ptr.as_mut().expect("pointer was null") };
+    let imem_resp_bits_data = unsafe { imem_resp_bits_data_ptr.as_mut().expect("pointer was null") };
+
+    *imem_req_ready = imem_resp_ready;
+
+    // let gmem = sim.top.gmem.clone().write().expect("gmem poisoned");
+    if imem_req_valid != 0 {
+        assert_eq!(imem_req_bits_store, 0, "imem is read only");
+        assert_eq!(imem_req_bits_size, 3, "imem access size must be 8 bytes");
+        *imem_resp_bits_data = core.warps[0].fetch(imem_req_bits_address);
+    }
+
+    *imem_resp_valid = imem_req_valid;
+    *imem_resp_bits_tag = imem_req_bits_tag;
+}
+
 /// Issue a decoded instruction bundle to the backend model, and get the writeback bundle back.
+#[no_mangle]
 pub unsafe fn cyclotron_backend_rs(
     issue_valid: u8,
     issue_warp_id: u8,
@@ -28,6 +68,7 @@ pub unsafe fn cyclotron_backend_rs(
     writeback_valid_ptr: *mut u8,
     writeback_pc_ptr: *mut u32,
     writeback_tmask_ptr: *mut u32,
+    writeback_wid_ptr: *mut u8,
     writeback_rd_addr_ptr: *mut u8,
     writeback_rd_data_ptr: *mut u32,
     writeback_set_pc_valid_ptr: *mut u8,
@@ -54,6 +95,7 @@ pub unsafe fn cyclotron_backend_rs(
     let writeback_valid = unsafe { writeback_valid_ptr.as_mut().expect("pointer was null") };
     let writeback_pc = unsafe { writeback_pc_ptr.as_mut().expect("pointer was null") };
     let writeback_tmask = unsafe { writeback_tmask_ptr.as_mut().expect("pointer was null") };
+    let writeback_wid = unsafe { writeback_wid_ptr.as_mut().expect("pointer was null") };
     // let writeback_rd_addr = unsafe { writeback_rd_addr_ptr.as_mut().expect("pointer was null") };
     // let writeback_rd_data = unsafe { std::slice::from_raw_parts_mut(writeback_rd_data_ptr, config.num_lanes) };
     let writeback_set_pc_valid = unsafe { writeback_set_pc_valid_ptr.as_mut().expect("pointer was null") };
@@ -98,6 +140,7 @@ pub unsafe fn cyclotron_backend_rs(
     *writeback_valid = 1u8;
     *writeback_pc = writeback.inst.pc;
     *writeback_tmask = writeback.tmask;
+    *writeback_wid = issue_warp_id;
     *writeback_set_pc_valid = writeback.sched_wb.pc_valid as u8;
     *writeback_set_pc = writeback.sched_wb.pc;
     *writeback_set_tmask_valid = writeback.sched_wb.tmask_valid as u8;
