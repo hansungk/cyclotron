@@ -38,13 +38,10 @@ pub struct Schedule {
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct SchedulerWriteback {
-    pub pc: u32,
-    pub pc_valid: bool,
-    pub tmask: u32,
-    pub tmask_valid: bool,
-    pub wspawn_pc: u32,
-    pub wspawn_count: u32,
-    pub wspawn_valid: bool,
+    pub pc: Option<u32>,
+    pub tmask: Option<u32>,
+    pub wspawn_pc_count: Option<(u32, u32)>,
+    pub tohost: Option<u32>,
     // TODO: ipdom stack entries
 }
 
@@ -106,8 +103,7 @@ impl Scheduler {
             self.base.state.active_warps.mut_bit(wid, false);
         }
         SchedulerWriteback {
-            pc: target_pc,
-            pc_valid: true,
+            pc: Some(target_pc),
             ..SchedulerWriteback::default()
         }
     }
@@ -126,8 +122,7 @@ impl Scheduler {
                     self.base.state.active_warps.mut_bit(wid, false);
                 }
                 SchedulerWriteback {
-                    tmask,
-                    tmask_valid: true,
+                    tmask: Some(tmask),
                     ..SchedulerWriteback::default()
                 }
             }
@@ -144,9 +139,7 @@ impl Scheduler {
                 }
                 info!("new active warps: {:b}", self.base.state.active_warps);
                 SchedulerWriteback {
-                    wspawn_pc: start_pc,
-                    wspawn_count: count,
-                    wspawn_valid: true,
+                    wspawn_pc_count: Some((start_pc, count)),
                     ..SchedulerWriteback::default()
                 }
             }
@@ -235,8 +228,7 @@ impl Scheduler {
                     }
                 }
                 SchedulerWriteback {
-                    tmask: self.base.state.thread_masks[wid],
-                    tmask_valid: true,
+                    tmask: Some(self.base.state.thread_masks[wid]),
                     ..SchedulerWriteback::default()
                 }
             }
@@ -244,8 +236,7 @@ impl Scheduler {
                 self.base.state.thread_masks[wid] = 0;
                 self.base.state.active_warps.mut_bit(wid, false);
                 SchedulerWriteback {
-                    tmask: 0,
-                    tmask_valid: true,
+                    tmask: Some(0),
                     ..SchedulerWriteback::default()
                 }
             }
@@ -254,9 +245,16 @@ impl Scheduler {
                 self.base.state.tohost = Some(a0);
                 self.base.state.thread_masks[wid] = 0;
                 self.base.state.active_warps.mut_bit(wid, false);
-                println!("test finished with tohost={}", a0);
+                if (a0 == 0) {
+                    println!("test passed!")
+                } else {
+                    println!("test failed with tohost={}", a0);
+                }
                 // might want a tohost writeback here
-                SchedulerWriteback::default()
+                SchedulerWriteback {
+                    tohost: Some(a0),
+                    ..SchedulerWriteback::default()
+                }
             }
         }
     }

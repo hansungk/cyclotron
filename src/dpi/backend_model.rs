@@ -80,6 +80,7 @@ pub unsafe fn cyclotron_backend_rs(
     writeback_wspawn_valid_ptr: *mut u8,
     writeback_wspawn_count_ptr: *mut u32,
     writeback_wspawn_pc_ptr: *mut u32,
+    finished_ptr: *mut u8,
 ) {
     let mut context_guard = CELL.write().unwrap();
     let context = context_guard.as_mut().expect("DPI context not initialized!");
@@ -107,6 +108,7 @@ pub unsafe fn cyclotron_backend_rs(
     let writeback_wspawn_valid = unsafe { writeback_wspawn_valid_ptr.as_mut().expect("pointer was null") };
     let writeback_wspawn_count = unsafe { writeback_wspawn_count_ptr.as_mut().expect("pointer was null") };
     let writeback_wspawn_pc = unsafe { writeback_wspawn_pc_ptr.as_mut().expect("pointer was null") };
+    let finished = unsafe { finished_ptr.as_mut().expect("pointer was null") };
 
     let to_vec = |slice: &[u32]| slice.iter().map(|u| Some(*u)).collect::<Vec<_>>();
 
@@ -149,13 +151,14 @@ pub unsafe fn cyclotron_backend_rs(
     *writeback_pc = writeback.inst.pc;
     *writeback_tmask = writeback.tmask;
     *writeback_wid = issue_warp_id;
-    *writeback_set_pc_valid = writeback.sched_wb.pc_valid as u8;
-    *writeback_set_pc = writeback.sched_wb.pc;
-    *writeback_set_tmask_valid = writeback.sched_wb.tmask_valid as u8;
-    *writeback_set_tmask = writeback.sched_wb.tmask;
-    *writeback_wspawn_valid = writeback.sched_wb.wspawn_valid as u8;
-    *writeback_wspawn_count = writeback.sched_wb.wspawn_count;
-    *writeback_wspawn_pc = writeback.sched_wb.wspawn_pc;
+    *writeback_set_pc_valid = writeback.sched_wb.pc.is_some() as u8;
+    *writeback_set_pc = writeback.sched_wb.pc.unwrap_or(0);
+    *writeback_set_tmask_valid = writeback.sched_wb.tmask.is_some() as u8;
+    *writeback_set_tmask = writeback.sched_wb.tmask.unwrap_or(0);
+    *writeback_wspawn_valid = writeback.sched_wb.wspawn_pc_count.is_some() as u8;
+    *writeback_wspawn_count = writeback.sched_wb.wspawn_pc_count.unwrap_or((0, 0)).1;
+    *writeback_wspawn_pc = writeback.sched_wb.wspawn_pc_count.unwrap_or((0, 0)).0;
+    *finished = writeback.sched_wb.tohost.is_some() as u8;
 
     // for (data_pin, owb) in zip(writeback_rd_data, writeback.rd_data) {
     //     *data_pin = owb.unwrap_or(0);
