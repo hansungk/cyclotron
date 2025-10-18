@@ -1,3 +1,4 @@
+use std::fmt::Debug;
 use crate::base::behavior::*;
 use crate::base::mem::HasMemory;
 use crate::base::module::{module, IsModule, ModuleBase};
@@ -41,6 +42,7 @@ impl ModuleBehaviors for Warp {
 module!(Warp, WarpState, MuonConfig,
 );
 
+#[derive(Debug)]
 pub struct Writeback {
     pub inst: IssuedInst,
     pub tmask: u32,

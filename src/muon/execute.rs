@@ -595,10 +595,11 @@ impl ExecuteUnit {
         // lane id of first active thread
         let first_lid = tmask.trailing_zeros() as usize;
 
-        // debug!("execute pc 0x{:08x} {}", issued.pc, issued);
+        // debug!("execute pc 0x{:08x} {:#?}", issued.pc, issued);
 
         let empty = vec![None::<u32>; num_lanes];
         let empty_swb = SchedulerWriteback::default();
+
         let (collected_rds, sched_wb) = match issued.opcode {
             Opcode::OP | Opcode::OP_IMM | Opcode::LUI | Opcode::AUIPC => {
                 (Self::execute_lanes(|lane| ExecuteUnit::alu(&issued, lane), tmask, rf), empty_swb)
@@ -672,12 +673,15 @@ impl ExecuteUnit {
         };
 
         let issued_rd_addr = issued.rd_addr;
-        Writeback {
+        let writeback = Writeback {
             inst: issued,
             tmask,
             rd_addr: issued_rd_addr,
             rd_data: collected_rds,
             sched_wb,
-        }
+        };
+        debug!("{:?}", writeback);
+
+        writeback
     }
 }

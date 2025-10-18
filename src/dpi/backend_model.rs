@@ -2,6 +2,8 @@ use crate::base::behavior::Parameterizable;
 use crate::base::mem::HasMemory;
 use crate::dpi::CELL;
 use crate::muon::decode::IssuedInst;
+use crate::muon::warp::Warp;
+use log::debug;
 
 #[no_mangle]
 pub unsafe fn cyclotron_imem_rs(
@@ -115,6 +117,7 @@ pub unsafe fn cyclotron_backend_rs(
     }
 
     let rf = &core.warps[issue_warp_id as usize].base.state.reg_file;
+    // debug!("rs1 {:#?}", rf.iter().map(|r| Some(r.read_gpr(issue_rs1_addr))).collect::<Vec<_>>());
     let issued = IssuedInst {
         opcode: issue_op,
         opext: issue_opext,
@@ -130,13 +133,18 @@ pub unsafe fn cyclotron_backend_rs(
         rs4_data: rf.iter().map(|r| Some(r.read_gpr(issue_rs3_addr))).collect::<Vec<_>>(), /* unused */
         f7: issue_f7,
         imm32: issue_imm32,
-        imm24: issue_imm24 as i32,
+        imm24: ((issue_imm24 << 8) as i32) >> 8,
         csr_imm: issue_csr_imm,
         pc: issue_pc,
         raw: issue_raw_inst,
     };
 
     let writeback = core.execute(issue_warp_id.into(), issued, issue_tmask, neutrino);
+    // debug!("written back");
+    Warp::writeback(&writeback, core.warps[issue_warp_id as usize].base.state.reg_file.as_mut());
+    // let rf2 = &core.warps[issue_warp_id as usize].base.state.reg_file;
+    // debug!("{:#?}", rf2.iter().map(|r| Some(r.read_gpr(issue_rs1_addr))).collect::<Vec<_>>());
+
     *writeback_valid = 1u8;
     *writeback_pc = writeback.inst.pc;
     *writeback_tmask = writeback.tmask;

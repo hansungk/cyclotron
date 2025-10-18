@@ -6,6 +6,9 @@ use std::iter::zip;
 use std::path::PathBuf;
 use std::sync::RwLock;
 
+use env_logger::Builder;
+use log::LevelFilter;
+
 struct Context {
     sim_isa: Sim, // cyclotron instance for the ISA model
     sim_be: Sim,  // cyclotron instance for the backend model
@@ -29,6 +32,12 @@ pub fn assert_single_core(sim: &Sim) {
 /// Entry point to the DPI interface.  This must be called from Verilog once at the start in an
 /// initial block.
 pub fn cyclotron_init_rs() {
+
+    let log_level = LevelFilter::Debug;
+
+    Builder::new()
+        .filter_level(log_level)
+        .init();
     let toml_path = PathBuf::from("config.toml");
     let toml_string = crate::ui::read_toml(&toml_path);
 

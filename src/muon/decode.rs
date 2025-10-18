@@ -4,7 +4,7 @@ use crate::base::behavior::*;
 use crate::base::module::{module, ModuleBase, IsModule};
 use crate::muon::config::MuonConfig;
 use crate::utils::*;
-use std::fmt::Formatter;
+use std::fmt::{Debug, Display, Formatter};
 use std::sync::Arc;
 
 #[derive(Debug, Default, Copy, Clone)]
@@ -45,6 +45,42 @@ pub struct IssuedInst {
     pub csr_imm: u8,
     pub pc: u32,
     pub raw: u64,
+}
+
+impl Debug for IssuedInst {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IssuedInst")
+            .field("op", &format_args!("0x{:x}", self.opcode))
+            .field("opext", &self.opext)
+            .field("rd", &self.rd_addr)
+            .field("f3", &self.f3)
+            // .field("rs1", &self.rs1_addr)
+            // .field("rs2", &self.rs2_addr)
+            // .field("rs3", &self.rs3_addr)
+            // .field("rs4", &self.rs4_addr)
+            // .field("rs1_data", &self.rs1_data)
+            // .field("rs2_data", &self.rs2_data)
+            // .field("rs3_data", &self.rs3_data)
+            // .field("rs4_data", &self.rs4_data)
+            .field("f7", &self.f7)
+            .field("imm32", &format_args!("0x{:x}", self.imm32))
+            .field("imm24", &self.imm24)
+            .field("csr_imm", &self.csr_imm)
+            .field("pc", &format_args!("{:X}", self.pc))
+            .field("raw", &format_args!("0x{:x}", self.raw))
+            .finish()
+    }
+}
+
+impl std::fmt::Display for IssuedInst {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "pc {:#010x} inst {:#010x} [ op: 0x{:x}, f3: {}, f7: {}, rd=x{}, rs1=x{}, x{}, x{} ]",
+            self.pc, self.raw, self.opcode, self.f3, self.f7,
+            self.rd_addr, self.rs1_addr, self.rs2_addr, self.rs3_addr
+        )
+    }
 }
 
 // per-warp
