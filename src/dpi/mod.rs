@@ -76,25 +76,26 @@ pub fn cyclotron_fetch_rs(fetch_pc: u32, fetch_warp: u32, inst_ptr: *mut u64) {
 
 #[no_mangle]
 /// Get a per-warp decoded instruction bundle from the instruction trace, and advance the ISA
-/// model. This supplies instructions from all warps because the issue stage peeks on every warp's
-/// instruction buffer head.
+/// model.  Models the fetch/decode frontend up until the ibuffers, and exposes per-warp ibuffer
+/// head entries.
 /// SAFETY: All signals are arrays of size num_warps.
-pub unsafe fn cyclotron_get_trace_rs(
-    ready_ptr: *const u8,
-    valid_ptr: *mut u8,
-    tmask_ptr: *mut u32,
-    pc_ptr: *mut u32,
-    opcode_ptr: *mut u32,
-    f3_ptr: *mut u8,
-    rd_addr_ptr: *mut u8,
-    rs1_addr_ptr: *mut u8,
-    rs2_addr_ptr: *mut u8,
-    rs3_addr_ptr: *mut u8,
-    f7_ptr: *mut u8,
-    imm32_ptr: *mut u32,
-    imm24_ptr: *mut u32,
-    csr_imm_ptr: *mut u8,
-    // raw_inst: *mut u64,
+pub unsafe fn cyclotron_frontend_rs(
+    ibuf_ready_vec: *const u8,
+    ibuf_valid_vec: *mut u8,
+    ibuf_pc_vec: *mut u32,
+    ibuf_op_vec: *mut u8,
+    ibuf_opext_vec: *mut u8,
+    ibuf_f3_vec: *mut u8,
+    ibuf_rd_addr_vec: *mut u8,
+    ibuf_rs1_addr_vec: *mut u8,
+    ibuf_rs2_addr_vec: *mut u8,
+    ibuf_rs3_addr_vec: *mut u8,
+    ibuf_f7_vec: *mut u8,
+    ibuf_imm32_vec: *mut u32,
+    ibuf_imm24_vec: *mut u32,
+    ibuf_csr_imm_vec: *mut u8,
+    ibuf_tmask_vec: *mut u32,
+    ibuf_raw_vec: *mut u8,
     finished_ptr: *mut u8,
 ) {
     let mut context_guard = CELL.write().unwrap();
@@ -113,20 +114,21 @@ pub unsafe fn cyclotron_get_trace_rs(
         .collect();
 
     // SAFETY: precondition of function guarantees this is valid
-    let ready = unsafe { std::slice::from_raw_parts(ready_ptr, config.num_warps) };
-    let valid = unsafe { std::slice::from_raw_parts_mut(valid_ptr, config.num_warps) };
-    let tmask = unsafe { std::slice::from_raw_parts_mut(tmask_ptr, config.num_warps) };
-    let pc = unsafe { std::slice::from_raw_parts_mut(pc_ptr, config.num_warps) };
-    let op = unsafe { std::slice::from_raw_parts_mut(opcode_ptr, config.num_warps) };
-    let f3 = unsafe { std::slice::from_raw_parts_mut(f3_ptr, config.num_warps) };
-    let rd_addr = unsafe { std::slice::from_raw_parts_mut(rd_addr_ptr, config.num_warps) };
-    let rs1_addr = unsafe { std::slice::from_raw_parts_mut(rs1_addr_ptr, config.num_warps) };
-    let rs2_addr = unsafe { std::slice::from_raw_parts_mut(rs2_addr_ptr, config.num_warps) };
-    let rs3_addr = unsafe { std::slice::from_raw_parts_mut(rs3_addr_ptr, config.num_warps) };
-    let f7 = unsafe { std::slice::from_raw_parts_mut(f7_ptr, config.num_warps) };
-    let imm32 = unsafe { std::slice::from_raw_parts_mut(imm32_ptr, config.num_warps) };
-    let imm24 = unsafe { std::slice::from_raw_parts_mut(imm24_ptr, config.num_warps) };
-    let csr_imm = unsafe { std::slice::from_raw_parts_mut(csr_imm_ptr, config.num_warps) };
+    let ready = unsafe { std::slice::from_raw_parts(ibuf_ready_vec, config.num_warps) };
+    let valid = unsafe { std::slice::from_raw_parts_mut(ibuf_valid_vec, config.num_warps) };
+    let tmask = unsafe { std::slice::from_raw_parts_mut(ibuf_tmask_vec, config.num_warps) };
+    let pc = unsafe { std::slice::from_raw_parts_mut(ibuf_pc_vec, config.num_warps) };
+    let op = unsafe { std::slice::from_raw_parts_mut(ibuf_op_vec, config.num_warps) };
+    let opext = unsafe { std::slice::from_raw_parts_mut(ibuf_opext_vec, config.num_warps) };
+    let f3 = unsafe { std::slice::from_raw_parts_mut(ibuf_f3_vec, config.num_warps) };
+    let rd_addr = unsafe { std::slice::from_raw_parts_mut(ibuf_rd_addr_vec, config.num_warps) };
+    let rs1_addr = unsafe { std::slice::from_raw_parts_mut(ibuf_rs1_addr_vec, config.num_warps) };
+    let rs2_addr = unsafe { std::slice::from_raw_parts_mut(ibuf_rs2_addr_vec, config.num_warps) };
+    let rs3_addr = unsafe { std::slice::from_raw_parts_mut(ibuf_rs3_addr_vec, config.num_warps) };
+    let f7 = unsafe { std::slice::from_raw_parts_mut(ibuf_f7_vec, config.num_warps) };
+    let imm32 = unsafe { std::slice::from_raw_parts_mut(ibuf_imm32_vec, config.num_warps) };
+    let imm24 = unsafe { std::slice::from_raw_parts_mut(ibuf_imm24_vec, config.num_warps) };
+    let csr_imm = unsafe { std::slice::from_raw_parts_mut(ibuf_csr_imm_vec, config.num_warps) };
     let finished = unsafe { finished_ptr.as_mut().expect("pointer was null") };
 
     for (w, o_line) in warp_insts.iter().enumerate() {
@@ -135,7 +137,8 @@ pub unsafe fn cyclotron_get_trace_rs(
                 valid[w] = 1;
                 tmask[w] = line.tmask;
                 pc[w] = line.pc;
-                op[w] = line.opcode as u32;
+                op[w] = line.opcode;
+                opext[w] = line.opext;
                 f3[w] = line.f3;
                 rd_addr[w] = line.rd_addr;
                 rs1_addr[w] = line.rs1_addr;
@@ -164,11 +167,11 @@ pub unsafe fn cyclotron_get_trace_rs(
 
     // consume if RTL ready was true
     // this has to happen after the pin drive above so that the consumed line is not lost
-    zip(warp_insts, ready).enumerate().for_each(|(w, (inst, rdy))| {
-        if inst.is_some() && *rdy == 1 {
+    for (w, (o_line, rdy)) in zip(warp_insts, ready).enumerate() {
+        if o_line.is_some() && *rdy == 1 {
             core.get_tracer().consume(w);
         }
-    });
+    }
 
     *finished = sim.finished() as u8;
 }
