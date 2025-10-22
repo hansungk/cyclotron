@@ -124,7 +124,7 @@ impl Warp {
         InstBufEntry { inst, tmask }
     }
 
-    pub fn backend(&mut self, ibuf: InstBufEntry, scheduler: &mut Scheduler, neutrino: &mut Neutrino) -> Result<Writeback, ExecErr> {
+    pub fn backend(&mut self, ibuf: InstBufEntry, scheduler: &mut Scheduler, neutrino: &mut Neutrino, smem: &mut FlatMemory) -> Result<Writeback, ExecErr> {
         let decoded = ibuf.inst;
         let pc = decoded.pc;
         let tmask = ibuf.tmask;
@@ -135,7 +135,7 @@ impl Warp {
 
         // execute
         let writeback = catch_unwind(AssertUnwindSafe(|| {
-            self.execute(issued, tmask, scheduler, neutrino)
+            self.execute(issued, tmask, scheduler, neutrino, smem)
         }));
 
         // writeback
@@ -165,7 +165,14 @@ impl Warp {
         }
     }
 
-    pub fn execute(&mut self, issued: IssuedInst, tmask: u32, scheduler: &mut Scheduler, neutrino: &mut Neutrino) -> Writeback {
+    pub fn execute(
+        &mut self, 
+        issued: IssuedInst, 
+        tmask: u32, 
+        scheduler: &mut Scheduler, 
+        neutrino: &mut Neutrino,
+        smem: &mut FlatMemory,
+    ) -> Writeback {
         let core_id = self.conf().lane_config.core_id;
         let rf = self.base.state.reg_file.as_mut_slice();
         let csrf = self.base.state.csr_file.as_mut_slice();
@@ -180,6 +187,7 @@ impl Warp {
             scheduler,
             neutrino,
             &self.gmem,
+            smem
         );
         writeback
     }
@@ -187,9 +195,10 @@ impl Warp {
     /// Fast-path that fuses frontend/backend for every warp instead of two-stage schedule/ibuf
     /// iteration.
     pub fn process(&mut self, schedule: Schedule,
-                   scheduler: &mut Scheduler, neutrino: &mut Neutrino) -> Result<(), ExecErr> {
+                   scheduler: &mut Scheduler, neutrino: &mut Neutrino,
+                   shared_mem: &mut FlatMemory) -> Result<(), ExecErr> {
         let ibuf = self.frontend(schedule);
-        self.backend(ibuf, scheduler, neutrino).map(|_| ())
+        self.backend(ibuf, scheduler, neutrino, shared_mem).map(|_| ())
     }
 
     pub fn writeback(wb: &Writeback, rf: &mut [RegFile]) {

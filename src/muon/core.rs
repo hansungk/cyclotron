@@ -19,6 +19,8 @@ pub struct MuonCore {
     pub id: usize,
     pub scheduler: Scheduler,
     pub warps: Vec<Warp>,
+    shared_mem: FlatMemory,
+
     logger: Arc<Logger>,
     tracer: Arc<Tracer>,
 }
@@ -38,6 +40,7 @@ impl MuonCore {
                 },
                 ..*config
             }), logger, gmem.clone())).collect(),
+            shared_mem: FlatMemory::new_with_size(config.smem_size, None),
             logger: logger.clone(),
             tracer: Arc::new(Tracer::new(&config)),
         };
@@ -96,7 +99,7 @@ impl MuonCore {
 
         for (warp, ibuf) in zip(warps, ibuf_entries) {
             let wb = match ibuf {
-                Some(ib) => Some(warp.backend(ib, &mut self.scheduler, neutrino)?),
+                Some(ib) => Some(warp.backend(ib, &mut self.scheduler, neutrino, &mut self.shared_mem)?),
                 None => None,
             };
             writebacks.push(wb);
@@ -113,7 +116,7 @@ impl MuonCore {
 
     /// Execute an issued instruction from a single warp in the core's functional unit backend.
     pub fn execute(&mut self, warp_id: usize, issued: IssuedInst, tmask: u32, neutrino: &mut Neutrino) -> Writeback {
-        let writeback = self.warps[warp_id].execute(issued, tmask, &mut self.scheduler, neutrino);
+        let writeback = self.warps[warp_id].execute(issued, tmask, &mut self.scheduler, neutrino, &mut self.shared_mem);
         self.warps[warp_id].tick_one();
 
         // no tracing done; instruction tracing is only enabled in the ISA-model mode

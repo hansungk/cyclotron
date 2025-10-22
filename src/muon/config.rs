@@ -11,6 +11,8 @@ pub struct MuonConfig {
     pub num_cores: usize,
     #[serde(default)]
     pub start_pc: u32,
+    #[serde(default)]
+    pub smem_size: usize,
     #[serde(skip)]
     pub lane_config: LaneConfig,
 }
@@ -24,6 +26,7 @@ impl Default for MuonConfig {
             num_warps: 1,
             num_cores: 1,
             start_pc: 0x8000000u32,
+            smem_size: 0x1_0000, // 64 KiB
             lane_config: LaneConfig::default(),
         }
     }

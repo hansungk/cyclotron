@@ -1,3 +1,4 @@
+use std::ops::DerefMut;
 use std::sync::RwLock;
 use std::fmt::Debug;
 use num_derive::FromPrimitive;
@@ -375,9 +376,7 @@ impl ExecuteUnit {
         taken.then_some(branch_target)
     }
 
-    pub fn load(issued_inst: &IssuedInst, lane: usize, gmem: &RwLock<FlatMemory>) -> Option<u32> {
-        // cyclotron itself makes no distinction between global and shared accesses (for now)
-        // but this is nice for printing trace and testbench
+    pub fn load(issued_inst: &IssuedInst, lane: usize, gmem: &RwLock<FlatMemory>, smem: &FlatMemory) -> Option<u32> {
         static INSTS: phf::Map<(u8, u8), &'static str> = phf_map! {
             (0u8, 0u8) => "lb.global",
             (0u8, 1u8) => "lb.shared",
@@ -396,8 +395,9 @@ impl ExecuteUnit {
         };
 
         let key = (issued_inst.f3, issued_inst.opext);
+        let shared_load = issued_inst.opext == 1;
         let Some(&mnemonic) = INSTS.get(&key) else {
-            unimplemented!()
+            unimplemented!("unknown load instruction")
         };
 
         let inst_imp = InstImp(mnemonic, |[a, b]| { a.wrapping_add(b) });
@@ -409,10 +409,15 @@ impl ExecuteUnit {
         let load_size = issued_inst.f3 & 3;
         let load_addr = alu_result >> 2 << 2;
         assert_eq!(alu_result >> 2, (alu_result + (1 << load_size) - 1) >> 2, "misaligned load");
-
-        let load_data_bytes = gmem.read().expect("lock poisoned")
-            .read_n::<4>(load_addr as usize)
-            .expect("load failed");
+        
+        let load_data_bytes = if shared_load {
+            smem.read_n::<4>(load_addr as usize).expect("load failed")
+        }
+        else {
+            gmem.read().expect("lock poisoned")
+                .read_n::<4>(load_addr as usize)
+                .expect("load failed")
+        };
 
         let raw_load = u32::from_le_bytes(load_data_bytes);
         let offset = ((alu_result & 3) * 8) as usize;
@@ -430,7 +435,7 @@ impl ExecuteUnit {
         Some(masked_load)
     }
 
-    pub fn store(issued_inst: &IssuedInst, lane: usize, gmem: &RwLock<FlatMemory>) -> Option<u32> {
+    pub fn store(issued_inst: &IssuedInst, lane: usize, gmem: &RwLock<FlatMemory>, smem: &mut FlatMemory) -> Option<u32> {
         static INSTS: phf::Map<(u8, u8), &'static str> = phf_map! {
             (0u8, 0u8) => "sb.global",
             (0u8, 1u8) => "sb.shared",
@@ -441,8 +446,9 @@ impl ExecuteUnit {
         };
         
         let key = (issued_inst.f3, issued_inst.opext);
+        let shared_store = issued_inst.opext == 1;
         let Some(&mnemonic) = INSTS.get(&key) else {
-            unimplemented!()
+            unimplemented!("unknown store instruction")
         };
 
         let inst_imp = InstImp(mnemonic, |[a, b]| { a.wrapping_add(b) });
@@ -450,19 +456,26 @@ impl ExecuteUnit {
             issued_inst.rs1_data[lane].unwrap(),
             issued_inst.imm24 as u32
         ]);
-
+        
         let mut gmem = gmem.write().expect("lock poisoned");
+        let mem = if shared_store {
+            smem
+        }
+        else {
+            gmem.deref_mut()
+        };
+
         let addr = alu_result as usize;
         let data = issued_inst.rs2_data[lane].unwrap().to_le_bytes();
         match issued_inst.f3 & 3 {
             0 => {
-                gmem.write(addr, &data[0..1].to_vec())
+                mem.write(addr, &data[0..1])
             },
             1 => {
-                gmem.write(addr, &data[0..2].to_vec())
+                mem.write(addr, &data[0..2])
             },
             2 => {
-                gmem.write(addr, &data[0..4].to_vec())
+                mem.write(addr, &data[0..4])
             },
             _ => panic!("unimplemented store type"),
         }.expect("store failed");
@@ -589,7 +602,8 @@ impl ExecuteUnit {
 
     pub fn execute(issued: IssuedInst, cid: usize, wid: usize, tmask: u32,
                    rf: &mut [RegFile], csrf: &mut [CSRFile],
-                   scheduler: &mut Scheduler, neutrino: &mut Neutrino, gmem: &RwLock<FlatMemory>) -> Writeback {
+                   scheduler: &mut Scheduler, neutrino: &mut Neutrino, gmem: &RwLock<FlatMemory>,
+                   smem: &mut FlatMemory) -> Writeback {
 
         let num_lanes = rf.len();
         // lane id of first active thread
@@ -623,11 +637,11 @@ impl ExecuteUnit {
                 (Self::execute_lanes(|_| { Some(issued.pc + 8) }, tmask, rf), sched_wb)
             }
             Opcode::LOAD => {
-                (Self::execute_lanes(|lane| ExecuteUnit::load(&issued, lane, gmem), tmask, rf),
+                (Self::execute_lanes(|lane| ExecuteUnit::load(&issued, lane, gmem, smem), tmask, rf),
                 empty_swb)
             }
             Opcode::STORE => {
-                (Self::execute_lanes(|lane| ExecuteUnit::store(&issued, lane, gmem), tmask, rf),
+                (Self::execute_lanes(|lane| ExecuteUnit::store(&issued, lane, gmem, smem), tmask, rf),
                 empty_swb)
             }
             Opcode::MISC_MEM => {
