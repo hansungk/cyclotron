@@ -59,7 +59,7 @@ impl Tracer {
         tracer
     }
 
-    pub fn record(&mut self, writebacks: &Vec<Option<Writeback>>) {
+    pub fn record(&mut self, writebacks: &[Option<Writeback>]) {
         for (wid, (wb, buf)) in zip(writebacks.iter(), self.bufs.as_mut_slice()).enumerate() {
             if let Some(wb) = wb {
                 let line = Line {
