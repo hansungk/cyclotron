@@ -1,13 +1,15 @@
 [muon]
-num_lanes = 32
-num_warps = 8
-num_cores = 8
+num_lanes = 16
+num_warps = 4
+num_cores = 1
+num_regs = 256
+start_pc = 0x10000000
 
 [mem]
 io_cout_addr = 0xFF080000
 io_cout_size = 64
 
 [sim]
-elf = "test/pathtracer.elf"
+elf = "/scratch/yrh/radiance-kernels/muon-isa-tests/isa/rv32ui-p-add"
 timeout = 1000000
 trace = false
