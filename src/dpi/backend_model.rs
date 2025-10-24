@@ -132,7 +132,7 @@ pub unsafe fn cyclotron_backend_rs(
         rs1_data: rf.iter().map(|r| Some(r.read_gpr(issue_rs1_addr))).collect::<Vec<_>>(),
         rs2_data: rf.iter().map(|r| Some(r.read_gpr(issue_rs2_addr))).collect::<Vec<_>>(),
         rs3_data: rf.iter().map(|r| Some(r.read_gpr(issue_rs3_addr))).collect::<Vec<_>>(),
-        rs4_data: rf.iter().map(|r| Some(r.read_gpr(issue_rs3_addr))).collect::<Vec<_>>(), /* unused */
+        rs4_data: rf.iter().map(|r| Some(r.read_gpr(0))).collect::<Vec<_>>(), /* unused */
         f7: issue_f7,
         imm32: issue_imm32,
         imm24: ((issue_imm24 << 8) as i32) >> 8,
@@ -141,8 +141,9 @@ pub unsafe fn cyclotron_backend_rs(
         raw: issue_raw_inst,
     };
 
+    debug!("issue warp id is {}", issue_warp_id);
+    debug!("{}", issued);
     let writeback = core.execute(issue_warp_id.into(), issued, issue_tmask, neutrino);
-    // debug!("written back");
     Warp::writeback(&writeback, core.warps[issue_warp_id as usize].base.state.reg_file.as_mut());
     // let rf2 = &core.warps[issue_warp_id as usize].base.state.reg_file;
     // debug!("{:#?}", rf2.iter().map(|r| Some(r.read_gpr(issue_rs1_addr))).collect::<Vec<_>>());

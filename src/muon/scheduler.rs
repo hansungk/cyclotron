@@ -144,7 +144,9 @@ impl Scheduler {
                 }
             }
             SFUType::SPLIT => {
-                let invert = decoded_inst.rs2_addr == 1;
+                // deviation from vortex behavior: instead of checking for 1,
+                // check for nonzero. works with renaming front end
+                let invert = decoded_inst.rs2_addr != 0;
                 // by default, we use vx_split_n, which is called with the
                 // bits set high if NOT TAKING the then branch
                 let then_mask = rs1.iter().map(|r| !r.bit(0)).collect::<Vec<_>>().to_u32()
@@ -209,7 +211,7 @@ impl Scheduler {
                 panic!("muon does not support vx_bar anymore, use neutrino insts")
             }
             SFUType::PRED => {
-                let invert = decoded_inst.rd_addr == 1;
+                let invert = decoded_inst.rd_addr != 0;
                 // only stay active if (thread is active) AND (lsb of predicate is 1)
                 // let pred_mask: Vec<_> = wb.insts.iter()
                 //     .map(|d| d.is_some_and(|dd| dd.rs1.bit(0) ^ invert))

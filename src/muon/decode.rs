@@ -26,6 +26,7 @@ pub struct DecodedInst {
 }
 
 /// Instruction bundle after operand collection, i.e. rs_addr -> rs_data
+#[derive(Debug)]
 pub struct IssuedInst {
     pub opcode: u8,
     pub opext: u8,
@@ -45,31 +46,6 @@ pub struct IssuedInst {
     pub csr_imm: u8,
     pub pc: u32,
     pub raw: u64,
-}
-
-impl Debug for IssuedInst {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("IssuedInst")
-            .field("op", &format_args!("0x{:x}", self.opcode))
-            .field("opext", &self.opext)
-            .field("rd", &self.rd_addr)
-            .field("f3", &self.f3)
-            // .field("rs1", &self.rs1_addr)
-            // .field("rs2", &self.rs2_addr)
-            // .field("rs3", &self.rs3_addr)
-            // .field("rs4", &self.rs4_addr)
-            // .field("rs1_data", &self.rs1_data)
-            // .field("rs2_data", &self.rs2_data)
-            // .field("rs3_data", &self.rs3_data)
-            // .field("rs4_data", &self.rs4_data)
-            .field("f7", &self.f7)
-            .field("imm32", &format_args!("0x{:x}", self.imm32))
-            .field("imm24", &self.imm24)
-            .field("csr_imm", &self.csr_imm)
-            .field("pc", &format_args!("{:X}", self.pc))
-            .field("raw", &format_args!("0x{:x}", self.raw))
-            .finish()
-    }
 }
 
 impl std::fmt::Display for IssuedInst {
@@ -112,13 +88,13 @@ pub fn sign_ext<const W: u8>(from: u32) -> i32 {
 
 #[derive(Debug)]
 pub struct RegFileState {
-    gpr: [u32; 128],
+    gpr: [u32; 256],
 }
 
 impl Default for RegFileState {
     fn default() -> Self {
         Self {
-            gpr: [0u32; 128],
+            gpr: [0u32; 256],
         }
     }
 }
@@ -134,11 +110,13 @@ impl ModuleBehaviors for RegFile {
     fn tick_one(&mut self) {}
     fn reset(&mut self) {
         self.base.state.gpr.fill(0u32);
-        let gtid = self.conf().num_lanes * self.conf().num_warps *
-            self.conf().lane_config.core_id +
-            self.conf().num_lanes * self.conf().lane_config.warp_id +
-            self.lane_id;
-        self.base.state.gpr[2] = 0xffff0000u32 - (0x100000u32 * gtid as u32); // sp
+        // let gtid = self.conf().num_lanes * self.conf().num_warps *
+        //     self.conf().lane_config.core_id +
+        //     self.conf().num_lanes * self.conf().lane_config.warp_id +
+        //     self.lane_id;
+
+        // this should be set by program preamble
+        // self.base.state.gpr[2] = 0xffff0000u32 - (0x100000u32 * gtid as u32); // sp
     }
 }
 
@@ -148,6 +126,7 @@ module!(RegFile, RegFileState, MuonConfig,
 impl RegFile {
     pub fn new(config: Arc<MuonConfig>, lid: usize) -> RegFile {
         let mut me = RegFile::default();
+        assert!(config.num_regs <= 256, "currently at most 256 regs due to addr size");
         me.init_conf(config);
         me.lane_id = lid;
         me
@@ -157,12 +136,12 @@ impl RegFile {
         if addr == 0 {
             0u32
         } else {
-            self.base.state.gpr[(addr & 0x7f) as usize]
+            self.base.state.gpr[addr as usize]
         }
     }
 
     pub fn write_gpr(&mut self, addr: u8, data: u32) {
-        assert!(addr < 128, "invalid gpr value {}", addr);
+        assert!((addr as usize) < self.conf().num_regs, "invalid gpr value {}", addr);
         if addr > 0 {
             self.base.state.gpr[addr as usize] = data;
         }
