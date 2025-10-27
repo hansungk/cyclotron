@@ -15,6 +15,13 @@ pub struct IpdomEntry {
     pub tmask: u32,
 }
 
+#[derive(Debug, Default, Clone, Copy)]
+pub struct IpdomPush {
+    pub restored_mask: u32,
+    pub else_mask: u32,
+    pub else_pc: u32
+}
+
 #[derive(Debug, Default)]
 pub struct SchedulerState {
     /// differentiates between the initial and the final state, in both of which no active warps
@@ -42,7 +49,7 @@ pub struct SchedulerWriteback {
     pub tmask: Option<u32>,
     pub wspawn_pc_count: Option<(u32, u32)>,
     pub tohost: Option<u32>,
-    // TODO: ipdom stack entries
+    pub ipdom_push: Option<IpdomPush>,
 }
 
 // instantiated per core
@@ -149,9 +156,9 @@ impl Scheduler {
                 let invert = decoded_inst.rs2_addr != 0;
                 // by default, we use vx_split_n, which is called with the
                 // bits set high if NOT TAKING the then branch
-                let then_mask = rs1.iter().map(|r| !r.bit(0)).collect::<Vec<_>>().to_u32()
+                let then_mask = rs1.iter().map(|r| r.bit(0)).collect::<Vec<_>>().to_u32()
                     & self.state().thread_masks[wid];
-                let else_mask = rs1.iter().map(|r| r.bit(0)).collect::<Vec<_>>().to_u32()
+                let else_mask = rs1.iter().map(|r| !r.bit(0)).collect::<Vec<_>>().to_u32()
                     & self.state().thread_masks[wid];
                 // let then_mask: Vec<_> = wb.insts.iter()
                 //     .map(|d| d.is_some_and(|dd| !dd.rs1.bit(0))).collect();
@@ -174,24 +181,17 @@ impl Scheduler {
                 });
 
                 let diverges = (then_mask != 0) && (else_mask != 0);
+                let true_then_mask = if invert { else_mask } else { then_mask };
+                let true_else_mask = if invert { then_mask } else { else_mask };
 
                 if diverges {
                     self.base.state.ipdom_stack[wid].push_back(IpdomEntry {
                         pc: decoded_inst.pc + 8,
-                        tmask: if invert {
-                            else_mask
-                        } else {
-                            then_mask
-                        },
+                        tmask: true_else_mask,
                     });
-                    self.base.state.thread_masks[wid] = if invert {
-                        then_mask
-                    } else {
-                        else_mask
-                    };
+                    self.base.state.thread_masks[wid] = true_then_mask;
                 }
                 SchedulerWriteback {
-                    // TODO
                     ..SchedulerWriteback::default()
                 }
             }
