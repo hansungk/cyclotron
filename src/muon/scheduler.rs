@@ -130,7 +130,7 @@ impl Scheduler {
                 let start_pc = rs2[first_lid];
                 let count = rs1[first_lid];
                 info!("wspawn {} warps @pc={:08x}", rs1[first_lid], start_pc);
-                for i in 1..count as usize {
+                for i in 0..count as usize {
                     self.base.state.pc[i] = start_pc;
                     if !self.base.state.active_warps.bit(i) {
                         self.base.state.thread_masks[i] = u32::MAX;

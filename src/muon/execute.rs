@@ -610,6 +610,7 @@ impl ExecuteUnit {
         let first_lid = tmask.trailing_zeros() as usize;
 
         // debug!("execute pc 0x{:08x} {:#?}", issued.pc, issued);
+        debug!("issue pc 0x{:08x} {}", issued.pc, issued);
 
         let empty = vec![None::<u32>; num_lanes];
         let empty_swb = SchedulerWriteback::default();
@@ -694,6 +695,7 @@ impl ExecuteUnit {
             rd_data: collected_rds,
             sched_wb,
         };
+
         debug!("{:?}", writeback);
 
         writeback
