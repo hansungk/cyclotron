@@ -4,7 +4,7 @@
 
 use std::{ffi::c_void, iter::zip, slice};
 
-use crate::{base::mem::HasMemory, sim::flat_mem::FlatMemory};
+use crate::{base::{behavior::Parameterizable, mem::HasMemory}, sim::flat_mem::FlatMemory};
 
 struct LsuMemRequest {
     store: bool,
@@ -208,4 +208,65 @@ pub extern "C" fn cyclotron_mem_rs(
     else {
         *resp_valid = 0;
     }
+}
+
+#[no_mangle]
+// Get trace info for a single instruction executed by Cyclotron
+// (specifically the parts relevant to memory testbench for now)
+pub unsafe fn cyclotron_trace_mem_rs(
+    warp_id: *mut u8,
+    tmask_vec: *mut u8,
+
+    rs1_data: *mut u32,
+    rs2_data: *mut u32,
+    imm_data: *mut u32,
+
+    rd_addr: *mut u8,
+    rd_data: *mut u32,
+    
+    finished_ptr: *mut u8,
+) {
+    let mut context_guard = super::CELL.write().unwrap();
+    let context = context_guard.as_mut().expect("DPI context not initialized!");
+    let sim = &mut context.sim_isa;
+
+    let core = &mut sim.top.clusters[0].cores[0];
+    let config = *core.conf();
+    
+    let warp_id = unsafe { &mut *warp_id };
+    let tmask_vec = unsafe { slice::from_raw_parts_mut(tmask_vec, config.num_lanes) };
+    let rs1_data = unsafe { slice::from_raw_parts_mut(rs1_data, config.num_lanes) };
+    let rs2_data = unsafe { slice::from_raw_parts_mut(rs2_data, config.num_lanes) };
+    let imm_data = unsafe { &mut *imm_data };
+    let rd_addr = unsafe { slice::from_raw_parts_mut(rd_addr, config.num_lanes) };
+    let rd_data = unsafe { slice::from_raw_parts_mut(rd_data, config.num_lanes) };
+    let finished = unsafe { &mut *finished_ptr };
+
+    if sim.finished() {
+        *finished = 1;
+        return;
+    }
+    else {
+        *finished = 0;
+    }
+
+    let core = &mut sim.top.clusters[0].cores[0];
+    if core.get_tracer().all_empty() {
+        sim.tick();
+    }
+
+    let core = &mut sim.top.clusters[0].cores[0];
+    let Some(line) = core.get_tracer().consume_round_robin() else {
+        return;
+    };
+
+    *warp_id = line.warp_id as u8;
+    for i in 0..config.num_lanes {
+        tmask_vec[i] = if (line.tmask & (1 << i)) != 0 { 1 } else { 0 };
+        rs1_data[i] = line.rs1_data[i].unwrap_or(0);
+        rs2_data[i] = line.rs2_data[i].unwrap_or(0);
+        rd_addr[i] = line.rd_addr as u8;
+        rd_data[i] = line.rd_data[i].unwrap_or(0);
+    }
+    *imm_data = line.imm32;
 }
