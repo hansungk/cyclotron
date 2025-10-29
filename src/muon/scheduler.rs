@@ -29,7 +29,7 @@ pub struct SchedulerState {
     pub started: bool,
     pub active_warps: u32,
     pub stalled_warps: u32,
-    thread_masks: Vec<u32>,
+    pub thread_masks: Vec<u32>,
     pub tohost: Option<u32>,
     pc: Vec<u32>,
     ipdom_stack: Vec<VecDeque<IpdomEntry>>,
@@ -154,8 +154,6 @@ impl Scheduler {
                 // deviation from vortex behavior: instead of checking for 1,
                 // check for nonzero. works with renaming front end
                 let invert = decoded_inst.rs2_addr != 0;
-                // by default, we use vx_split_n, which is called with the
-                // bits set high if NOT TAKING the then branch
                 let then_mask = rs1.iter().map(|r| r.bit(0)).collect::<Vec<_>>().to_u32()
                     & self.state().thread_masks[wid];
                 let else_mask = rs1.iter().map(|r| !r.bit(0)).collect::<Vec<_>>().to_u32()
@@ -192,6 +190,12 @@ impl Scheduler {
                     self.base.state.thread_masks[wid] = true_then_mask;
                 }
                 SchedulerWriteback {
+                    tmask: diverges.then_some(true_then_mask),
+                    ipdom_push: Some(IpdomPush {
+                        restored_mask: then_mask | else_mask,
+                        else_mask: true_else_mask,
+                        else_pc: decoded_inst.pc + 8,
+                    }),
                     ..SchedulerWriteback::default()
                 }
             }

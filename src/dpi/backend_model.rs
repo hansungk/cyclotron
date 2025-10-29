@@ -1,9 +1,10 @@
 use crate::base::behavior::Parameterizable;
 use crate::base::mem::HasMemory;
 use crate::dpi::CELL;
-use crate::muon::decode::IssuedInst;
+use crate::muon::decode::{DecodedInst, IssuedInst, MicroOp};
 use crate::muon::warp::Warp;
 use log::debug;
+use crate::base::module::IsModule;
 
 #[no_mangle]
 pub unsafe fn cyclotron_imem_rs(
@@ -80,6 +81,10 @@ pub unsafe fn cyclotron_backend_rs(
     writeback_wspawn_valid_ptr: *mut u8,
     writeback_wspawn_count_ptr: *mut u32,
     writeback_wspawn_pc_ptr: *mut u32,
+    writeback_ipdom_valid_ptr: *mut u8,
+    writeback_ipdom_restored_mask_ptr: *mut u32,
+    writeback_ipdom_else_mask_ptr: *mut u32,
+    writeback_ipdom_else_pc_ptr: *mut u32,
     finished_ptr: *mut u8,
 ) {
     let mut context_guard = CELL.write().unwrap();
@@ -108,6 +113,10 @@ pub unsafe fn cyclotron_backend_rs(
     let writeback_wspawn_valid = unsafe { writeback_wspawn_valid_ptr.as_mut().expect("pointer was null") };
     let writeback_wspawn_count = unsafe { writeback_wspawn_count_ptr.as_mut().expect("pointer was null") };
     let writeback_wspawn_pc = unsafe { writeback_wspawn_pc_ptr.as_mut().expect("pointer was null") };
+    let writeback_ipdom_valid = unsafe { writeback_ipdom_valid_ptr.as_mut().expect("pointer was null") };
+    let writeback_ipdom_restored_mask = unsafe { writeback_ipdom_restored_mask_ptr.as_mut().expect("pointer was null") };
+    let writeback_ipdom_else_mask = unsafe { writeback_ipdom_else_mask_ptr.as_mut().expect("pointer was null") };
+    let writeback_ipdom_else_pc = unsafe { writeback_ipdom_else_pc_ptr.as_mut().expect("pointer was null") };
     let finished = unsafe { finished_ptr.as_mut().expect("pointer was null") };
 
     let to_vec = |slice: &[u32]| slice.iter().map(|u| Some(*u)).collect::<Vec<_>>();
@@ -118,9 +127,9 @@ pub unsafe fn cyclotron_backend_rs(
         return;
     }
 
-    let rf = &core.warps[issue_warp_id as usize].base.state.reg_file;
+    // let rf = &core.warps[issue_warp_id as usize].base.state.reg_file;
     // debug!("rs1 {:#?}", rf.iter().map(|r| Some(r.read_gpr(issue_rs1_addr))).collect::<Vec<_>>());
-    let issued = IssuedInst {
+    let decoded = DecodedInst {
         opcode: issue_op,
         opext: issue_opext,
         rd_addr: issue_rd_addr,
@@ -129,10 +138,10 @@ pub unsafe fn cyclotron_backend_rs(
         rs2_addr: issue_rs2_addr,
         rs3_addr: issue_rs3_addr,
         rs4_addr: 0, /* unused */
-        rs1_data: rf.iter().map(|r| Some(r.read_gpr(issue_rs1_addr))).collect::<Vec<_>>(),
-        rs2_data: rf.iter().map(|r| Some(r.read_gpr(issue_rs2_addr))).collect::<Vec<_>>(),
-        rs3_data: rf.iter().map(|r| Some(r.read_gpr(issue_rs3_addr))).collect::<Vec<_>>(),
-        rs4_data: rf.iter().map(|r| Some(r.read_gpr(0))).collect::<Vec<_>>(), /* unused */
+        // rs1_data: rf.iter().map(|r| Some(r.read_gpr(issue_rs1_addr))).collect::<Vec<_>>(),
+        // rs2_data: rf.iter().map(|r| Some(r.read_gpr(issue_rs2_addr))).collect::<Vec<_>>(),
+        // rs3_data: rf.iter().map(|r| Some(r.read_gpr(issue_rs3_addr))).collect::<Vec<_>>(),
+        // rs4_data: rf.iter().map(|r| Some(r.read_gpr(0))).collect::<Vec<_>>(), /* unused */
         f7: issue_f7,
         imm32: issue_imm32,
         imm24: ((issue_imm24 << 8) as i32) >> 8,
@@ -141,10 +150,20 @@ pub unsafe fn cyclotron_backend_rs(
         raw: issue_raw_inst,
     };
 
+    core.warps[issue_warp_id as usize].state_mut().csr_file.iter_mut().for_each(|c| {
+        // c.emu_access(0xcc3, schedule.active_warps);
+        c.emu_access(0xcc4, issue_tmask);
+    });
+
     debug!("issue warp id is {}", issue_warp_id);
-    debug!("{}", issued);
-    let writeback = core.execute(issue_warp_id.into(), issued, issue_tmask, neutrino);
-    Warp::writeback(&writeback, core.warps[issue_warp_id as usize].base.state.reg_file.as_mut());
+    debug!("{}", decoded);
+
+    let writeback = core.warps[issue_warp_id as usize].backend(MicroOp {
+        inst: decoded,
+        tmask: issue_tmask,
+    }, &mut core.scheduler, neutrino, &mut core.shared_mem).expect("uh");
+    // let writeback = core.execute(issue_warp_id.into(), issued, issue_tmask, neutrino);
+    // Warp::writeback(&writeback, core.warps[issue_warp_id as usize].base.state.reg_file.as_mut());
     // let rf2 = &core.warps[issue_warp_id as usize].base.state.reg_file;
     // debug!("{:#?}", rf2.iter().map(|r| Some(r.read_gpr(issue_rs1_addr))).collect::<Vec<_>>());
 
@@ -159,6 +178,10 @@ pub unsafe fn cyclotron_backend_rs(
     *writeback_wspawn_valid = writeback.sched_wb.wspawn_pc_count.is_some() as u8;
     *writeback_wspawn_count = writeback.sched_wb.wspawn_pc_count.unwrap_or((0, 0)).1;
     *writeback_wspawn_pc = writeback.sched_wb.wspawn_pc_count.unwrap_or((0, 0)).0;
+    *writeback_ipdom_valid = writeback.sched_wb.ipdom_push.is_some() as u8;
+    *writeback_ipdom_restored_mask = writeback.sched_wb.ipdom_push.map(|x| x.restored_mask).unwrap_or(0);
+    *writeback_ipdom_else_mask = writeback.sched_wb.ipdom_push.map(|x| x.else_mask).unwrap_or(0);
+    *writeback_ipdom_else_pc = writeback.sched_wb.ipdom_push.map(|x| x.else_pc).unwrap_or(0);
     *finished = writeback.sched_wb.tohost.is_some() as u8;
 
     // for (data_pin, owb) in zip(writeback_rd_data, writeback.rd_data) {

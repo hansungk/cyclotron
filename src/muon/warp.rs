@@ -4,7 +4,7 @@ use crate::base::mem::HasMemory;
 use crate::base::module::{module, IsModule, ModuleBase};
 use crate::muon::config::MuonConfig;
 use crate::muon::csr::CSRFile;
-use crate::muon::decode::{DecodeUnit, IssuedInst, InstBufEntry, RegFile};
+use crate::muon::decode::{DecodeUnit, IssuedInst, MicroOp, RegFile};
 use crate::muon::execute::ExecuteUnit;
 use crate::muon::scheduler::{Schedule, Scheduler, SchedulerWriteback};
 use crate::sim::flat_mem::FlatMemory;
@@ -110,7 +110,7 @@ impl Warp {
         u64::from_le_bytes(inst_bytes)
     }
 
-    pub fn frontend(&mut self, schedule: Schedule) -> InstBufEntry {
+    pub fn frontend(&mut self, schedule: Schedule) -> MicroOp {
         // fetch
         let inst = self.fetch(schedule.pc);
         for c in self.state_mut().csr_file.iter_mut() {
@@ -121,17 +121,20 @@ impl Warp {
         // decode
         let inst = DecodeUnit::decode(inst, schedule.pc);
         let tmask = schedule.mask;
-        InstBufEntry { inst, tmask }
+        MicroOp { inst, tmask }
     }
 
-    pub fn backend(&mut self, ibuf: InstBufEntry, scheduler: &mut Scheduler, neutrino: &mut Neutrino, smem: &mut FlatMemory) -> Result<Writeback, ExecErr> {
-        let decoded = ibuf.inst;
+    pub fn backend(&mut self, uop: MicroOp, scheduler: &mut Scheduler, neutrino: &mut Neutrino, smem: &mut FlatMemory) -> Result<Writeback, ExecErr> {
+        let decoded = uop.inst;
         let pc = decoded.pc;
-        let tmask = ibuf.tmask;
+        let tmask = uop.tmask;
+
+        // TODO: verify that this step doesnt modify
+        scheduler.state_mut().thread_masks[self.wid] = tmask;
 
         // operand collection
         let rf = self.base.state.reg_file.as_slice();
-        let issued = ExecuteUnit::collect(&ibuf, rf);
+        let issued = ExecuteUnit::collect(&uop, rf);
 
         // execute
         let writeback = catch_unwind(AssertUnwindSafe(|| {

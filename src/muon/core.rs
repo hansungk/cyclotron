@@ -19,7 +19,7 @@ pub struct MuonCore {
     pub id: usize,
     pub scheduler: Scheduler,
     pub warps: Vec<Warp>,
-    shared_mem: FlatMemory,
+    pub(crate) shared_mem: FlatMemory,
 
     logger: Arc<Logger>,
     tracer: Arc<Tracer>,

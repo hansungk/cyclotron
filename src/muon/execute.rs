@@ -5,7 +5,7 @@ use num_derive::FromPrimitive;
 use num_traits::ToPrimitive;
 pub use num_traits::WrappingAdd;
 use crate::base::mem::HasMemory;
-use crate::muon::decode::{sign_ext, IssuedInst, InstBufEntry, RegFile};
+use crate::muon::decode::{sign_ext, IssuedInst, MicroOp, RegFile};
 use crate::sim::flat_mem::FlatMemory;
 use log::{debug, error};
 use crate::utils::BitSlice;
@@ -454,7 +454,7 @@ impl ExecuteUnit {
         let inst_imp = InstImp(mnemonic, |[a, b]| { a.wrapping_add(b) });
         let alu_result = print_and_execute!(inst_imp, [
             issued_inst.rs1_data[lane].unwrap(),
-            issued_inst.imm24 as u32
+            issued_inst.imm32
         ]);
         
         let mut gmem = gmem.write().expect("lock poisoned");
@@ -548,7 +548,7 @@ impl ExecuteUnit {
     }
 
     /// Collect source operand values from the regfile.
-    pub fn collect(ibuf: &InstBufEntry, rf: &[RegFile]) -> IssuedInst {
+    pub fn collect(ibuf: &MicroOp, rf: &[RegFile]) -> IssuedInst {
         let decoded = ibuf.inst;
         let tmask = ibuf.tmask;
 
@@ -610,7 +610,7 @@ impl ExecuteUnit {
         let first_lid = tmask.trailing_zeros() as usize;
 
         // debug!("execute pc 0x{:08x} {:#?}", issued.pc, issued);
-        debug!("issue pc 0x{:08x} {}", issued.pc, issued);
+        debug!("{}", issued);
 
         let empty = vec![None::<u32>; num_lanes];
         let empty_swb = SchedulerWriteback::default();
