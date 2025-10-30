@@ -4,36 +4,35 @@
 
 use std::{ffi::c_void, iter::zip, slice};
 
-use crate::{base::mem::HasMemory, sim::flat_mem::FlatMemory, utils::BitSlice};
+use crate::{base::{behavior::Parameterizable, mem::HasMemory}, sim::flat_mem::FlatMemory};
 
-// Mirrors hardware bundle
-struct MemRequest {
+struct LsuMemRequest {
     store: bool,
-    address: u32,
     tag: u32,
-    data: Vec<u8>,
+    address: Vec<u32>,
+    data: Vec<u32>,
     mask: Vec<bool>,
 }
 
 // Mirrors hardware bundle
-struct MemResponse {
+struct LsuMemResponse {
     tag: u32,
-    data: Vec<u8>
+    data: Vec<u32>,
+    valid: Vec<bool>
 }
 
 // Interface for Cyclotron memory models
-trait MemModel {
+trait LsuMemModel {
     fn tick(&mut self);
-    fn consume_request(&mut self, req: MemRequest) -> bool;
-    fn produce_response(&mut self) -> Option<MemResponse>;
+    fn consume_request(&mut self, req: LsuMemRequest) -> bool;
+    fn produce_response(&mut self) -> Option<LsuMemResponse>;
 }
-
 
 /// Super basic memory model: 1-cycle latency, never exerts backpressure, FIFO response order
 pub(super) struct BasicMemModel {
     mem: FlatMemory,
-    pending_reqs: Vec<MemRequest>,
-    pending_resp: Option<MemResponse>,
+    pending_reqs: Vec<LsuMemRequest>,
+    pending_resp: Option<LsuMemResponse>,
 
     lsu_lanes: usize,
 }
@@ -50,7 +49,7 @@ impl BasicMemModel {
     }
 }
 
-impl MemModel for BasicMemModel {
+impl LsuMemModel for BasicMemModel {
     fn tick(&mut self) {
         if self.pending_resp.is_some() {
             return;
@@ -63,45 +62,45 @@ impl MemModel for BasicMemModel {
         let req = self.pending_reqs.remove(0);
 
         let resp = if req.store {
-            let buf = self.mem.read(req.address as usize, req.data.len())
-                .expect("failed to read from mem");
-            let mut buf = Vec::from(buf);
-            
-            for (i, (mask_bit, byte)) in zip(req.mask, req.data).enumerate() {
-                if mask_bit { buf[i] = byte }
+            for i in 0..self.lsu_lanes {
+                if !req.mask[i] {
+                    continue;
+                }
+
+                self.mem.write(req.address[i] as usize, &req.data[i].to_le_bytes())
+                    .expect("failed to write to mem");
             }
 
-            self.mem.write(
-                req.address as usize,
-                &buf
-            ).expect("failed to write to mem");
-
-            MemResponse {
+            LsuMemResponse {
                 tag: req.tag,
                 data: Vec::new(),
+                valid: req.mask,
             }
         }
         else {
-            let data = Vec::from(
-                self.mem.read(req.address as usize, self.lsu_lanes).expect("failed to read from mem")
-            );
+            let data = req.address.iter().map(|&address| {
+                let bytes = self.mem.read_n::<4>(address as usize)
+                    .expect("failed to read from mem");
+                u32::from_le_bytes(bytes)
+            }).collect();
 
-            MemResponse {
+            LsuMemResponse {
                 tag: req.tag,
-                data
+                data,
+                valid: req.mask,
             }
         };
 
         self.pending_resp = Some(resp);
     }
 
-    fn consume_request(&mut self, req: MemRequest) -> bool {
+    fn consume_request(&mut self, req: LsuMemRequest) -> bool {
         // always ready to accept requests
         self.pending_reqs.push(req);
         true
     }
 
-    fn produce_response(&mut self) -> Option<MemResponse> {
+    fn produce_response(&mut self) -> Option<LsuMemResponse> {
         std::mem::take(&mut self.pending_resp)
     }
 }
@@ -139,29 +138,31 @@ pub extern "C" fn cyclotron_mem_rs(
     req_valid: u8,
 
     req_store: u8,
-    req_address: u32,
-    // global_req_size: u32,
     req_tag: u32,
+    req_address: *const u32,
     req_data: *const u32,
-    req_mask: *const u32,
+    req_mask: *const u8,
 
     resp_ready: u8,
     resp_valid: *mut u8,
 
     resp_tag: *mut u32,
     resp_data: *mut u32,
+    resp_valids: *mut u8,
 ) {
     // SAFETY: mem_model_ptr must be a pointer returned by `cyclotron_mem_init_rs` which has
     // not yet been freed using `cyclotron_mem_free_rs`
     let mem_model = unsafe { &mut *(mem_model_ptr as *mut BasicMemModel) };
-    let (req_ready, req_data, req_mask, resp_valid, resp_tag, resp_data) = unsafe {(
+    let (req_ready, req_address, req_data, req_mask, resp_valid, resp_tag, resp_data, resp_valids) = unsafe {(
         &mut *req_ready, 
+        slice::from_raw_parts(req_address, mem_model.lsu_lanes),
         slice::from_raw_parts(req_data, mem_model.lsu_lanes),
-        slice::from_raw_parts(req_mask, (mem_model.lsu_lanes + 31) / 32),
+        slice::from_raw_parts(req_mask, mem_model.lsu_lanes),
         
         &mut *resp_valid,
         &mut *resp_tag,
         slice::from_raw_parts_mut(resp_data, mem_model.lsu_lanes),
+        slice::from_raw_parts_mut(resp_valids, mem_model.lsu_lanes),
     )};
 
     mem_model.tick();
@@ -169,19 +170,16 @@ pub extern "C" fn cyclotron_mem_rs(
     if req_valid != 0 {
         // construct req bundle
         let mut mask = Vec::with_capacity(mem_model.lsu_lanes);
-        for byte in 0..(req_data.len() * 4) {
-            let (idx, bit) = (byte / 8, byte % 8);
-            mask.push(req_mask[idx].bit(bit));
+        for &mask_bit in req_mask {
+            mask.push(mask_bit != 0);
         }
 
-        let data = req_data.iter()
-            .map(|i| i.to_le_bytes())
-            .flatten()
-            .collect();
+        let data = Vec::from(req_data);
+        let address = Vec::from(req_address);
 
-        let mem_request = MemRequest {
+        let mem_request = LsuMemRequest {
             store: req_store != 0,
-            address: req_address,
+            address,
             tag: req_tag,
             data,
             mask,
@@ -200,12 +198,75 @@ pub extern "C" fn cyclotron_mem_rs(
 
     if let Some(resp) = mem_model.produce_response() {
         *resp_tag = resp.tag;
-        let (_, data, _) = unsafe { resp.data.as_slice().align_to() };
-        resp_data.copy_from_slice(data);
+        resp_data.copy_from_slice(&resp.data);
+        for (hw_valid, resp_valid) in zip(resp_valids, resp.valid) {
+            *hw_valid = if resp_valid { 1 } else { 0 };
+        };
 
         *resp_valid = 1;
     }
     else {
         *resp_valid = 0;
     }
+}
+
+#[no_mangle]
+// Get trace info for a single instruction executed by Cyclotron
+// (specifically the parts relevant to memory testbench for now)
+pub unsafe fn cyclotron_trace_mem_rs(
+    warp_id: *mut u8,
+    tmask_vec: *mut u8,
+
+    rs1_data: *mut u32,
+    rs2_data: *mut u32,
+    imm_data: *mut u32,
+
+    rd_addr: *mut u8,
+    rd_data: *mut u32,
+    
+    finished_ptr: *mut u8,
+) {
+    let mut context_guard = super::CELL.write().unwrap();
+    let context = context_guard.as_mut().expect("DPI context not initialized!");
+    let sim = &mut context.sim_isa;
+
+    let core = &mut sim.top.clusters[0].cores[0];
+    let config = *core.conf();
+    
+    let warp_id = unsafe { &mut *warp_id };
+    let tmask_vec = unsafe { slice::from_raw_parts_mut(tmask_vec, config.num_lanes) };
+    let rs1_data = unsafe { slice::from_raw_parts_mut(rs1_data, config.num_lanes) };
+    let rs2_data = unsafe { slice::from_raw_parts_mut(rs2_data, config.num_lanes) };
+    let imm_data = unsafe { &mut *imm_data };
+    let rd_addr = unsafe { slice::from_raw_parts_mut(rd_addr, config.num_lanes) };
+    let rd_data = unsafe { slice::from_raw_parts_mut(rd_data, config.num_lanes) };
+    let finished = unsafe { &mut *finished_ptr };
+
+    if sim.finished() {
+        *finished = 1;
+        return;
+    }
+    else {
+        *finished = 0;
+    }
+
+    let core = &mut sim.top.clusters[0].cores[0];
+    if core.get_tracer().all_empty() {
+        sim.tick();
+    }
+
+    let core = &mut sim.top.clusters[0].cores[0];
+    let Some(line) = core.get_tracer().consume_round_robin() else {
+        return;
+    };
+
+    *warp_id = line.warp_id as u8;
+    for i in 0..config.num_lanes {
+        tmask_vec[i] = if (line.tmask & (1 << i)) != 0 { 1 } else { 0 };
+        rs1_data[i] = line.rs1_data[i].unwrap_or(0);
+        rs2_data[i] = line.rs2_data[i].unwrap_or(0);
+        rd_addr[i] = line.rd_addr as u8;
+        rd_data[i] = line.rd_data[i].unwrap_or(0);
+    }
+    *imm_data = line.imm32;
 }
