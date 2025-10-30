@@ -360,7 +360,7 @@ impl ExecuteUnit {
     pub fn branch(issued_inst: &IssuedInst, lane: usize) -> Option<u32> {
         let rs1 = issued_inst.rs1_data[lane].unwrap();
         let rs2 = issued_inst.rs2_data[lane].unwrap();
-        let branch_offset = issued_inst.imm24 as u32;
+        let branch_offset = issued_inst.imm32;
         let branch_target = issued_inst.pc.wrapping_add(branch_offset);
         static INSTS: phf::Map<u8, InstDef<fn([u32; 2]) -> bool>> = phf_map! {
             0b000u8 => InstDef("beq",  |[a, b]| a == b),

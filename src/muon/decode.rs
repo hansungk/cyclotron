@@ -3,6 +3,7 @@ extern crate num;
 use crate::base::behavior::*;
 use crate::base::module::{module, ModuleBase, IsModule};
 use crate::muon::config::MuonConfig;
+use crate::muon::execute::Opcode;
 use crate::utils::*;
 use std::fmt::{Debug, Display, Formatter};
 use std::sync::Arc;
@@ -161,14 +162,21 @@ impl DecodeUnit {
 
         let csr_imm: u8 = rs1_addr; // duplicate, because rs1 can be renamed
 
+        let opcode: u8 = inst.sel(6, 0) as u8;
+        let is_sb_type: bool = (opcode == Opcode::BRANCH) || (opcode == Opcode::STORE);
+
         let imm24: i32 = sign_ext::<24>(inst.sel(59, 36) as u32);
-        let uimm32: u32 = (inst.sel(59, 36) as u32) | ((inst.sel(35, 28) as u32) << 24);
+        let uimm32: u32 = ((if (is_sb_type) {
+            inst.sel(16, 9)
+        } else {
+            inst.sel(35, 28)
+        } as u32) << 24) | (inst.sel(59, 36) as u32);
 
         let _imm12_1: i32 = sign_ext::<12>(inst.sel(47, 36) as u32);
         let _imm12_2: i32 = sign_ext::<12>(inst.sel(59, 48) as u32);
 
         DecodedInst {
-            opcode: inst.sel(6, 0) as u8,
+            opcode: opcode,
             opext: inst.sel(8, 7) as u8,
             rd_addr: inst.sel(16, 9) as u8,
             f3: inst.sel(19, 17) as u8,
