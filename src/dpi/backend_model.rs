@@ -1,8 +1,5 @@
-use crate::base::behavior::Parameterizable;
-use crate::base::mem::HasMemory;
 use crate::dpi::CELL;
-use crate::muon::decode::{DecodedInst, IssuedInst, MicroOp};
-use crate::muon::warp::Warp;
+use crate::muon::decode::{DecodedInst, MicroOp};
 use log::debug;
 use crate::base::module::IsModule;
 
@@ -14,8 +11,8 @@ pub unsafe fn cyclotron_imem_rs(
     imem_req_bits_address: u32,
     imem_req_bits_size: u8,
     imem_req_bits_tag: u8,
-    imem_req_bits_data: u64,
-    imem_req_bits_mask: u8,
+    _imem_req_bits_data: u64,
+    _imem_req_bits_mask: u8,
     imem_resp_ready: u8,
     imem_resp_valid_ptr: *mut u8,
     imem_resp_bits_tag_ptr: *mut u8,
@@ -58,22 +55,22 @@ pub unsafe fn cyclotron_backend_rs(
     issue_rs1_addr: u8,
     issue_rs2_addr: u8,
     issue_rs3_addr: u8,
-    issue_rs1_data_ptr: *const u32,
-    issue_rs2_data_ptr: *const u32,
-    issue_rs3_data_ptr: *const u32,
+    _issue_rs1_data_ptr: *const u32,
+    _issue_rs2_data_ptr: *const u32,
+    _issue_rs3_data_ptr: *const u32,
     issue_f7: u8,
     issue_imm32: u32,
     issue_imm24: u32,
     issue_csr_imm: u8,
-    issue_pred_ptr: *const u32,
+    _issue_pred_ptr: *const u32,
     issue_tmask: u32,
     issue_raw_inst: u64,
     writeback_valid_ptr: *mut u8,
     writeback_pc_ptr: *mut u32,
     writeback_tmask_ptr: *mut u32,
     writeback_wid_ptr: *mut u8,
-    writeback_rd_addr_ptr: *mut u8,
-    writeback_rd_data_ptr: *mut u32,
+    _writeback_rd_addr_ptr: *mut u8,
+    _writeback_rd_data_ptr: *mut u32,
     writeback_set_pc_valid_ptr: *mut u8,
     writeback_set_pc_ptr: *mut u32,
     writeback_set_tmask_valid_ptr: *mut u8,
@@ -92,7 +89,7 @@ pub unsafe fn cyclotron_backend_rs(
     let sim = &mut context.sim_be;
     let cluster = &mut sim.top.clusters[0];
     let core = &mut cluster.cores[0];
-    let config = *core.conf();
+    // let config = *core.conf();
     let neutrino = &mut cluster.neutrino;
 
     // let issue_rs1_data = unsafe { std::slice::from_raw_parts(issue_rs1_data_ptr, config.num_lanes) };
@@ -118,8 +115,6 @@ pub unsafe fn cyclotron_backend_rs(
     let writeback_ipdom_else_mask = unsafe { writeback_ipdom_else_mask_ptr.as_mut().expect("pointer was null") };
     let writeback_ipdom_else_pc = unsafe { writeback_ipdom_else_pc_ptr.as_mut().expect("pointer was null") };
     let finished = unsafe { finished_ptr.as_mut().expect("pointer was null") };
-
-    let to_vec = |slice: &[u32]| slice.iter().map(|u| Some(*u)).collect::<Vec<_>>();
 
     if issue_valid != 1 {
         // if no issue, tie off writeback and exit early

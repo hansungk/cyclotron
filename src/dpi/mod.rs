@@ -1,7 +1,8 @@
 // #![allow(dead_code, unreachable_code)]
 use crate::base::behavior::*;
-use crate::muon::decode::IssuedInst;
+use crate::muon::core::MuonCore;
 use crate::sim::top::Sim;
+use crate::sim::trace;
 use std::iter::zip;
 use std::path::PathBuf;
 use std::sync::RwLock;
@@ -32,12 +33,9 @@ pub fn assert_single_core(sim: &Sim) {
 /// Entry point to the DPI interface.  This must be called from Verilog once at the start in an
 /// initial block.
 pub fn cyclotron_init_rs() {
-
     let log_level = LevelFilter::Debug;
 
-    Builder::new()
-        .filter_level(log_level)
-        .init();
+    Builder::new().filter_level(log_level).init();
     let toml_path = PathBuf::from("config.toml");
     let toml_string = crate::ui::read_toml(&toml_path);
 
@@ -74,6 +72,12 @@ pub fn cyclotron_fetch_rs(fetch_pc: u32, fetch_warp: u32, inst_ptr: *mut u64) {
     inst_slice[0] = inst;
 }
 
+fn peek_heads(c: &MuonCore, num_warps: usize) -> Vec<Option<trace::Line>> {
+    (0..num_warps)
+        .map(|w| c.get_tracer().peek(w).cloned())
+        .collect::<Vec<_>>()
+}
+
 #[no_mangle]
 /// Get a per-warp decoded instruction bundle from the instruction trace, and advance the ISA
 /// model.  Models the fetch/decode frontend up until the ibuffers, and exposes per-warp ibuffer
@@ -95,23 +99,15 @@ pub unsafe fn cyclotron_frontend_rs(
     ibuf_imm24_vec: *mut u32,
     ibuf_csr_imm_vec: *mut u8,
     ibuf_tmask_vec: *mut u32,
-    ibuf_raw_vec: *mut u8,
+    _ibuf_raw_vec: *mut u8,
     finished_ptr: *mut u8,
 ) {
     let mut context_guard = CELL.write().unwrap();
     let context = context_guard.as_mut().expect("DPI context not initialized!");
     let sim = &mut context.sim_isa;
 
-    // advance simulation to populate inst trace buffers
-    sim.tick();
-
     let core = &mut sim.top.clusters[0].cores[0];
-    let config = *core.conf();
-    let warp_insts: Vec<_> = (0..config.num_warps)
-        .map(|w| {
-            core.get_tracer().peek(w).cloned() // @perf: expensive?
-        })
-        .collect();
+    let config = core.conf().clone();
 
     // SAFETY: precondition of function guarantees this is valid
     let ready = unsafe { std::slice::from_raw_parts(ibuf_ready_vec, config.num_warps) };
@@ -131,7 +127,23 @@ pub unsafe fn cyclotron_frontend_rs(
     let csr_imm = unsafe { std::slice::from_raw_parts_mut(ibuf_csr_imm_vec, config.num_warps) };
     let finished = unsafe { finished_ptr.as_mut().expect("pointer was null") };
 
-    for (w, o_line) in warp_insts.iter().enumerate() {
+    // consume if RTL ready was true
+    // this has to happen before the sim::tick() call below, so that it respects the
+    // dequeue->enqueue data hazard
+    let heads = peek_heads(core, config.num_warps);
+    for (w, (o_line, rdy)) in zip(heads, ready).enumerate() {
+        if o_line.is_some() && *rdy == 1 {
+            core.get_tracer_mut().consume(w);
+        }
+    }
+
+    // advance simulation to populate the tracer buffers
+    sim.tick();
+
+    // peek again and expose the new head to the RTL
+    let core = &mut sim.top.clusters[0].cores[0];
+    let new_heads = peek_heads(core, config.num_warps);
+    for (w, o_line) in new_heads.iter().enumerate() {
         match o_line {
             Some(line) => {
                 valid[w] = 1;
@@ -157,7 +169,7 @@ pub unsafe fn cyclotron_frontend_rs(
 
     // debug
     if false {
-        for maybe_inst in warp_insts.iter() {
+        for maybe_inst in new_heads.iter() {
             match maybe_inst {
                 Some(inst) => {
                     println!("trace: {}", inst);
@@ -167,17 +179,8 @@ pub unsafe fn cyclotron_frontend_rs(
         }
     }
 
-    // consume if RTL ready was true
-    // this has to happen after the pin drive above so that the consumed line is not lost
-    for (w, (o_line, rdy)) in zip(warp_insts, ready).enumerate() {
-        if o_line.is_some() && *rdy == 1 {
-            core.get_tracer().consume(w);
-        }
-    }
-
     *finished = sim.finished() as u8;
 }
 
 mod backend_model;
 mod mem_model;
-

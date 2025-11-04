@@ -256,7 +256,7 @@ pub unsafe fn cyclotron_trace_mem_rs(
     }
 
     let core = &mut sim.top.clusters[0].cores[0];
-    let Some(line) = core.get_tracer().consume_round_robin() else {
+    let Some(line) = core.get_tracer_mut().consume_round_robin() else {
         return;
     };
 

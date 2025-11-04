@@ -171,7 +171,7 @@ impl DecodeUnit {
         let is_sb_type: bool = (opcode == Opcode::BRANCH) || (opcode == Opcode::STORE);
 
         let imm24: i32 = sign_ext::<24>(inst.sel(59, 36) as u32);
-        let uimm32: u32 = ((if (is_sb_type) {
+        let uimm32: u32 = ((if is_sb_type {
             inst.sel(16, 9)
         } else {
             inst.sel(35, 28)
@@ -183,7 +183,7 @@ impl DecodeUnit {
         let _imm12_2: i32 = sign_ext::<12>(inst.sel(59, 48) as u32);
 
         DecodedInst {
-            opcode: opcode,
+            opcode,
             opext: inst.sel(8, 7) as u8,
             rd_addr: inst.sel(16, 9) as u8,
             f3: inst.sel(19, 17) as u8,

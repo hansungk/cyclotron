@@ -90,7 +90,7 @@ impl Tracer {
         }
     }
 
-    pub fn peek(&mut self, warp_id: usize) -> Option<&Line> {
+    pub fn peek(&self, warp_id: usize) -> Option<&Line> {
         self.bufs[warp_id].front()
     }
 

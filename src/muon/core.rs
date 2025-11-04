@@ -137,8 +137,12 @@ impl MuonCore {
         self.warps[warp as usize].fetch(pc)
     }
 
-    pub fn get_tracer(&mut self) -> &mut Tracer {
+    pub fn get_tracer_mut(&mut self) -> &mut Tracer {
         Arc::get_mut(&mut self.tracer).expect("failed to get tracer")
+    }
+
+    pub fn get_tracer(&self) -> &Tracer {
+        &self.tracer
     }
 }
 
