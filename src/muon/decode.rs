@@ -1,7 +1,7 @@
 extern crate num;
 
 use crate::base::behavior::*;
-use crate::base::module::{module, ModuleBase, IsModule};
+use crate::base::module::{module, IsModule, ModuleBase};
 use crate::muon::config::MuonConfig;
 use crate::muon::execute::Opcode;
 use crate::utils::*;
@@ -49,13 +49,14 @@ pub struct IssuedInst {
     pub raw: u64,
 }
 
-impl std::fmt::Display for IssuedInst {
+impl Display for IssuedInst {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "pc {:#010x} inst {:#010x} [ op: 0x{:x}, f3: {}, f7: {}, rd=x{}, rs1=x{}, x{}, x{} ]",
+            "IssuedInst: {{ pc: {:#010x} inst: {:#010x} [ op: 0x{:x}, f3: {}, f7: {}, rd: x{}, rs: [x{}, x{}, x{}], rs1_data: {:?}, rs2_data: {:?}, rs3_data: {:?} ] }}",
             self.pc, self.raw, self.opcode, self.f3, self.f7,
-            self.rd_addr, self.rs1_addr, self.rs2_addr, self.rs3_addr
+            self.rd_addr, self.rs1_addr, self.rs2_addr, self.rs3_addr,
+            self.rs1_data, self.rs2_data, self.rs3_data
         )
     }
 }
@@ -72,9 +73,16 @@ impl std::fmt::Display for DecodedInst {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "inst {:#010x} [ op: 0x{:x}, f3: {}, f7: {}, rd=x{}, rs1=x{}, x{}, x{}, rs4=x{} ]",
-            self.raw, self.opcode, self.f3, self.f7,
-            self.rd_addr, self.rs1_addr, self.rs2_addr, self.rs3_addr, self.rs4_addr
+            "DecodedInst: {{ inst {:#010x} [ op: 0x{:x}, f3: {}, f7: {}, rd: x{}, rs: [x{}, x{}, x{}, x{}] ] }}",
+            self.raw,
+            self.opcode,
+            self.f3,
+            self.f7,
+            self.rd_addr,
+            self.rs1_addr,
+            self.rs2_addr,
+            self.rs3_addr,
+            self.rs4_addr
         )
     }
 }
@@ -94,9 +102,7 @@ pub struct RegFileState {
 
 impl Default for RegFileState {
     fn default() -> Self {
-        Self {
-            gpr: [0u32; 256],
-        }
+        Self { gpr: [0u32; 256] }
     }
 }
 
@@ -121,8 +127,7 @@ impl ModuleBehaviors for RegFile {
     }
 }
 
-module!(RegFile, RegFileState, MuonConfig,
-);
+module!(RegFile, RegFileState, MuonConfig,);
 
 impl RegFile {
     pub fn new(config: Arc<MuonConfig>, lid: usize) -> RegFile {
@@ -170,7 +175,9 @@ impl DecodeUnit {
             inst.sel(16, 9)
         } else {
             inst.sel(35, 28)
-        } as u32) << 24) | (inst.sel(59, 36) as u32);
+        } as u32)
+            << 24)
+            | (inst.sel(59, 36) as u32);
 
         let _imm12_1: i32 = sign_ext::<12>(inst.sel(47, 36) as u32);
         let _imm12_2: i32 = sign_ext::<12>(inst.sel(59, 48) as u32);

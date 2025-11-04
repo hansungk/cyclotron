@@ -156,12 +156,14 @@ pub unsafe fn cyclotron_frontend_rs(
     }
 
     // debug
-    for maybe_inst in warp_insts.iter() {
-        match maybe_inst {
-            Some(inst) => {
-                println!("trace: {}", inst);
+    if false {
+        for maybe_inst in warp_insts.iter() {
+            match maybe_inst {
+                Some(inst) => {
+                    println!("trace: {}", inst);
+                }
+                _ => (),
             }
-            _ => (),
         }
     }
 

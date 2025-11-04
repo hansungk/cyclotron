@@ -1,19 +1,20 @@
-use std::fmt::Debug;
 use crate::base::behavior::*;
 use crate::base::mem::HasMemory;
 use crate::base::module::{module, IsModule, ModuleBase};
+use crate::info;
 use crate::muon::config::MuonConfig;
 use crate::muon::csr::CSRFile;
 use crate::muon::decode::{DecodeUnit, IssuedInst, MicroOp, RegFile};
 use crate::muon::execute::ExecuteUnit;
 use crate::muon::scheduler::{Schedule, Scheduler, SchedulerWriteback};
+use crate::neutrino::neutrino::Neutrino;
 use crate::sim::flat_mem::FlatMemory;
 use crate::sim::log::Logger;
-use crate::info;
+use std::fmt::Debug;
+use std::fmt::{Display, Formatter};
 use std::iter::zip;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{Arc, RwLock};
-use crate::neutrino::neutrino::Neutrino;
 
 #[derive(Debug, Default)]
 pub struct WarpState {
@@ -39,8 +40,7 @@ impl ModuleBehaviors for Warp {
     }
 }
 
-module!(Warp, WarpState, MuonConfig,
-);
+module!(Warp, WarpState, MuonConfig,);
 
 #[derive(Debug)]
 pub struct Writeback {
@@ -64,17 +64,29 @@ pub struct ExecErr {
 
 impl Writeback {
     pub fn rd_data_str(&self) -> String {
-        let lanes: Vec<String> = self.rd_data.iter().map(|lrd| {
-            match lrd {
+        let lanes: Vec<String> = self
+            .rd_data
+            .iter()
+            .map(|lrd| match lrd {
                 Some(value) => format!("0x{:x}", value),
                 None => ".".to_string(),
-            }
-        }).collect();
+            })
+            .collect();
         format!("[{}]", lanes.join(","))
     }
 
     pub fn num_rd_data(&self) -> usize {
         self.rd_data.iter().map(|lrd| lrd.is_some()).count()
+    }
+}
+
+impl Display for Writeback {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Writeback {{ inst: {}, tmask: {:b}, rd_addr: {}, rd_data: {:?}, sched_wb: {{ pc: {:?} }} }}",
+            self.inst, self.tmask, self.rd_addr, self.rd_data, self.sched_wb.pc
+        )
     }
 }
 
@@ -98,12 +110,18 @@ impl Warp {
     }
 
     fn name(&self) -> String {
-        format!("core {} warp {}", self.conf().lane_config.core_id, self.conf().lane_config.warp_id)
+        format!(
+            "core {} warp {}",
+            self.conf().lane_config.core_id,
+            self.conf().lane_config.warp_id
+        )
     }
 
     /// Returns un-decoded instruction bits at a given PC.
     pub fn fetch(&self, pc: u32) -> u64 {
-        let inst_bytes = self.gmem.write()
+        let inst_bytes = self
+            .gmem
+            .write()
             .expect("gmem poisoned")
             .read_n::<8>(pc as usize)
             .expect("failed to fetch instruction");
@@ -124,7 +142,13 @@ impl Warp {
         MicroOp { inst, tmask }
     }
 
-    pub fn backend(&mut self, uop: MicroOp, scheduler: &mut Scheduler, neutrino: &mut Neutrino, smem: &mut FlatMemory) -> Result<Writeback, ExecErr> {
+    pub fn backend(
+        &mut self,
+        uop: MicroOp,
+        scheduler: &mut Scheduler,
+        neutrino: &mut Neutrino,
+        smem: &mut FlatMemory,
+    ) -> Result<Writeback, ExecErr> {
         let decoded = uop.inst;
         let pc = decoded.pc;
         let tmask = uop.tmask;
@@ -147,7 +171,9 @@ impl Warp {
                 let rf_mut = self.base.state.reg_file.as_mut_slice();
                 Self::writeback(&writeback, rf_mut);
 
-                info!(self.logger, "@t={} [{}] PC=0x{:08x}, rd={:3}, data=[{} lanes valid]",
+                info!(
+                    self.logger,
+                    "@t={} [{}] PC=0x{:08x}, rd={:3}, data=[{} lanes valid]",
                     self.base.cycle,
                     self.name(),
                     pc,
@@ -168,11 +194,13 @@ impl Warp {
         }
     }
 
+    /// A backend EX-only library interface that accepts a single-warp issued instruction and
+    /// returns a writeback bundle.
     pub fn execute(
-        &mut self, 
-        issued: IssuedInst, 
-        tmask: u32, 
-        scheduler: &mut Scheduler, 
+        &mut self,
+        issued: IssuedInst,
+        tmask: u32,
+        scheduler: &mut Scheduler,
         neutrino: &mut Neutrino,
         smem: &mut FlatMemory,
     ) -> Writeback {
@@ -181,25 +209,20 @@ impl Warp {
         let csrf = self.base.state.csr_file.as_mut_slice();
 
         let writeback = ExecuteUnit::execute(
-            issued,
-            core_id,
-            self.wid,
-            tmask,
-            rf,
-            csrf,
-            scheduler,
-            neutrino,
-            &self.gmem,
-            smem
+            issued, core_id, self.wid, tmask, rf, csrf, scheduler, neutrino, &self.gmem, smem,
         );
         writeback
     }
 
     /// Fast-path that fuses frontend/backend for every warp instead of two-stage schedule/ibuf
     /// iteration.
-    pub fn process(&mut self, schedule: Schedule,
-                   scheduler: &mut Scheduler, neutrino: &mut Neutrino,
-                   shared_mem: &mut FlatMemory) -> Result<(), ExecErr> {
+    pub fn process(
+        &mut self,
+        schedule: Schedule,
+        scheduler: &mut Scheduler,
+        neutrino: &mut Neutrino,
+        shared_mem: &mut FlatMemory,
+    ) -> Result<(), ExecErr> {
         let ibuf = self.frontend(schedule);
         self.backend(ibuf, scheduler, neutrino, shared_mem).map(|_| ())
     }
@@ -218,5 +241,4 @@ impl Warp {
             csr_file.set_block_thread(block_idx, *thread_idx);
         }
     }
-
 }
