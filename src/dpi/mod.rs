@@ -87,6 +87,7 @@ pub unsafe fn cyclotron_frontend_rs(
     ibuf_ready_vec: *const u8,
     ibuf_valid_vec: *mut u8,
     ibuf_pc_vec: *mut u32,
+    ibuf_wid_vec: *mut u8,
     ibuf_op_vec: *mut u8,
     ibuf_opext_vec: *mut u8,
     ibuf_f3_vec: *mut u8,
@@ -99,7 +100,7 @@ pub unsafe fn cyclotron_frontend_rs(
     ibuf_imm24_vec: *mut u32,
     ibuf_csr_imm_vec: *mut u8,
     ibuf_tmask_vec: *mut u32,
-    _ibuf_raw_vec: *mut u8,
+    ibuf_raw_vec: *mut u64,
     finished_ptr: *mut u8,
 ) {
     let mut context_guard = CELL.write().unwrap();
@@ -114,6 +115,7 @@ pub unsafe fn cyclotron_frontend_rs(
     let valid = unsafe { std::slice::from_raw_parts_mut(ibuf_valid_vec, config.num_warps) };
     let tmask = unsafe { std::slice::from_raw_parts_mut(ibuf_tmask_vec, config.num_warps) };
     let pc = unsafe { std::slice::from_raw_parts_mut(ibuf_pc_vec, config.num_warps) };
+    let wid = unsafe { std::slice::from_raw_parts_mut(ibuf_wid_vec, config.num_warps) };
     let op = unsafe { std::slice::from_raw_parts_mut(ibuf_op_vec, config.num_warps) };
     let opext = unsafe { std::slice::from_raw_parts_mut(ibuf_opext_vec, config.num_warps) };
     let f3 = unsafe { std::slice::from_raw_parts_mut(ibuf_f3_vec, config.num_warps) };
@@ -125,6 +127,7 @@ pub unsafe fn cyclotron_frontend_rs(
     let imm32 = unsafe { std::slice::from_raw_parts_mut(ibuf_imm32_vec, config.num_warps) };
     let imm24 = unsafe { std::slice::from_raw_parts_mut(ibuf_imm24_vec, config.num_warps) };
     let csr_imm = unsafe { std::slice::from_raw_parts_mut(ibuf_csr_imm_vec, config.num_warps) };
+    let raw = unsafe { std::slice::from_raw_parts_mut(ibuf_raw_vec, config.num_warps) };
     let finished = unsafe { finished_ptr.as_mut().expect("pointer was null") };
 
     // consume if RTL ready was true
@@ -149,6 +152,7 @@ pub unsafe fn cyclotron_frontend_rs(
                 valid[w] = 1;
                 tmask[w] = line.tmask;
                 pc[w] = line.pc;
+                wid[w] = line.warp_id as u8;
                 op[w] = line.opcode;
                 opext[w] = line.opext;
                 f3[w] = line.f3;
@@ -160,6 +164,7 @@ pub unsafe fn cyclotron_frontend_rs(
                 imm32[w] = line.imm32;
                 imm24[w] = line.imm24 as u32;
                 csr_imm[w] = line.csr_imm;
+                raw[w] = line.raw;
             }
             None => {
                 valid[w] = 0;

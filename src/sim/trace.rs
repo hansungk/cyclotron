@@ -35,6 +35,7 @@ pub struct Line {
     pub imm24: i32,
     pub csr_imm: u8,
     pub tmask: u32,
+    pub raw: u64,
 }
 
 impl fmt::Display for Line {
@@ -83,6 +84,7 @@ impl Tracer {
                     imm24: wb.inst.imm24,
                     csr_imm: wb.inst.csr_imm,
                     tmask: wb.tmask,
+                    raw: wb.inst.raw,
                 };
                 buf.push_back(line);
                 // println!("trace: pushed line to buf for warp={}; len={}", wid, buf.len());
