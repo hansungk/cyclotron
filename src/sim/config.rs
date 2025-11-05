@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use log::warn;
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
@@ -6,7 +8,7 @@ use toml::*;
 #[derive(Debug, Deserialize, Clone)]
 pub struct SimConfig {
     #[serde(default)]
-    pub elf: String,
+    pub elf: PathBuf,
     #[serde(default)]
     pub log_level: u64,
     #[serde(default)]
@@ -32,7 +34,7 @@ impl Config for SimConfig {}
 impl Default for SimConfig {
     fn default() -> Self {
         Self {
-            elf: "".to_string(),
+            elf: PathBuf::new(),
             log_level: 0,
             timeout: 10000,
             trace: false,

@@ -376,7 +376,8 @@ mod tests {
     #[test]
     fn queue_full_schedules_retry_and_replay() {
         let mut scheduler = make_scheduler(2);
-        scheduler.spawn_n_warps(0x8000_0000, 2);
+        let threads = vec![vec![(0, 0, 0)], vec![(0, 0, 1)]];
+        scheduler.spawn_n_warps(0x8000_0000, &threads);
 
         let mut model = make_model(2);
         let now = module_now(&scheduler);

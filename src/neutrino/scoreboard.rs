@@ -229,10 +229,13 @@ impl Scoreboard {
         }).all(|x| x);
 
         // if either the previous job doesn't exist or is dispatched, then it's in order
-        let order_satisfied = self.base.state.entries.get(&JobID {
+        let order_satisfied = match self.base.state.entries.get(&JobID {
             task_id: job_id.task_id,
             counter: self.counters.pred(job_id.counter),
-        }).is_none_or(|e| e.dispatched);
+        }) {
+            None => true,
+            Some(e) => e.dispatched
+        };
 
         participation_satisfied && dependencies_satisfied &&
             (!self.conf().in_order_issue || order_satisfied)

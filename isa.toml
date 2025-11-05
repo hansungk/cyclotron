@@ -1,7 +1,9 @@
 [muon]
-num_lanes = 8
+num_lanes = 16
 num_warps = 4
-num_cores = 2
+num_cores = 1
+num_regs = 256
+start_pc = 0x10000000
 
 [neutrino]
 num_entries = 32
@@ -11,7 +13,5 @@ counter_width = 24
 in_order_issue = false
 
 [sim]
-elf = "gemm.elf"
-log_level = "info"
+log_level = 1
 timeout = 100000
-benchmark = 10

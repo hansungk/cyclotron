@@ -1,4 +1,6 @@
+use std::iter::zip;
 use std::sync::{Arc, RwLock};
+use crate::sim::flat_mem::FlatMemory;
 use crate::sim::log::Logger;
 use crate::sim::trace::Tracer;
 use crate::info;
@@ -6,10 +8,9 @@ use crate::base::{behavior::*, module::*};
 use crate::muon::config::{LaneConfig, MuonConfig};
 use crate::muon::gmem::CoreTimingModel;
 use crate::muon::scheduler::{Schedule, Scheduler};
-use crate::muon::warp::Warp;
-use crate::muon::decode::InstBuf;
+use crate::muon::warp::{ExecErr, Warp, Writeback};
+use crate::muon::decode::{InstBuf, IssuedInst};
 use crate::neutrino::neutrino::Neutrino;
-use crate::sim::toy_mem::ToyMemory;
 use crate::timeflow::CoreGraphConfig;
 use crate::timeq::module_now;
 
@@ -20,14 +21,16 @@ pub struct MuonCore {
     base: ModuleBase<MuonState, MuonConfig>,
     pub id: usize,
     pub scheduler: Scheduler,
-    warps: Vec<Warp>,
+    pub warps: Vec<Warp>,
+    pub(crate) shared_mem: FlatMemory,
+
     logger: Arc<Logger>,
     tracer: Arc<Tracer>,
     timing_model: CoreTimingModel,
 }
 
 impl MuonCore {
-    pub fn new(config: Arc<MuonConfig>, id: usize, logger: &Arc<Logger>, gmem: Arc<RwLock<ToyMemory>>) -> Self {
+    pub fn new(config: Arc<MuonConfig>, id: usize, logger: &Arc<Logger>, gmem: Arc<RwLock<FlatMemory>>) -> Self {
         let num_warps = config.num_warps;
         let mut core = MuonCore {
             base: Default::default(),
@@ -41,6 +44,7 @@ impl MuonCore {
                 },
                 ..*config
             }), logger, gmem.clone())).collect(),
+            shared_mem: FlatMemory::new_with_size(config.smem_size, None),
             logger: logger.clone(),
             tracer: Arc::new(Tracer::new(&config)),
             timing_model: CoreTimingModel::new(CoreGraphConfig::default(), num_warps, logger.clone()),
@@ -57,8 +61,12 @@ impl MuonCore {
         self.scheduler.spawn_single_warp()
     }
 
-    pub fn spawn_n_warps(&mut self, pc: u32, n: usize) {
-        self.scheduler.spawn_n_warps(pc, n)
+    pub fn spawn_n_warps(&mut self, pc: u32, block_idx: (u32, u32, u32), thread_idxs: Vec<Vec<(u32, u32, u32)>>) {
+        assert!(thread_idxs.len() <= self.conf().num_warps && thread_idxs.len() > 0);
+        self.scheduler.spawn_n_warps(pc, &thread_idxs);
+        for (warp, warp_thread_idxs) in self.warps.iter_mut().zip(thread_idxs.iter()) {
+            warp.set_block_threads(block_idx, warp_thread_idxs);
+        }
     }
 
     // TODO: This should differentiate between different threadblocks.
@@ -73,42 +81,93 @@ impl MuonCore {
         schedules
     }
 
-    pub fn frontend(&mut self, schedules: &Vec<Option<Schedule>>) -> InstBuf {
-        let ibuf_entries = self.warps.iter_mut().zip(schedules).map(|(warp, sched)| {
-            sched.as_ref().map(|s| {
-                warp.frontend(s.clone())
+    pub fn frontend(&mut self, schedules: &[Option<Schedule>]) -> InstBuf {
+        let warps = self.warps.iter_mut();
+        let schedules = schedules.iter().copied();
+
+        let ibuf_entries = zip(warps, schedules).map(|(warp, sched)| {
+            sched.map(|s| {
+                warp.frontend(s)
             })
         });
 
         InstBuf(ibuf_entries.collect())
     }
 
-    pub fn backend(&mut self, ibuf: &InstBuf, neutrino: &mut Neutrino) {
-        let mut writebacks = Vec::with_capacity(self.warps.len());
-        let scheduler = &mut self.scheduler;
-        let timing_model = &mut self.timing_model;
-
-        for (warp, entry) in self.warps.iter_mut().zip(&ibuf.0) {
-            let maybe_wb = entry.as_ref().map(|ib| {
-                warp.backend(ib, scheduler, neutrino, timing_model)
-            });
-            writebacks.push(maybe_wb);
-        }
-
-        let tracer = Arc::get_mut(&mut self.tracer).expect("failed to get tracer");
-        tracer.trace(&writebacks);
-
-        self.scheduler.tick_one();
-        self.warps.iter_mut().for_each(Warp::tick_one);
-    }
-
-    pub fn execute(&mut self, neutrino: &mut Neutrino) {
+    /// Execute decoded instructions from all active warps, i.o.w. heads of the instruction buffer,
+    /// in the core backend.
+    pub fn backend(&mut self, ibuf: &InstBuf, neutrino: &mut Neutrino) -> Result<(), ExecErr> {
         let now = module_now(&self.scheduler);
         self.timing_model.tick(now, &mut self.scheduler);
 
+        let mut writebacks: Vec<Option<Writeback>> = Vec::with_capacity(self.warps.len());
+
+        let warps = self.warps.iter_mut();
+        let ibuf_entries = ibuf.0.iter().copied();
+
+        for (warp, ibuf) in zip(warps, ibuf_entries) {
+            let wb_opt = match ibuf {
+                Some(ib) => warp
+                    .backend(
+                        ib,
+                        &mut self.scheduler,
+                        neutrino,
+                        &mut self.shared_mem,
+                        &mut self.timing_model,
+                        now,
+                    )?,
+                None => None,
+            };
+            writebacks.push(wb_opt);
+        }
+
+        let tracer = Arc::get_mut(&mut self.tracer).expect("failed to get tracer");
+        tracer.record(&writebacks);
+
+        self.scheduler.tick_one();
+        self.warps.iter_mut().for_each(Warp::tick_one);
+
+        Ok(())
+    }
+
+    /// Execute an issued instruction from a single warp in the core's functional unit backend.
+    pub fn execute(&mut self, warp_id: usize, issued: IssuedInst, tmask: u32, neutrino: &mut Neutrino) -> Writeback {
+        let writeback = self.warps[warp_id].execute(issued, tmask, &mut self.scheduler, neutrino, &mut self.shared_mem);
+        self.warps[warp_id].tick_one();
+
+        // no tracing done; instruction tracing is only enabled in the ISA-model mode
+
+        writeback
+    }
+
+    /// Process a single instruction in the core by sequencing both the frontend and the backend.
+    pub fn process(&mut self, neutrino: &mut Neutrino) -> Result<(), ExecErr> {
         let schedules = self.schedule();
         let ibuf = self.frontend(&schedules);
-        self.backend(&ibuf, neutrino);
+        self.backend(&ibuf, neutrino)
+    }
+
+    /// Exposes a non-mutating fetch interface for the core.
+    pub fn fetch(&self, warp: u32, pc: u32) -> u64 {
+        // TODO: `warp` is not really necessary
+        self.warps[warp as usize].fetch(pc)
+    }
+
+    pub fn get_tracer_mut(&mut self) -> &mut Tracer {
+        Arc::get_mut(&mut self.tracer).expect("failed to get tracer")
+    }
+
+    pub fn get_tracer(&self) -> &Tracer {
+        &self.tracer
+    }
+
+    pub fn parts_mut(&mut self) -> (&mut Scheduler, &mut [Warp], &mut FlatMemory, &mut CoreTimingModel) {
+        (
+            &mut self.scheduler,
+            self.warps.as_mut_slice(),
+            &mut self.shared_mem,
+            &mut self.timing_model,
+        )
     }
 }
 

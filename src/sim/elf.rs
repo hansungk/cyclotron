@@ -1,6 +1,6 @@
 use std::path::Path;
 use std::{collections::HashMap, fs};
-use std::sync::Arc;
+use anyhow::anyhow;
 use goblin::elf::{section_header, Elf};
 use crate::base::mem::HasMemory;
 
@@ -9,16 +9,23 @@ pub struct ElfBackedMem {
 }
 
 impl HasMemory for ElfBackedMem {
-    fn read<const N: usize>(&mut self, addr: usize) -> Option<Arc<[u8; N]>> {
-        self.sections.iter().fold(None, |prev, (range, data)| {
-            prev.or(((addr >= range.0) && (addr + N <= range.1)).then(|| {
-                Arc::new(data[(addr - range.0)..(addr - range.0 + N)].try_into().unwrap())
-            }))
-        })
+    fn read_impl(&self, addr: usize, n: usize) -> Result<&[u8], anyhow::Error> {
+        for section in &self.sections {
+            let range = section.0;
+            let data = section.1;
+
+            if addr >= range.0 && addr + n <= range.1 {
+                let start = addr - range.0;
+                let end = start + n;
+                return Ok(&data[start..end]);
+            }
+        }
+
+        Err(anyhow!("address not present in any section")) 
     }
 
-    fn write(&mut self, _addr: usize, _data: &Vec<u8>) -> Result<(), String> {
-        Err("elf backed memory cannot be written to".to_string())
+    fn write_impl(&mut self, _addr: usize, _data: &[u8]) -> Result<(), anyhow::Error> {
+        Err(anyhow!("elf backed memory cannot be written to"))
     }
 }
 
@@ -29,11 +36,6 @@ impl ElfBackedMem {
         };
         me.load_path(path.as_ref()).expect(&format!("Elf file {:?} not found", path));
         me
-    }
-
-    pub fn read_inst(&mut self, addr: usize) -> Option<u64> {
-        let slice = self.read::<8>(addr)?;
-        u64::from_le_bytes(*slice).into()
     }
 
     pub fn load_path(&mut self, path: &Path) -> Result<(), String> {
