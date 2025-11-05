@@ -15,3 +15,5 @@ Cargo.lock
 
 # editor
 .vscode
+
+.DS_Store

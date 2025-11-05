@@ -13,6 +13,9 @@ use crate::muon::csr::CSRFile;
 use crate::muon::scheduler::Scheduler;
 use crate::muon::warp::Writeback;
 use crate::neutrino::neutrino::Neutrino;
+use crate::muon::gmem::CoreTimingModel;
+use crate::timeflow::GmemRequest;
+use crate::timeq::Cycle;
 
 #[derive(Debug, Clone)]
 pub struct Opcode;
@@ -526,9 +529,41 @@ impl ExecuteUnit {
         }).collect()
     }
 
+    fn issue_gmem_request(
+        decoded: &DecodedInst,
+        tmask: u32,
+        is_load: bool,
+        wid: usize,
+        now: Cycle,
+        timing_model: &mut CoreTimingModel,
+        scheduler: &mut Scheduler,
+    ) -> Result<(), ()> {
+        let active_lanes = tmask.count_ones();
+        if active_lanes == 0 {
+            return Ok(());
+        }
+        let bytes_per_lane = 1u32 << (decoded.f3 & 3);
+        let total_bytes = bytes_per_lane.saturating_mul(active_lanes);
+        let request = GmemRequest::new(wid, total_bytes.max(1), tmask, is_load);
+        match timing_model.issue_gmem_request(now, wid, request, scheduler) {
+            Ok(_) => Ok(()),
+            Err(_) => Err(()),
+        }
+    }
+
+    fn stalled_writeback(inst: DecodedInst, tmask: u32) -> Writeback {
+        Writeback {
+            inst,
+            tmask,
+            rd_addr: inst.rd,
+            rd_data: Vec::new(),
+        }
+    }
+
     pub fn execute(decoded: DecodedInst, cid: usize, wid: usize, tmask: u32,
                    rf: &mut Vec<&mut RegFile>, csrf: &mut Vec<&mut CSRFile>,
-                   scheduler: &mut Scheduler, neutrino: &mut Neutrino, gmem: &mut Arc<RwLock<ToyMemory>>) -> Writeback {
+                   scheduler: &mut Scheduler, neutrino: &mut Neutrino, gmem: &mut Arc<RwLock<ToyMemory>>,
+                   timing_model: &mut CoreTimingModel, now: Cycle) -> Writeback {
         // let isa = ISA::get_insts();
         // let (op, alu_result, actions) = isa.iter().map(|inst_group| {
         //     inst_group.execute(&decoded)
@@ -567,10 +602,17 @@ impl ExecuteUnit {
                 Self::execute_lanes(|_| { Some(decoded.pc + 8) }, tmask, rf)
             }
             Opcode::LOAD => {
+                if Self::issue_gmem_request(&decoded, tmask, true, wid, now, timing_model, scheduler).is_err() {
+                    return Self::stalled_writeback(decoded, tmask);
+                }
                 Self::execute_lanes(|lrf| ExecuteUnit::load(&decoded, lrf, gmem), tmask, rf)
             }
             Opcode::STORE => {
-                Self::execute_lanes(|lrf| ExecuteUnit::store(&decoded, lrf, gmem), tmask, rf)
+                if Self::issue_gmem_request(&decoded, tmask, false, wid, now, timing_model, scheduler).is_err() {
+                    return Self::stalled_writeback(decoded, tmask);
+                }
+                let _ = Self::execute_lanes(|lrf| ExecuteUnit::store(&decoded, lrf, gmem), tmask, rf);
+                empty.clone()
             }
             Opcode::MISC_MEM => {
                 let imp = match decoded.f3 {

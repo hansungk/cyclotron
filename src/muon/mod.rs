@@ -6,3 +6,4 @@ pub mod csr;
 pub mod scheduler;
 pub mod warp;
 pub mod config;
+pub mod gmem;

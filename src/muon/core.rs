@@ -4,11 +4,14 @@ use crate::sim::trace::Tracer;
 use crate::info;
 use crate::base::{behavior::*, module::*};
 use crate::muon::config::{LaneConfig, MuonConfig};
+use crate::muon::gmem::CoreTimingModel;
 use crate::muon::scheduler::{Schedule, Scheduler};
 use crate::muon::warp::Warp;
 use crate::muon::decode::InstBuf;
 use crate::neutrino::neutrino::Neutrino;
 use crate::sim::toy_mem::ToyMemory;
+use crate::timeflow::CoreGraphConfig;
+use crate::timeq::module_now;
 
 #[derive(Debug, Default)]
 pub struct MuonState {}
@@ -20,6 +23,7 @@ pub struct MuonCore {
     warps: Vec<Warp>,
     logger: Arc<Logger>,
     tracer: Arc<Tracer>,
+    timing_model: CoreTimingModel,
 }
 
 impl MuonCore {
@@ -39,6 +43,7 @@ impl MuonCore {
             }), logger, gmem.clone())).collect(),
             logger: logger.clone(),
             tracer: Arc::new(Tracer::new(&config)),
+            timing_model: CoreTimingModel::new(CoreGraphConfig::default(), num_warps, logger.clone()),
         };
 
         info!(core.logger, "muon core {} instantiated!", id);
@@ -79,20 +84,28 @@ impl MuonCore {
     }
 
     pub fn backend(&mut self, ibuf: &InstBuf, neutrino: &mut Neutrino) {
-        let writebacks = self.warps.iter_mut().zip(&ibuf.0).map(|(warp, ibuf)| {
-            ibuf.as_ref().map(|ib| {
-                warp.backend(ib, &mut self.scheduler, neutrino)
-            })
-        });
+        let mut writebacks = Vec::with_capacity(self.warps.len());
+        let scheduler = &mut self.scheduler;
+        let timing_model = &mut self.timing_model;
+
+        for (warp, entry) in self.warps.iter_mut().zip(&ibuf.0) {
+            let maybe_wb = entry.as_ref().map(|ib| {
+                warp.backend(ib, scheduler, neutrino, timing_model)
+            });
+            writebacks.push(maybe_wb);
+        }
 
         let tracer = Arc::get_mut(&mut self.tracer).expect("failed to get tracer");
-        tracer.trace(&writebacks.collect());
+        tracer.trace(&writebacks);
 
         self.scheduler.tick_one();
         self.warps.iter_mut().for_each(Warp::tick_one);
     }
 
     pub fn execute(&mut self, neutrino: &mut Neutrino) {
+        let now = module_now(&self.scheduler);
+        self.timing_model.tick(now, &mut self.scheduler);
+
         let schedules = self.schedule();
         let ibuf = self.frontend(&schedules);
         self.backend(&ibuf, neutrino);

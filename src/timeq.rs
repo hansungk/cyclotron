@@ -1,20 +1,3 @@
-/*
-Time-queue for the performance model.
-
-This module should provide scheduling helpers which sit between the functional simulator and the
-performance model.  The goal is to keep the simulator structure as is and have the time-queue handle
-the low-level details of latency, bandwidth, and backpressure.
-
-Each shared resource is wrapped by a TimedServer, which enforced a service law:
-    - A base latency plus a throughput component expressed in bytes-per-cycle
-
-When the server cannot immediately accept more work it returns a Backpressure, which allows
-the caller to propagate the stall reason back to the warp or unit that produced the request.
-
-Accepted requests yield a `Ticket` describing when the service will complete. Downstream components
-can poll these tickets (or register callbacks) to model the flow of work through the pipeline.
-*/
-
 use crate::base::module::IsModule;
 use std::collections::VecDeque;
 
@@ -147,6 +130,7 @@ struct Inflight<T> {
 pub struct TimedServer<T> {
     config: ServerConfig,
     inflight: VecDeque<Inflight<T>>,
+    ready: VecDeque<ServiceResult<T>>,
     busy_until: Cycle,
 }
 
@@ -157,6 +141,7 @@ impl<T> TimedServer<T> {
         Self {
             config,
             inflight: VecDeque::with_capacity(config.queue_capacity),
+            ready: VecDeque::with_capacity(config.queue_capacity),
             busy_until: 0,
         }
     }
@@ -168,7 +153,7 @@ impl<T> TimedServer<T> {
         now: Cycle,
         request: ServiceRequest<T>,
     ) -> Result<Ticket, Backpressure<T>> {
-        if self.inflight.len() >= self.config.queue_capacity {
+        if self.outstanding_len() >= self.config.queue_capacity {
             return Err(Backpressure::QueueFull {
                 request,
                 capacity: self.config.queue_capacity,
@@ -201,20 +186,11 @@ impl<T> TimedServer<T> {
     where
         F: FnMut(ServiceResult<T>),
     {
-        while let Some(front) = self.inflight.front() {
-            if !front.ticket.is_ready(now) {
-                break;
-            }
-            let inflight = self.inflight.pop_front().expect("front just checked");
-            callback(ServiceResult {
-                payload: inflight.payload,
-                ticket: inflight.ticket,
-            });
+        self.advance_ready(now);
+        while let Some(result) = self.ready.pop_front() {
+            callback(result);
         }
-
-        if self.inflight.is_empty() && now > self.busy_until {
-            self.busy_until = now;
-        }
+        self.update_idle(now);
     }
 
     // Returns the earliest cycle at which a new request could begin service.
@@ -226,11 +202,56 @@ impl<T> TimedServer<T> {
         self.inflight.front().map(|inflight| &inflight.ticket)
     }
 
+    // Make any newly ready completions visible to downstream consumers without consuming them.
+    pub fn advance_ready(&mut self, now: Cycle) {
+        while let Some(front) = self.inflight.front() {
+            if !front.ticket.is_ready(now) {
+                break;
+            }
+            let inflight = self.inflight.pop_front().expect("front just checked");
+            self.ready.push_back(ServiceResult {
+                payload: inflight.payload,
+                ticket: inflight.ticket,
+            });
+        }
+    }
+
+    // Observe the next ready completion without consuming it.
+    pub fn peek_ready(&mut self, now: Cycle) -> Option<&ServiceResult<T>> {
+        self.advance_ready(now);
+        self.ready.front()
+    }
+
+    // Consume and return the next ready completion if one exists.
+    pub fn pop_ready(&mut self, now: Cycle) -> Option<ServiceResult<T>> {
+        self.advance_ready(now);
+        let result = self.ready.pop_front();
+        if result.is_some() {
+            self.update_idle(now);
+        }
+        result
+    }
+
+    // Number of outstanding requests (queued, inflight, or waiting to be drained).
+    pub fn outstanding(&self) -> usize {
+        self.outstanding_len()
+    }
+
+    fn outstanding_len(&self) -> usize {
+        self.inflight.len() + self.ready.len()
+    }
+
     fn next_ready_cycle(&self, start: Cycle, size_bytes: u32) -> Cycle {
         let service_cycles = ceil_div_u64(size_bytes as u64, self.config.bytes_per_cycle as u64);
         start
             .saturating_add(self.config.base_latency)
             .saturating_add(service_cycles)
+    }
+
+    fn update_idle(&mut self, now: Cycle) {
+        if self.inflight.is_empty() && self.ready.is_empty() && now > self.busy_until {
+            self.busy_until = now;
+        }
     }
 }
 
@@ -533,5 +554,37 @@ mod tests {
 
         // Edge case: way past ready time
         assert_eq!(0, ticket.remaining_cycles(u64::MAX));
+    }
+
+    #[test]
+    fn peek_and_pop_ready_allow_backpressure_control() {
+        let mut server = make_server(ServerConfig {
+            base_latency: 1,
+            bytes_per_cycle: 4,
+            queue_capacity: 2,
+        });
+
+        server
+            .try_enqueue(0, ServiceRequest::new("req0", 4))
+            .unwrap();
+
+        // Nothing ready yet.
+        assert!(server.peek_ready(1).is_none());
+
+        // Once the request matures, peek exposes it without consuming.
+        let peeked = server.peek_ready(5).expect("result should be ready");
+        assert_eq!("req0", peeked.payload);
+
+        // The item stays pending until pop_ready is invoked.
+        assert!(server.peek_ready(5).is_some());
+
+        let popped = server
+            .pop_ready(5)
+            .expect("result should be popped successfully");
+        assert_eq!("req0", popped.payload);
+
+        // After popping, there is no outstanding work.
+        assert!(server.pop_ready(5).is_none());
+        assert_eq!(server.outstanding(), 0);
     }
 }

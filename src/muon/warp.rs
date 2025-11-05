@@ -5,12 +5,14 @@ use crate::muon::config::MuonConfig;
 use crate::muon::csr::CSRFile;
 use crate::muon::decode::{DecodeUnit, DecodedInst, InstBufEntry, RegFile};
 use crate::muon::execute::ExecuteUnit;
+use crate::muon::gmem::CoreTimingModel;
 use crate::muon::scheduler::{Schedule, Scheduler};
 use crate::sim::log::Logger;
 use crate::info;
 use crate::sim::toy_mem::ToyMemory;
 use std::sync::{Arc, RwLock};
 use crate::neutrino::neutrino::Neutrino;
+use crate::timeq::module_now;
 
 #[derive(Debug, Default)]
 pub struct WarpState {
@@ -115,12 +117,13 @@ impl Warp {
         InstBufEntry { inst, tmask }
     }
 
-    pub fn backend(&mut self, ibuf: &InstBufEntry, scheduler: &mut Scheduler, neutrino: &mut Neutrino) -> Writeback {
+    pub fn backend(&mut self, ibuf: &InstBufEntry, scheduler: &mut Scheduler, neutrino: &mut Neutrino, timing_model: &mut CoreTimingModel) -> Writeback {
         let inst = ibuf.inst;
         let tmask = ibuf.tmask;
         let core_id = self.conf().lane_config.core_id;
         let mut rf = self.base.state.reg_file.iter_mut().collect::<Vec<_>>();
         let mut csrf = self.base.state.csr_file.iter_mut().collect::<Vec<_>>();
+        let now: u64 = module_now(scheduler);
 
         let writeback = ExecuteUnit::execute(inst,
              core_id,
@@ -131,6 +134,8 @@ impl Warp {
              scheduler,
              neutrino,
              &mut self.gmem,
+             timing_model,
+             now,
         );
 
         Self::writeback(&writeback, &mut rf);
@@ -149,9 +154,9 @@ impl Warp {
     /// Fast-path that fuses frontend/backend for every warp instead of two-stage schedule/ibuf
     /// iteration.
     pub fn execute(&mut self, schedule: Schedule,
-                   scheduler: &mut Scheduler, neutrino: &mut Neutrino) {
+                   scheduler: &mut Scheduler, neutrino: &mut Neutrino, timing_model: &mut CoreTimingModel) {
         let ibuf = self.frontend(schedule.clone());
-        self.backend(&ibuf, scheduler, neutrino);
+        self.backend(&ibuf, scheduler, neutrino, timing_model);
     }
 
     pub fn writeback(wb: &Writeback, rf: &mut Vec<&mut RegFile>) {
