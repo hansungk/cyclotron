@@ -187,5 +187,24 @@ pub unsafe fn cyclotron_frontend_rs(
     *finished = sim.finished() as u8;
 }
 
+#[no_mangle]
+/// Do a differential test between the register values read at instruction issue from RTL, and the
+/// values logged in Cyclotron trace.
+pub unsafe fn cyclotron_difftest_reg_rs(
+    _valid: u8,
+    _pc: u32,
+    _regs_0_enable: u8,
+    _regs_0_address: u8,
+    _regs_0_data: *const u32,
+    _regs_1_enable: u8,
+    _regs_1_address: u8,
+    _regs_1_data: *const u32,
+    _regs_2_enable: u8,
+    _regs_2_address: u8,
+    _regs_2_data: *const u32,
+) {
+    println!("cyclotron_difftest_reg_rs called!");
+}
+
 mod backend_model;
 mod mem_model;
