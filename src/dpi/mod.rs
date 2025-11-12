@@ -3,6 +3,7 @@ use crate::base::behavior::*;
 use crate::muon::core::MuonCore;
 use crate::sim::top::Sim;
 use crate::sim::trace;
+use std::collections::VecDeque;
 use std::iter::zip;
 use std::path::PathBuf;
 use std::sync::RwLock;
@@ -12,7 +13,15 @@ use log::LevelFilter;
 
 struct Context {
     sim_isa: Sim, // cyclotron instance for the ISA model
-    sim_be: Sim,  // cyclotron instance for the backend model
+    // holds fetch/decoded, but not issued, instructions
+    // to be used for diff-testing against RTL issue
+    issue_queue: Vec<VecDeque<IssueQueueLine>>,
+    sim_be: Sim, // cyclotron instance for the backend model
+}
+
+struct IssueQueueLine {
+    line: trace::Line,
+    checked: bool,
 }
 
 /// Global singleton to maintain simulator context across independent DPI calls.
@@ -48,9 +57,19 @@ pub fn cyclotron_init_rs() {
 
     println!("cyclotron_init_rs: created sim object from {}", toml_path.display());
 
-    let mut c = Context { sim_isa, sim_be };
+    let mut c = Context {
+        sim_isa,
+        issue_queue: Vec::new(),
+        sim_be,
+    };
     c.sim_isa.top.reset();
     c.sim_be.top.reset();
+
+    let config = &c.sim_isa.top.clusters[0].cores[0].conf().clone();
+    c.issue_queue = Vec::new();
+    for _ in 0..config.num_warps {
+        c.issue_queue.push(VecDeque::new());
+    }
 
     let mut context = CELL.write().unwrap();
     if context.as_ref().is_some() {
@@ -130,13 +149,19 @@ pub unsafe fn cyclotron_frontend_rs(
     let raw = unsafe { std::slice::from_raw_parts_mut(ibuf_raw_vec, config.num_warps) };
     let finished = unsafe { finished_ptr.as_mut().expect("pointer was null") };
 
-    // consume if RTL ready was true
+    // upon RTL fire, consume tracer queue and move line to the issue queue
     // this has to happen before the sim::tick() call below, so that it respects the
     // dequeue->enqueue data hazard
+    // TODO: disable issue queue if no difftest
     let heads = peek_heads(core, config.num_warps);
     for (w, (o_line, rdy)) in zip(heads, ready).enumerate() {
         if o_line.is_some() && *rdy == 1 {
             core.get_tracer_mut().consume(w);
+            let iline = IssueQueueLine {
+                line: o_line.unwrap(),
+                checked: false,
+            };
+            context.issue_queue[w].push_back(iline);
         }
     }
 
@@ -191,19 +216,93 @@ pub unsafe fn cyclotron_frontend_rs(
 /// Do a differential test between the register values read at instruction issue from RTL, and the
 /// values logged in Cyclotron trace.
 pub unsafe fn cyclotron_difftest_reg_rs(
-    _valid: u8,
-    _pc: u32,
-    _regs_0_enable: u8,
-    _regs_0_address: u8,
-    _regs_0_data: *const u32,
-    _regs_1_enable: u8,
-    _regs_1_address: u8,
-    _regs_1_data: *const u32,
-    _regs_2_enable: u8,
-    _regs_2_address: u8,
-    _regs_2_data: *const u32,
+    valid: u8,
+    // TODO: wid, tmask
+    pc: u32,
+    regs_0_enable: u8,
+    regs_0_address: u8,
+    regs_0_data: *const u32,
+    regs_1_enable: u8,
+    regs_1_address: u8,
+    regs_1_data: *const u32,
+    regs_2_enable: u8,
+    regs_2_address: u8,
+    regs_2_data: *const u32,
 ) {
-    println!("cyclotron_difftest_reg_rs called!");
+    let mut context_guard = CELL.write().unwrap();
+    let context = context_guard.as_mut().expect("DPI context not initialized!");
+    let sim = &mut context.sim_isa;
+
+    let core = &mut sim.top.clusters[0].cores[0];
+    let config = core.conf().clone();
+
+    let rs1_data = unsafe { std::slice::from_raw_parts(regs_0_data, config.num_lanes) };
+    let rs2_data = unsafe { std::slice::from_raw_parts(regs_1_data, config.num_lanes) };
+    let rs3_data = unsafe { std::slice::from_raw_parts(regs_2_data, config.num_lanes) };
+
+    if valid == 0 {
+        return;
+    }
+
+    let isq = &mut context.issue_queue[0];
+    for line in isq.iter_mut().rev() {
+        // search for the oldest-matching PC
+        if line.line.pc != pc {
+            continue;
+        }
+        line.checked = true;
+
+        let compare_and_exit = |rtl: &[u32], model: &[Option<u32>], name: &str| {
+            let res = compare_regs(rtl, model);
+            if let Err(e) = res {
+                println!(
+                    "DIFFTEST: {} match fail, pc: {:x}, lane:{}, rtl:{}, model:{}",
+                    name, pc, e.lane, e.rtl, e.model
+                );
+                panic!();
+            }
+        };
+
+        compare_and_exit(rs1_data, &line.line.rs1_data, "rs1");
+        compare_and_exit(rs2_data, &line.line.rs2_data, "rs2");
+        compare_and_exit(rs3_data, &line.line.rs3_data, "rs3");
+    }
+
+    // clean up checked lines at the front
+    let mut num_to_pop = 0;
+    for line in isq.iter() {
+        if line.checked == true {
+            num_to_pop += 1;
+        } else {
+            break;
+        }
+    }
+    for _ in 0..num_to_pop {
+        isq.pop_front();
+    }
+}
+
+struct RegMatchError {
+    lane: usize,
+    rtl: u32,
+    model: u32,
+}
+
+fn compare_regs(regs_rtl: &[u32], regs_model: &[Option<u32>]) -> Result<(), RegMatchError> {
+    for (i, (rtl, model)) in zip(regs_rtl, regs_model).enumerate() {
+        // TODO: instead of skipping None, compare with tmask
+        if let Some(m) = model {
+            if *rtl != *m {
+                return Err(RegMatchError {
+                    lane: i,
+                    rtl: *rtl,
+                    model: *m,
+                });
+            }
+        }
+    }
+
+    Ok(())
 }
 
 mod backend_model;
