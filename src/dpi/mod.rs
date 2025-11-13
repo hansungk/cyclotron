@@ -219,15 +219,15 @@ pub unsafe fn cyclotron_difftest_reg_rs(
     valid: u8,
     // TODO: wid, tmask
     pc: u32,
-    regs_0_enable: u8,
-    regs_0_address: u8,
-    regs_0_data: *const u32,
-    regs_1_enable: u8,
-    regs_1_address: u8,
-    regs_1_data: *const u32,
-    regs_2_enable: u8,
-    regs_2_address: u8,
-    regs_2_data: *const u32,
+    rs1_enable: u8,
+    rs1_address: u8,
+    rs1_data_raw: *const u32,
+    rs2_enable: u8,
+    rs2_address: u8,
+    rs2_data_raw: *const u32,
+    rs3_enable: u8,
+    rs3_address: u8,
+    rs3_data_raw: *const u32,
 ) {
     let mut context_guard = CELL.write().unwrap();
     let context = context_guard.as_mut().expect("DPI context not initialized!");
@@ -236,9 +236,9 @@ pub unsafe fn cyclotron_difftest_reg_rs(
     let core = &mut sim.top.clusters[0].cores[0];
     let config = core.conf().clone();
 
-    let rs1_data = unsafe { std::slice::from_raw_parts(regs_0_data, config.num_lanes) };
-    let rs2_data = unsafe { std::slice::from_raw_parts(regs_1_data, config.num_lanes) };
-    let rs3_data = unsafe { std::slice::from_raw_parts(regs_2_data, config.num_lanes) };
+    let rs1_data = unsafe { std::slice::from_raw_parts(rs1_data_raw, config.num_lanes) };
+    let rs2_data = unsafe { std::slice::from_raw_parts(rs2_data_raw, config.num_lanes) };
+    let rs3_data = unsafe { std::slice::from_raw_parts(rs3_data_raw, config.num_lanes) };
 
     if valid == 0 {
         return;
@@ -252,20 +252,45 @@ pub unsafe fn cyclotron_difftest_reg_rs(
         }
         line.checked = true;
 
-        let compare_and_exit = |rtl: &[u32], model: &[Option<u32>], name: &str| {
-            let res = compare_regs(rtl, model);
+        let compare_reg_addr_and_exit = |rtl: u8, model: u8, name: &str| {
+            if rtl != model {
+                println!(
+                    "DIFFTEST: {} address match fail, pc: {:x}, rtl:{}, model:{}",
+                    name, pc, rtl, model,
+                );
+                panic!();
+            }
+        };
+        let compare_reg_data_and_exit = |rtl: &[u32], model: &[Option<u32>], name: &str| {
+            let res = compare_vector_reg_data(rtl, model);
             if let Err(e) = res {
                 println!(
-                    "DIFFTEST: {} match fail, pc: {:x}, lane:{}, rtl:{}, model:{}",
+                    "DIFFTEST: {} data match fail, pc: {:x}, lane:{}, rtl:{}, model:{}",
                     name, pc, e.lane, e.rtl, e.model
                 );
                 panic!();
             }
         };
 
-        compare_and_exit(rs1_data, &line.line.rs1_data, "rs1");
-        compare_and_exit(rs2_data, &line.line.rs2_data, "rs2");
-        compare_and_exit(rs3_data, &line.line.rs3_data, "rs3");
+        if rs1_enable != 0 {
+            compare_reg_addr_and_exit(rs1_address, line.line.rs1_addr, "rs1");
+            // sometimes the collector RTL drives bogus values on x0; ignore that.
+            if rs1_address != 0 {
+                compare_reg_data_and_exit(rs1_data, &line.line.rs1_data, "rs1");
+            }
+        }
+        if rs2_enable != 0 {
+            compare_reg_addr_and_exit(rs2_address, line.line.rs2_addr, "rs2");
+            if rs2_address != 0 {
+                compare_reg_data_and_exit(rs2_data, &line.line.rs2_data, "rs2");
+            }
+        }
+        if rs3_enable != 0 {
+            compare_reg_addr_and_exit(rs3_address, line.line.rs3_addr, "rs3");
+            if rs3_address != 0 {
+                compare_reg_data_and_exit(rs3_data, &line.line.rs3_data, "rs3");
+            }
+        }
     }
 
     // clean up checked lines at the front
@@ -288,7 +313,7 @@ struct RegMatchError {
     model: u32,
 }
 
-fn compare_regs(regs_rtl: &[u32], regs_model: &[Option<u32>]) -> Result<(), RegMatchError> {
+fn compare_vector_reg_data(regs_rtl: &[u32], regs_model: &[Option<u32>]) -> Result<(), RegMatchError> {
     for (i, (rtl, model)) in zip(regs_rtl, regs_model).enumerate() {
         // TODO: instead of skipping None, compare with tmask
         if let Some(m) = model {
