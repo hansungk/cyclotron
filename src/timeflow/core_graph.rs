@@ -1,0 +1,115 @@
+use crate::timeflow::gmem::{
+    GmemCompletion, GmemFlowConfig, GmemIssue, GmemReject, GmemRequest, GmemStats, GmemSubgraph,
+};
+use crate::timeflow::graph::FlowGraph;
+use crate::timeflow::smem::{
+    SmemCompletion, SmemFlowConfig, SmemIssue, SmemReject, SmemRequest, SmemStats, SmemSubgraph,
+};
+use crate::timeflow::types::CoreFlowPayload;
+use crate::timeq::Cycle;
+
+#[derive(Debug, Clone)]
+pub struct CoreGraphConfig {
+    pub gmem: GmemFlowConfig,
+    pub smem: SmemFlowConfig,
+}
+
+impl Default for CoreGraphConfig {
+    fn default() -> Self {
+        Self {
+            gmem: GmemFlowConfig::default(),
+            smem: SmemFlowConfig::default(),
+        }
+    }
+}
+
+pub struct CoreGraph {
+    graph: FlowGraph<CoreFlowPayload>,
+    gmem: GmemSubgraph,
+    smem: SmemSubgraph,
+}
+
+impl CoreGraph {
+    pub fn new(config: CoreGraphConfig) -> Self {
+        let mut graph = FlowGraph::new();
+        let gmem = GmemSubgraph::attach(&mut graph, &config.gmem);
+        let smem = SmemSubgraph::attach(&mut graph, &config.smem);
+        Self { graph, gmem, smem }
+    }
+
+    pub fn issue_gmem(
+        &mut self,
+        now: Cycle,
+        request: GmemRequest,
+    ) -> Result<GmemIssue, GmemReject> {
+        self.gmem.issue(&mut self.graph, now, request)
+    }
+
+    pub fn issue_smem(
+        &mut self,
+        now: Cycle,
+        request: SmemRequest,
+    ) -> Result<SmemIssue, SmemReject> {
+        self.smem.issue(&mut self.graph, now, request)
+    }
+
+    pub fn tick(&mut self, now: Cycle) {
+        self.graph.tick(now);
+        self.gmem.collect_completions(&mut self.graph, now);
+        self.smem.collect_completions(&mut self.graph, now);
+    }
+
+    pub fn pop_gmem_completion(&mut self) -> Option<GmemCompletion> {
+        self.gmem.completions.pop_front()
+    }
+
+    pub fn pending_gmem_completions(&self) -> usize {
+        self.gmem.completions.len()
+    }
+
+    pub fn gmem_stats(&self) -> GmemStats {
+        self.gmem.stats
+    }
+
+    pub fn clear_gmem_stats(&mut self) {
+        self.gmem.stats = GmemStats::default();
+    }
+
+    pub fn pop_smem_completion(&mut self) -> Option<SmemCompletion> {
+        self.smem.completions.pop_front()
+    }
+
+    pub fn pending_smem_completions(&self) -> usize {
+        self.smem.completions.len()
+    }
+
+    pub fn smem_stats(&self) -> SmemStats {
+        self.smem.stats
+    }
+
+    pub fn clear_smem_stats(&mut self) {
+        self.smem.stats = SmemStats::default();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn core_graph_completes_gmem_requests() {
+        let mut cfg = CoreGraphConfig::default();
+        cfg.gmem.coalescer.base_latency = 1;
+        cfg.gmem.cache.base_latency = 2;
+        cfg.gmem.dram.base_latency = 3;
+
+        let mut graph = CoreGraph::new(cfg);
+        let request = GmemRequest::new(0, 16, 0xF, true);
+        let issue = graph.issue_gmem(0, request).expect("issue should succeed");
+        let ready_at = issue.ticket.ready_at();
+        for cycle in 0..=ready_at.saturating_add(10) {
+            graph.tick(cycle);
+        }
+        assert_eq!(1, graph.pending_gmem_completions());
+    }
+}
