@@ -25,12 +25,12 @@ impl Ticket {
         }
     }
 
-    // Cycle at which the request entered the server.
+    // Cycle at which the request entered the server
     pub fn issued_at(&self) -> Cycle {
         self.issued_at
     }
 
-    // Cycle at which the server will make the payload available to downstream consumers.
+    // Cycle at which the server will make the payload available to downstream consumers
     pub fn ready_at(&self) -> Cycle {
         self.ready_at
     }
@@ -40,18 +40,18 @@ impl Ticket {
         self.size_bytes
     }
 
-    // Whether the ticket is ready at the provided cycle.
+    // Whether the ticket is ready at the provided cycle
     pub fn is_ready(&self, now: Cycle) -> bool {
         now >= self.ready_at
     }
 
-    // Number of cycles until the ticket is ready.  Returns zero if already ready.
+    // Number of cycles until the ticket is ready (returns zero if already ready)
     pub fn remaining_cycles(&self, now: Cycle) -> Cycle {
         self.ready_at.saturating_sub(now)
     }
 }
 
-// The request carries the payload and metadata that is required to compute the service time
+// The request carries the payload and metadata required to compute the service time
 #[derive(Debug)]
 pub struct ServiceRequest<T> {
     pub payload: T,
@@ -81,7 +81,7 @@ pub enum Backpressure<T> {
         request: ServiceRequest<T>,
         capacity: usize,
     },
-    // The server is currently busy (e.g. warm-up latency with no queued requests)
+    // The server is currently busy due to some warm-up latency
     Busy {
         request: ServiceRequest<T>,
         available_at: Cycle,
@@ -89,7 +89,7 @@ pub enum Backpressure<T> {
 }
 
 impl<T> Backpressure<T> {
-    // Recover the underlying request so it can be retried later.
+    // Recover the underlying request so it can be retried later
     pub fn into_request(self) -> ServiceRequest<T> {
         match self {
             Backpressure::QueueFull { request, .. } => request,
@@ -106,6 +106,10 @@ pub struct ServerConfig {
     pub bytes_per_cycle: u32,
     // Maximum number of outstanding requests the server will accept
     pub queue_capacity: usize,
+    // Maximum number of completions exposed per cycle (u32::MAX = unlimited)
+    pub completions_per_cycle: u32,
+    // Optional warm-up latency before the first request can issue
+    pub warmup_latency: Cycle,
 }
 
 impl Default for ServerConfig {
@@ -114,6 +118,8 @@ impl Default for ServerConfig {
             base_latency: 0,
             bytes_per_cycle: 1,
             queue_capacity: 1,
+            completions_per_cycle: u32::MAX,
+            warmup_latency: 0,
         }
     }
 }
@@ -124,14 +130,29 @@ struct Inflight<T> {
     ticket: Ticket,
 }
 
-// Single-lane server that enforces the configured latency/bandwidth budget and keeps track of
-// outstanding work using a FIFO.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ServerStats {
+    pub issued: u64,
+    pub completed: u64,
+    pub queue_full_rejects: u64,
+    pub busy_rejects: u64,
+    pub bytes_issued: u64,
+    pub bytes_completed: u64,
+    pub max_outstanding: u64,
+}
+
+// Single-lane server that enforces the configured latency/bandwidth budget and 
+// keeps track of outstanding work
 #[derive(Debug)]
 pub struct TimedServer<T> {
     config: ServerConfig,
     inflight: VecDeque<Inflight<T>>,
     ready: VecDeque<ServiceResult<T>>,
-    busy_until: Cycle,
+    next_issue_at: Cycle,
+    warmup_until: Cycle,
+    last_completion_cycle: Cycle,
+    completions_this_cycle: u32,
+    stats: ServerStats,
 }
 
 impl<T> TimedServer<T> {
@@ -142,46 +163,64 @@ impl<T> TimedServer<T> {
             config,
             inflight: VecDeque::with_capacity(config.queue_capacity),
             ready: VecDeque::with_capacity(config.queue_capacity),
-            busy_until: 0,
+            next_issue_at: 0,
+            warmup_until: config.warmup_latency,
+            last_completion_cycle: 0,
+            completions_this_cycle: 0,
+            stats: ServerStats::default(),
         }
     }
 
-    // Attempt to enqueue a request at the provided cycle.
-    // Returns a Ticket on success or a Backpressure describing why the request could not be accepted.
+    // Attempt to enqueue a request at the provided cycle
+    // Returns a Ticket on success or a Backpressure describing why the request could not be accepted
     pub fn try_enqueue(
         &mut self,
         now: Cycle,
         request: ServiceRequest<T>,
     ) -> Result<Ticket, Backpressure<T>> {
         if self.outstanding_len() >= self.config.queue_capacity {
+            self.stats.queue_full_rejects = self.stats.queue_full_rejects.saturating_add(1);
             return Err(Backpressure::QueueFull {
                 request,
                 capacity: self.config.queue_capacity,
             });
         }
 
-        let available_at = self.busy_until.max(now);
-        if available_at > now && self.inflight.is_empty() {
+        if self.outstanding_len() == 0 && now < self.warmup_until {
+            self.stats.busy_rejects = self.stats.busy_rejects.saturating_add(1);
             return Err(Backpressure::Busy {
                 request,
-                available_at,
+                available_at: self.warmup_until,
             });
         }
 
-        let ready_at = self.next_ready_cycle(available_at, request.size_bytes);
+        let start = self.next_issue_at.max(now);
+        let service_cycles = ceil_div_u64(
+            request.size_bytes as u64,
+            self.config.bytes_per_cycle as u64,
+        );
+        let ready_at = start
+            .saturating_add(self.config.base_latency)
+            .saturating_add(service_cycles);
         let ticket = Ticket::new(now, ready_at, request.size_bytes);
 
-        self.busy_until = ready_at;
+        self.next_issue_at = start.saturating_add(service_cycles);
         self.inflight.push_back(Inflight {
             payload: request.payload,
             ticket,
         });
+        self.stats.issued = self.stats.issued.saturating_add(1);
+        self.stats.bytes_issued = self
+            .stats
+            .bytes_issued
+            .saturating_add(request.size_bytes as u64);
+        let outstanding = self.outstanding_len() as u64;
+        self.stats.max_outstanding = self.stats.max_outstanding.max(outstanding);
 
         Ok(ticket)
     }
 
-    // Drain any requests that have completed by "now" and invoke the supplied callback with the
-    // results.
+    // Drain any requests that have completed and invoke the callback with the results
     pub fn service_ready<F>(&mut self, now: Cycle, mut callback: F)
     where
         F: FnMut(ServiceResult<T>),
@@ -193,19 +232,27 @@ impl<T> TimedServer<T> {
         self.update_idle(now);
     }
 
-    // Returns the earliest cycle at which a new request could begin service.
+    // Returns the earliest cycle that a new request can begin service
     pub fn available_at(&self) -> Cycle {
-        self.busy_until
+        self.next_issue_at.max(self.warmup_until)
     }
 
     pub fn oldest_ticket(&self) -> Option<&Ticket> {
         self.inflight.front().map(|inflight| &inflight.ticket)
     }
 
-    // Make any newly ready completions visible to downstream consumers without consuming them.
+    // Make any newly ready completions visible to downstream consumers without consuming them
     pub fn advance_ready(&mut self, now: Cycle) {
+        if self.last_completion_cycle != now {
+            self.last_completion_cycle = now;
+            self.completions_this_cycle = 0;
+        }
+        let cap = self.config.completions_per_cycle;
         while let Some(front) = self.inflight.front() {
             if !front.ticket.is_ready(now) {
+                break;
+            }
+            if self.completions_this_cycle >= cap {
                 break;
             }
             let inflight = self.inflight.pop_front().expect("front just checked");
@@ -213,16 +260,22 @@ impl<T> TimedServer<T> {
                 payload: inflight.payload,
                 ticket: inflight.ticket,
             });
+            self.completions_this_cycle = self.completions_this_cycle.saturating_add(1);
+            self.stats.completed = self.stats.completed.saturating_add(1);
+            self.stats.bytes_completed = self
+                .stats
+                .bytes_completed
+                .saturating_add(inflight.ticket.size_bytes() as u64);
         }
     }
 
-    // Observe the next ready completion without consuming it.
+    // Observe the next ready completion without consuming it
     pub fn peek_ready(&mut self, now: Cycle) -> Option<&ServiceResult<T>> {
         self.advance_ready(now);
         self.ready.front()
     }
 
-    // Consume and return the next ready completion if one exists.
+    // Consume and return the next ready completion if one exists
     pub fn pop_ready(&mut self, now: Cycle) -> Option<ServiceResult<T>> {
         self.advance_ready(now);
         let result = self.ready.pop_front();
@@ -232,7 +285,7 @@ impl<T> TimedServer<T> {
         result
     }
 
-    // Number of outstanding requests (queued, inflight, or waiting to be drained).
+    // Number of outstanding requests (queued, inflight, or waiting to be drained)
     pub fn outstanding(&self) -> usize {
         self.outstanding_len()
     }
@@ -241,17 +294,22 @@ impl<T> TimedServer<T> {
         self.inflight.len() + self.ready.len()
     }
 
-    fn next_ready_cycle(&self, start: Cycle, size_bytes: u32) -> Cycle {
-        let service_cycles = ceil_div_u64(size_bytes as u64, self.config.bytes_per_cycle as u64);
-        start
-            .saturating_add(self.config.base_latency)
-            .saturating_add(service_cycles)
+    fn update_idle(&mut self, now: Cycle) {
+        if self.inflight.is_empty() && self.ready.is_empty() && now > self.next_issue_at {
+            self.next_issue_at = now;
+        }
     }
 
-    fn update_idle(&mut self, now: Cycle) {
-        if self.inflight.is_empty() && self.ready.is_empty() && now > self.busy_until {
-            self.busy_until = now;
-        }
+    pub fn stats(&self) -> ServerStats {
+        self.stats
+    }
+
+    pub fn clear_stats(&mut self) {
+        self.stats = ServerStats::default();
+    }
+
+    pub fn set_warmup_until(&mut self, cycle: Cycle) {
+        self.warmup_until = cycle;
     }
 }
 
@@ -275,6 +333,7 @@ mod tests {
             base_latency: 3,
             bytes_per_cycle: 4,
             queue_capacity: 4,
+            ..ServerConfig::default()
         });
 
         let ticket = server
@@ -285,21 +344,21 @@ mod tests {
         assert_eq!(8, ticket.size_bytes());
         // service time = base_latency (3) + ceil(8 / 4) = 5 cycles total
         assert_eq!(5, ticket.ready_at());
-
-        // second request queues behind the first and inherits the busy_until window
+        // second request pipelines one cycle behind the first
         let ticket1 = server
             .try_enqueue(1, ServiceRequest::new("req1", 4))
             .expect("second request should be accepted");
-        assert_eq!(9, ticket1.ready_at());
+        assert_eq!(6, ticket1.ready_at());
     }
 
     #[test]
-    // make sure that the server rejects requests when the queue is full
+    // Make sure that the server rejects requests when the queue is full
     fn queue_full_is_reported_when_capacity_reached() {
         let mut server = make_server(ServerConfig {
             base_latency: 0,
             bytes_per_cycle: 8,
             queue_capacity: 1,
+            ..ServerConfig::default()
         });
 
         server
@@ -313,12 +372,13 @@ mod tests {
     }
 
     #[test]
-    // make sure that completed requests are properly removed from the queue
+    // Make sure that completed requests are properly removed from the queue
     fn service_ready_drains_completed_requests() {
         let mut server = make_server(ServerConfig {
             base_latency: 1,
             bytes_per_cycle: 4,
             queue_capacity: 4,
+            ..ServerConfig::default()
         });
 
         server
@@ -332,27 +392,27 @@ mod tests {
         server.service_ready(1, |res| collected.push(res.payload));
         assert!(collected.is_empty(), "no requests ready yet");
 
-        server.service_ready(3, |res| collected.push(res.payload));
+        server.service_ready(2, |res| collected.push(res.payload));
         assert_eq!(vec!["req0"], collected);
 
-        server.service_ready(4, |res| collected.push(res.payload));
+        server.service_ready(3, |res| collected.push(res.payload));
         assert_eq!(vec!["req0", "req1"], collected);
 
-        assert_eq!(4, server.available_at());
+        assert_eq!(3, server.available_at());
     }
 
     #[test]
-    // make sure that servers can model warm up delays
-    // this will expect the Busy backpressure as the queue is empty but the server is not ready
+    // Make sure that servers can model warm up delays
+    // This will expect the Busy backpressure as the queue is empty but the server is not ready
     fn busy_backpressure_allows_warmup_modeling() {
         let mut server = make_server(ServerConfig {
             base_latency: 0,
             bytes_per_cycle: 4,
             queue_capacity: 2,
+            ..ServerConfig::default()
         });
 
-        // Simulate a warm-up delay before the first request can launch.
-        server.busy_until = 5;
+        server.set_warmup_until(5);
 
         match server.try_enqueue(0, ServiceRequest::new("req0", 4)) {
             Err(Backpressure::Busy { available_at, .. }) => assert_eq!(5, available_at),
@@ -366,12 +426,13 @@ mod tests {
     }
 
     #[test]
-    // make sure that zero-byte requests only incur base latency and no throughput delay
+    // Make sure that zero-byte requests only incur base latency and no throughput delay
     fn zero_byte_requests_complete_with_base_latency_only() {
         let mut server = make_server(ServerConfig {
             base_latency: 5,
             bytes_per_cycle: 8,
             queue_capacity: 4,
+            ..ServerConfig::default()
         });
 
         let ticket = server
@@ -383,20 +444,21 @@ mod tests {
         // Service time = base_latency (5) + ceil(0/8) = 5 + 0 = 5 cycles
         assert_eq!(15, ticket.ready_at());
 
-        // Second zero-byte request should queue behind the first
+        // Second zero-byte request should pipeline right after the first
         let ticket2 = server
             .try_enqueue(11, ServiceRequest::new("zero_bytes2", 0))
             .expect("second zero byte request should be accepted");
-        assert_eq!(20, ticket2.ready_at());
+        assert_eq!(16, ticket2.ready_at());
     }
 
     #[test]
-    // if we call service_ready() multiple times at the same cycle, it doesnt double drain the FIFO
+    // If we call service_ready() multiple times at the same cycle, it doesnt double drain the FIFO
     fn multiple_service_ready_calls_are_idempotent() {
         let mut server = make_server(ServerConfig {
             base_latency: 1,
             bytes_per_cycle: 4,
             queue_capacity: 4,
+            ..ServerConfig::default()
         });
 
         server
@@ -408,16 +470,16 @@ mod tests {
 
         let mut collected = Vec::new();
 
-        // First call at cycle 3 should drain req0
-        server.service_ready(3, |res| collected.push(res.payload));
+        // First call at cycle 2 should drain req0
+        server.service_ready(2, |res| collected.push(res.payload));
         assert_eq!(vec!["req0"], collected);
 
         // Second call at same cycle should be idempotent
-        server.service_ready(3, |res| collected.push(res.payload));
+        server.service_ready(2, |res| collected.push(res.payload));
         assert_eq!(vec!["req0"], collected);
 
-        // Call at cycle 4 should drain req1
-        server.service_ready(4, |res| collected.push(res.payload));
+        // Call at cycle 3 should drain req1
+        server.service_ready(3, |res| collected.push(res.payload));
         assert_eq!(vec!["req0", "req1"], collected);
 
         // Multiple calls at cycle 5+ should be idempotent
@@ -427,12 +489,13 @@ mod tests {
     }
 
     #[test]
-    // make sure rejected requests can be retried later
+    // Make sure rejected requests can be retried later
     fn requests_can_be_retried_after_backpressure() {
         let mut server = make_server(ServerConfig {
             base_latency: 1,
             bytes_per_cycle: 4,
             queue_capacity: 1,
+            ..ServerConfig::default()
         });
 
         // Fill the queue with one request
@@ -463,16 +526,16 @@ mod tests {
     }
 
     #[test]
-    // rejected requests due to Busy signal can also be retried later
+    // Rejected requests due to Busy signal can be retried later
     fn busy_backpressure_can_also_be_retried() {
         let mut server = make_server(ServerConfig {
             base_latency: 2,
             bytes_per_cycle: 4,
             queue_capacity: 2,
+            ..ServerConfig::default()
         });
 
-        // Set server to be busy until cycle 10
-        server.busy_until = 10;
+        server.set_warmup_until(10);
 
         // Request at cycle 5 should be rejected with Busy
         let rejected_request = match server.try_enqueue(5, ServiceRequest::new("busy_req", 4)) {
@@ -494,12 +557,13 @@ mod tests {
     }
 
     #[test]
-    // if we have huge cycle numbers, make sure we don't overflow when computing ready_at
+    // If we have huge cycle numbers, make sure we don't overflow when computing ready_at
     fn large_cycles_dont_overflow() {
         let mut server = make_server(ServerConfig {
             base_latency: 1000,
             bytes_per_cycle: 1,
             queue_capacity: 4,
+            ..ServerConfig::default()
         });
 
         // Use a very large cycle number close to u64::MAX
@@ -517,29 +581,24 @@ mod tests {
     }
 
     #[test]
-    // make sure arithmetic operations saturate rather than overflows
+    // Make sure arithmetic operations saturate rather than overflows
     fn saturating_arithmetic_prevents_overflow() {
         let mut server = make_server(ServerConfig {
             base_latency: 1000,
             bytes_per_cycle: 1,
             queue_capacity: 4,
+            ..ServerConfig::default()
         });
 
-        // Set busy_until very close to u64::MAX
-        server.busy_until = u64::MAX - 500;
-
-        // Request at a time when server is not busy (after busy_until)
-        // This should saturate rather than overflow
         let ticket = server
             .try_enqueue(u64::MAX - 400, ServiceRequest::new("near_max", 1000))
             .expect("near max cycle request should be accepted when server not busy");
 
-        // The ready_at should be u64::MAX due to saturating_add
         assert_eq!(u64::MAX, ticket.ready_at());
     }
 
     #[test]
-    // some edge cases for remaining_cycles (exactly ready, past ready)
+    // Some edge cases for remaining_cycles (exactly ready, past ready)
     fn ticket_remaining_cycles_handles_edge_cases() {
         let ticket = Ticket::new(100, 150, 32);
 
@@ -557,11 +616,14 @@ mod tests {
     }
 
     #[test]
+    // Verify that peek_ready allows observing completions without consuming them,
+    // and pop_ready actually removes them from the queue
     fn peek_and_pop_ready_allow_backpressure_control() {
         let mut server = make_server(ServerConfig {
             base_latency: 1,
             bytes_per_cycle: 4,
             queue_capacity: 2,
+            ..ServerConfig::default()
         });
 
         server
@@ -586,5 +648,87 @@ mod tests {
         // After popping, there is no outstanding work.
         assert!(server.pop_ready(5).is_none());
         assert_eq!(server.outstanding(), 0);
+    }
+
+    #[test]
+    // Ensure that multiple requests can be in-flight simultaneously and pipeline correctly,
+    // with each request starting service as soon as throughput allows
+    fn pipelined_requests_overlap() {
+        let mut server = make_server(ServerConfig {
+            base_latency: 2,
+            bytes_per_cycle: 4,
+            queue_capacity: 4,
+            ..ServerConfig::default()
+        });
+
+        let t0 = server
+            .try_enqueue(0, ServiceRequest::new("req0", 8))
+            .unwrap();
+        let t1 = server
+            .try_enqueue(1, ServiceRequest::new("req1", 8))
+            .unwrap();
+        let t2 = server
+            .try_enqueue(2, ServiceRequest::new("req2", 8))
+            .unwrap();
+
+        assert_eq!(0, t0.issued_at());
+        assert_eq!(4, t0.ready_at()); // 2 + ceil(8/4)=4
+        assert_eq!(6, t1.ready_at()); // launches two cycles later while req0 still pending
+        assert_eq!(8, t2.ready_at());
+    }
+
+    #[test]
+    // Verify that completions_per_cycle limits how many results can be surfaced in a single cycle,
+    // even if multiple requests have already finished processing
+    fn completion_bandwidth_limits_visible_results() {
+        let mut server = make_server(ServerConfig {
+            base_latency: 0,
+            bytes_per_cycle: 4,
+            queue_capacity: 4,
+            completions_per_cycle: 1,
+            ..ServerConfig::default()
+        });
+
+        server
+            .try_enqueue(0, ServiceRequest::new("req0", 4))
+            .unwrap();
+        server
+            .try_enqueue(0, ServiceRequest::new("req1", 4))
+            .unwrap();
+
+        // Both requests mature by cycle 1, but only one completion can be surfaced per cycle
+        assert!(server.pop_ready(1).is_some());
+        // Second completion becomes visible on the next cycle
+        assert!(server.pop_ready(1).is_none());
+        assert!(server.pop_ready(2).is_some());
+    }
+
+    #[test]
+    // Ensure that ServerStats correctly tracks request issuance, completion,
+    // byte counts, and maximum outstanding queue depth
+    fn server_stats_track_activity() {
+        let mut server = make_server(ServerConfig {
+            base_latency: 1,
+            bytes_per_cycle: 4,
+            queue_capacity: 2,
+            ..ServerConfig::default()
+        });
+
+        server
+            .try_enqueue(0, ServiceRequest::new("req0", 4))
+            .unwrap();
+        server
+            .try_enqueue(1, ServiceRequest::new("req1", 8))
+            .unwrap();
+
+        server.pop_ready(2);
+        server.pop_ready(4);
+
+        let stats = server.stats();
+        assert_eq!(2, stats.issued);
+        assert_eq!(2, stats.completed);
+        assert_eq!(12, stats.bytes_issued);
+        assert_eq!(12, stats.bytes_completed);
+        assert_eq!(2, stats.max_outstanding);
     }
 }

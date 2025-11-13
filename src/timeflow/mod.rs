@@ -485,16 +485,22 @@ impl Default for GmemFlowConfig {
                 base_latency: 1,
                 bytes_per_cycle: 16,
                 queue_capacity: 16,
+                completions_per_cycle: u32::MAX,
+                warmup_latency: 0,
             },
             cache: ServerConfig {
                 base_latency: 4,
                 bytes_per_cycle: 32,
                 queue_capacity: 32,
+                completions_per_cycle: u32::MAX,
+                warmup_latency: 0,
             },
             dram: ServerConfig {
                 base_latency: 80,
                 bytes_per_cycle: 16,
                 queue_capacity: 64,
+                completions_per_cycle: u32::MAX,
+                warmup_latency: 0,
             },
             link_capacity: 16,
         }
@@ -739,11 +745,13 @@ impl Default for SmemFlowConfig {
                 base_latency: 1,
                 bytes_per_cycle: 32,
                 queue_capacity: 32,
+                ..ServerConfig::default()
             },
             bank: ServerConfig {
                 base_latency: 2,
                 bytes_per_cycle: 64,
                 queue_capacity: 32,
+                ..ServerConfig::default()
             },
             num_banks: 1,
             link_capacity: 32,
@@ -981,6 +989,7 @@ mod tests {
                 base_latency: 1,
                 bytes_per_cycle: 4,
                 queue_capacity: 4,
+                ..ServerConfig::default()
             }),
         );
         let node1 = ServerNode::new(
@@ -989,6 +998,7 @@ mod tests {
                 base_latency: 2,
                 bytes_per_cycle: 4,
                 queue_capacity: 4,
+                ..ServerConfig::default()
             }),
         );
 
@@ -1028,6 +1038,7 @@ mod tests {
                 base_latency: 0,
                 bytes_per_cycle: 4,
                 queue_capacity: 4,
+                ..ServerConfig::default()
             }),
         );
         let node1 = ServerNode::new(
@@ -1036,6 +1047,7 @@ mod tests {
                 base_latency: 10,
                 bytes_per_cycle: 4,
                 queue_capacity: 1,
+                ..ServerConfig::default()
             }),
         );
 
@@ -1073,16 +1085,19 @@ mod tests {
             base_latency: 1,
             bytes_per_cycle: 4,
             queue_capacity: 4,
+            ..ServerConfig::default()
         };
         cfg.gmem.cache = ServerConfig {
             base_latency: 2,
             bytes_per_cycle: 4,
             queue_capacity: 4,
+            ..ServerConfig::default()
         };
         cfg.gmem.dram = ServerConfig {
             base_latency: 3,
             bytes_per_cycle: 4,
             queue_capacity: 4,
+            ..ServerConfig::default()
         };
 
         let mut core_graph = CoreGraph::new(cfg);
