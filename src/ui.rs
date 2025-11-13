@@ -43,7 +43,7 @@ pub fn make_sim(toml_string: &str, cli_args: Option<CyclotronArgs>) -> Sim {
 
     // override toml configs with CLI args
     if let Some(args) = cli_args {
-        sim_config.elf = args.binary_path.unwrap_or(sim_config.elf); 
+        sim_config.elf = args.binary_path.unwrap_or(sim_config.elf);
         sim_config.log_level = args.log.unwrap_or(sim_config.log_level);
         sim_config.trace = args.gen_trace.unwrap_or(sim_config.trace);
         muon_config.num_lanes = args.num_lanes.unwrap_or(muon_config.num_lanes);

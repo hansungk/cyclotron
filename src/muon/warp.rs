@@ -11,13 +11,13 @@ use crate::muon::scheduler::{Schedule, Scheduler, SchedulerWriteback};
 use crate::neutrino::neutrino::Neutrino;
 use crate::sim::flat_mem::FlatMemory;
 use crate::sim::log::Logger;
+use crate::timeflow::{GmemRequest, SmemRequest};
+use crate::timeq::{module_now, Cycle};
 use std::fmt::Debug;
 use std::fmt::{Display, Formatter};
 use std::iter::zip;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{Arc, RwLock};
-use crate::timeflow::GmemRequest;
-use crate::timeq::{module_now, Cycle};
 #[derive(Debug, Default)]
 pub struct WarpState {
     pub reg_file: Vec<RegFile>,
@@ -93,13 +93,21 @@ impl Display for Writeback {
 }
 
 impl Warp {
-    pub fn new(config: Arc<MuonConfig>, logger: &Arc<Logger>, gmem: Arc<RwLock<FlatMemory>>) -> Warp {
+    pub fn new(
+        config: Arc<MuonConfig>,
+        logger: &Arc<Logger>,
+        gmem: Arc<RwLock<FlatMemory>>,
+    ) -> Warp {
         let num_lanes = config.num_lanes;
         let mut me = Warp {
             base: ModuleBase {
                 state: WarpState {
-                    reg_file: (0..num_lanes).map(|i| RegFile::new(config.clone(), i)).collect(),
-                    csr_file: (0..num_lanes).map(|i| CSRFile::new(config.clone(), i)).collect(),
+                    reg_file: (0..num_lanes)
+                        .map(|i| RegFile::new(config.clone(), i))
+                        .collect(),
+                    csr_file: (0..num_lanes)
+                        .map(|i| CSRFile::new(config.clone(), i))
+                        .collect(),
                 },
                 ..ModuleBase::default()
             },
@@ -160,11 +168,36 @@ impl Warp {
         // TODO: verify that this step doesnt modify
         scheduler.state_mut().thread_masks[self.wid] = tmask;
 
-        if self
-            .issue_gmem_request(decoded.opcode, decoded.f3, tmask, scheduler, timing_model, now)
-            .is_err()
-        {
-            return Ok(None);
+        if decoded.opcode == Opcode::LOAD || decoded.opcode == Opcode::STORE {
+            if decoded.opext == 1 {
+                if self
+                    .issue_smem_request(
+                        decoded.opcode,
+                        decoded.f3,
+                        decoded.opcode == Opcode::LOAD,
+                        tmask,
+                        scheduler,
+                        timing_model,
+                        now,
+                    )
+                    .is_err()
+                {
+                    return Ok(None);
+                }
+            } else if self
+                .issue_gmem_request(
+                    decoded.opcode,
+                    decoded.opext,
+                    decoded.f3,
+                    tmask,
+                    scheduler,
+                    timing_model,
+                    now,
+                )
+                .is_err()
+            {
+                return Ok(None);
+            }
         }
 
         // operand collection
@@ -249,7 +282,11 @@ impl Warp {
         }
     }
 
-    pub fn set_block_threads(&mut self, block_idx: (u32, u32, u32), thread_idxs: &Vec<(u32, u32, u32)>) {
+    pub fn set_block_threads(
+        &mut self,
+        block_idx: (u32, u32, u32),
+        thread_idxs: &Vec<(u32, u32, u32)>,
+    ) {
         assert!(thread_idxs.len() <= self.base.state.csr_file.len());
         assert!(thread_idxs.len() > 0);
         for (csr_file, thread_idx) in zip(self.base.state.csr_file.iter_mut(), thread_idxs.iter()) {
@@ -260,14 +297,17 @@ impl Warp {
     fn issue_gmem_request(
         &self,
         opcode: u8,
+        opext: u8,
         f3: u8,
         tmask: u32,
         scheduler: &mut Scheduler,
         timing_model: &mut CoreTimingModel,
         now: Cycle,
     ) -> Result<(), ()> {
-        let opcode_u16 = opcode as u16;
-        if opcode_u16 != (Opcode::LOAD as u16) && opcode_u16 != (Opcode::STORE as u16) {
+        if opext == 1 {
+            return Ok(());
+        }
+        if opcode != Opcode::LOAD && opcode != Opcode::STORE {
             return Ok(());
         }
 
@@ -278,15 +318,40 @@ impl Warp {
 
         let bytes_per_lane = 1u32 << (f3 & 3);
         let total_bytes = bytes_per_lane.saturating_mul(active_lanes);
-        let request = GmemRequest::new(
-            self.wid,
-            total_bytes.max(1),
-            tmask,
-            opcode_u16 == (Opcode::LOAD as u16),
-        );
+        let request = GmemRequest::new(self.wid, total_bytes.max(1), tmask, opcode == Opcode::LOAD);
 
         timing_model
             .issue_gmem_request(now, self.wid, request, scheduler)
+            .map(|_| ())
+            .map_err(|_| ())
+    }
+
+    fn issue_smem_request(
+        &self,
+        opcode: u8,
+        f3: u8,
+        is_load: bool,
+        tmask: u32,
+        scheduler: &mut Scheduler,
+        timing_model: &mut CoreTimingModel,
+        now: Cycle,
+    ) -> Result<(), ()> {
+        if opcode != Opcode::LOAD && opcode != Opcode::STORE {
+            return Ok(());
+        }
+
+        let active_lanes = tmask.count_ones();
+        if active_lanes == 0 {
+            return Ok(());
+        }
+
+        let bytes_per_lane = 1u32 << (f3 & 3);
+        let total_bytes = bytes_per_lane.saturating_mul(active_lanes);
+        let bank = self.wid;
+        let request = SmemRequest::new(self.wid, total_bytes.max(1), tmask, !is_load, bank);
+
+        timing_model
+            .issue_smem_request(now, self.wid, request, scheduler)
             .map(|_| ())
             .map_err(|_| ())
     }

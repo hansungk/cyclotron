@@ -1,14 +1,14 @@
-use std::collections::VecDeque;
-use std::iter::{once, repeat};
-use std::sync::Arc;
-use log::info;
 use crate::base::behavior::*;
-use crate::base::module::{module, ModuleBase, IsModule};
+use crate::base::module::{module, IsModule, ModuleBase};
 use crate::muon::config::MuonConfig;
 use crate::muon::decode::IssuedInst;
 use crate::muon::execute::SFUType;
 use crate::timeq::Cycle;
 use crate::utils::{BitMask, BitSlice};
+use log::info;
+use std::collections::VecDeque;
+use std::iter::{once, repeat};
+use std::sync::Arc;
 
 #[derive(Debug, Default)]
 pub struct IpdomEntry {
@@ -20,7 +20,7 @@ pub struct IpdomEntry {
 pub struct IpdomPush {
     pub restored_mask: u32,
     pub else_mask: u32,
-    pub else_pc: u32
+    pub else_pc: u32,
 }
 
 #[derive(Debug, Default)]
@@ -86,7 +86,7 @@ impl Scheduler {
                 },
                 ..ModuleBase::default()
             },
-            cid
+            cid,
         };
         me.init_conf(config);
         me
@@ -101,20 +101,30 @@ impl Scheduler {
 
     pub fn spawn_n_warps(&mut self, pc: u32, thread_idxs: &Vec<Vec<(u32, u32, u32)>>) {
         let all_ones = u32::MAX; // 0xFFFF
-        let last_warp_mask = thread_idxs.last().expect("last warp is empty").iter().enumerate().fold(0, |mask, (i, _)| mask | 1 << i);
+        let last_warp_mask = thread_idxs
+            .last()
+            .expect("last warp is empty")
+            .iter()
+            .enumerate()
+            .fold(0, |mask, (i, _)| mask | 1 << i);
         let num_warps = thread_idxs.len();
         let disabled_warps = self.conf().num_warps - num_warps;
         assert!(disabled_warps <= self.conf().num_warps);
 
         self.state_mut().started = true;
-        self.state_mut().thread_masks = repeat(all_ones).take(num_warps - 1).chain(once(last_warp_mask)).chain(repeat(0).take(disabled_warps)).collect();
+        self.state_mut().thread_masks = repeat(all_ones)
+            .take(num_warps - 1)
+            .chain(once(last_warp_mask))
+            .chain(repeat(0).take(disabled_warps))
+            .collect();
         self.state_mut().pc = [pc].repeat(num_warps);
         self.base.state.active_warps = num_warps as u32;
     }
 
     pub fn take_branch(&mut self, wid: usize, target_pc: u32) -> SchedulerWriteback {
         self.base.state.pc[wid] = target_pc;
-        if target_pc == 0 { // returned from main
+        if target_pc == 0 {
+            // returned from main
             self.base.state.thread_masks[wid] = 0;
             self.base.state.active_warps.mut_bit(wid, false);
         }
@@ -124,11 +134,22 @@ impl Scheduler {
         }
     }
 
-    pub fn sfu(&mut self, wid: usize, first_lid: usize, sfu: SFUType,
-               decoded_inst: &IssuedInst, rs1: Vec<u32>, rs2: Vec<u32>) -> SchedulerWriteback {
+    pub fn sfu(
+        &mut self,
+        wid: usize,
+        first_lid: usize,
+        sfu: SFUType,
+        decoded_inst: &IssuedInst,
+        rs1: Vec<u32>,
+        rs2: Vec<u32>,
+    ) -> SchedulerWriteback {
         // for warp-wide operations, we take lane 0 to be the truth
         self.base.state.pc[wid] = decoded_inst.pc + 8; // flush
-        info!("processing writeback for {}: resetting next pc to 0x{:08x}", wid, decoded_inst.pc + 8);
+        info!(
+            "processing writeback for {}: resetting next pc to 0x{:08x}",
+            wid,
+            decoded_inst.pc + 8
+        );
         match sfu {
             SFUType::TMC => {
                 let tmask = rs1[first_lid];
@@ -174,8 +195,10 @@ impl Scheduler {
                 // let then_mask_int = then_mask.to_u32();
                 // let else_mask_int = else_mask.to_u32();
 
-                info!("split warp {}: then_mask={:08b}, else_mask={:08b}, invert={}",
-                    wid, then_mask, else_mask, invert);
+                info!(
+                    "split warp {}: then_mask={:08b}, else_mask={:08b}, invert={}",
+                    wid, then_mask, else_mask, invert
+                );
 
                 // NOTE: we should not need to push non-divergent branches
                 // to the ipdom stack if we write back divergence to RD
@@ -209,10 +232,13 @@ impl Scheduler {
                 }
             }
             SFUType::JOIN => {
-                let entry = self.base.state.ipdom_stack[wid].pop_back()
+                let entry = self.base.state.ipdom_stack[wid]
+                    .pop_back()
                     .expect("join without split");
-                info!("join warp {}: pc=0x{:08x}, tmask={:b}",
-                      wid, entry.pc, entry.tmask);
+                info!(
+                    "join warp {}: pc=0x{:08x}, tmask={:b}",
+                    wid, entry.pc, entry.tmask
+                );
                 if entry.pc > 0 {
                     self.base.state.pc[wid] = entry.pc;
                 }
@@ -229,9 +255,11 @@ impl Scheduler {
                 // let pred_mask: Vec<_> = wb.insts.iter()
                 //     .map(|d| d.is_some_and(|dd| dd.rs1.bit(0) ^ invert))
                 //     .collect();
-                let pred_mask = rs1.iter()
+                let pred_mask = rs1
+                    .iter()
                     .map(|r| r.bit(0) ^ invert)
-                    .collect::<Vec<_>>().to_u32();
+                    .collect::<Vec<_>>()
+                    .to_u32();
                 self.base.state.thread_masks[wid] &= pred_mask;
 
                 // if all threads are not active, set thread mask to rs2 of warp leader
@@ -328,7 +356,12 @@ impl Scheduler {
     }
 
     pub fn resource_pending(&self, wid: usize) -> bool {
-        self.base.state.resource_pending.get(wid).copied().unwrap_or(false)
+        self.base
+            .state
+            .resource_pending
+            .get(wid)
+            .copied()
+            .unwrap_or(false)
     }
 
     pub fn set_resource_wait_until(&mut self, wid: usize, wait_until: Option<Cycle>) {
@@ -371,15 +404,16 @@ impl Scheduler {
     }
 }
 
-module!(Scheduler, SchedulerState, MuonConfig,
-);
+module!(Scheduler, SchedulerState, MuonConfig,);
 
 impl ModuleBehaviors for Scheduler {
     fn tick_one(&mut self) {
         self.base.cycle += 1;
         self.recompute_stall_masks();
-        info!("core {} active warps {:08b} stalled warps {:08b}",
-              self.cid, self.base.state.active_warps, self.base.state.stalled_warps);
+        info!(
+            "core {} active warps {:08b} stalled warps {:08b}",
+            self.cid, self.base.state.active_warps, self.base.state.stalled_warps
+        );
     }
 
     fn reset(&mut self) {

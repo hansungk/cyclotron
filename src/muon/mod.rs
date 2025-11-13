@@ -1,9 +1,9 @@
 pub mod core;
-pub mod execute;
 pub mod decode;
+pub mod execute;
 // mod isa;
+pub mod config;
 pub mod csr;
+pub mod gmem;
 pub mod scheduler;
 pub mod warp;
-pub mod config;
-pub mod gmem;

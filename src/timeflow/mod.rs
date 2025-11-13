@@ -1,6 +1,7 @@
 use std::collections::VecDeque;
+use std::sync::Arc;
 
-use crate::timeq::{Backpressure, Cycle, ServiceRequest, ServiceResult, TimedServer, Ticket};
+use crate::timeq::{Backpressure, Cycle, ServiceRequest, ServiceResult, Ticket, TimedServer};
 
 pub type NodeId = usize;
 pub type LinkId = usize;
@@ -34,7 +35,10 @@ impl<T> LinkEntry<T> {
     }
 
     fn from_parts(request: ServiceRequest<T>, ticket: Ticket) -> Self {
-        let ServiceRequest { payload, size_bytes } = request;
+        let ServiceRequest {
+            payload,
+            size_bytes,
+        } = request;
         let result = ServiceResult { payload, ticket };
         Self { result, size_bytes }
     }
@@ -121,6 +125,8 @@ pub struct EdgeStats {
     pub last_delivery_cycle: Option<Cycle>,
 }
 
+type EdgePredicate<T> = Arc<dyn Fn(&T) -> bool + Send + Sync>;
+
 struct Edge<T> {
     _name: String,
     buffer: Link<T>,
@@ -128,10 +134,17 @@ struct Edge<T> {
     dst: NodeId,
     stats: EdgeStats,
     next_retry_cycle: Cycle,
+    predicate: Option<EdgePredicate<T>>,
 }
 
 impl<T> Edge<T> {
-    fn new(name: impl Into<String>, buffer: Link<T>, src: NodeId, dst: NodeId) -> Self {
+    fn new(
+        name: impl Into<String>,
+        buffer: Link<T>,
+        src: NodeId,
+        dst: NodeId,
+        predicate: Option<EdgePredicate<T>>,
+    ) -> Self {
         Self {
             _name: name.into(),
             buffer,
@@ -139,6 +152,7 @@ impl<T> Edge<T> {
             dst,
             stats: EdgeStats::default(),
             next_retry_cycle: 0,
+            predicate,
         }
     }
 }
@@ -242,6 +256,24 @@ impl<T: Send + Sync + 'static> FlowGraph<T> {
         id
     }
 
+    fn connect_internal(
+        &mut self,
+        src: NodeId,
+        dst: NodeId,
+        link_name: impl Into<String>,
+        buffer: Link<T>,
+        predicate: Option<EdgePredicate<T>>,
+    ) -> LinkId {
+        assert!(src < self.nodes.len(), "invalid src node");
+        assert!(dst < self.nodes.len(), "invalid dst node");
+        let id = self.edges.len();
+        self.edges
+            .push(Edge::new(link_name, buffer, src, dst, predicate));
+        self.nodes[src].outputs.push(id);
+        self.nodes[dst].inputs.push(id);
+        id
+    }
+
     pub fn connect(
         &mut self,
         src: NodeId,
@@ -249,13 +281,18 @@ impl<T: Send + Sync + 'static> FlowGraph<T> {
         link_name: impl Into<String>,
         buffer: Link<T>,
     ) -> LinkId {
-        assert!(src < self.nodes.len(), "invalid src node");
-        assert!(dst < self.nodes.len(), "invalid dst node");
-        let id = self.edges.len();
-        self.edges.push(Edge::new(link_name, buffer, src, dst));
-        self.nodes[src].outputs.push(id);
-        self.nodes[dst].inputs.push(id);
-        id
+        self.connect_internal(src, dst, link_name, buffer, None)
+    }
+
+    pub fn connect_filtered(
+        &mut self,
+        src: NodeId,
+        dst: NodeId,
+        link_name: impl Into<String>,
+        buffer: Link<T>,
+        predicate: impl Fn(&T) -> bool + Send + Sync + 'static,
+    ) -> LinkId {
+        self.connect_internal(src, dst, link_name, buffer, Some(Arc::new(predicate)))
     }
 
     pub fn try_put(
@@ -264,9 +301,7 @@ impl<T: Send + Sync + 'static> FlowGraph<T> {
         now: Cycle,
         request: ServiceRequest<T>,
     ) -> Result<Ticket, Backpressure<T>> {
-        self.nodes[node_id]
-            .node
-            .try_put(now, request)
+        self.nodes[node_id].node.try_put(now, request)
     }
 
     pub fn tick(&mut self, now: Cycle) {
@@ -277,13 +312,24 @@ impl<T: Send + Sync + 'static> FlowGraph<T> {
         for edge_id in 0..self.edges.len() {
             let src = self.edges[edge_id].src;
             loop {
-                let size_bytes = {
+                let (size_bytes, should_route) = {
                     let src_node = &mut self.nodes[src];
                     match src_node.node.peek_ready(now) {
-                        Some(result) => result.ticket.size_bytes(),
+                        Some(result) => {
+                            let predicate_pass = self.edges[edge_id]
+                                .predicate
+                                .as_ref()
+                                .map(|pred| pred(&result.payload))
+                                .unwrap_or(true);
+                            (result.ticket.size_bytes(), predicate_pass)
+                        }
                         None => break,
                     }
                 };
+
+                if !should_route {
+                    break;
+                }
 
                 if !self.edges[edge_id].buffer.can_accept(size_bytes) {
                     break;
@@ -334,11 +380,8 @@ impl<T: Send + Sync + 'static> FlowGraph<T> {
                         let restored = LinkEntry::from_parts(request, ticket);
                         self.edges[edge_id].buffer.push_front(restored);
                         self.edges[edge_id].stats.downstream_backpressure += 1;
-                        self.edges[edge_id].next_retry_cycle = if retry_at <= now {
-                            min_retry
-                        } else {
-                            retry_at
-                        };
+                        self.edges[edge_id].next_retry_cycle =
+                            if retry_at <= now { min_retry } else { retry_at };
                         break;
                     }
                 }
@@ -461,17 +504,20 @@ impl Default for GmemFlowConfig {
 #[derive(Debug, Clone)]
 pub enum CoreFlowPayload {
     Gmem(GmemRequest),
+    Smem(SmemRequest),
 }
 
 #[derive(Debug, Clone)]
 pub struct CoreGraphConfig {
     pub gmem: GmemFlowConfig,
+    pub smem: SmemFlowConfig,
 }
 
 impl Default for CoreGraphConfig {
     fn default() -> Self {
         Self {
             gmem: GmemFlowConfig::default(),
+            smem: SmemFlowConfig::default(),
         }
     }
 }
@@ -490,14 +536,8 @@ impl GmemSubgraph {
             "coalescer",
             TimedServer::new(config.coalescer),
         ));
-        let cache_node = graph.add_node(ServerNode::new(
-            "l2",
-            TimedServer::new(config.cache),
-        ));
-        let dram_node = graph.add_node(ServerNode::new(
-            "dram",
-            TimedServer::new(config.dram),
-        ));
+        let cache_node = graph.add_node(ServerNode::new("l2", TimedServer::new(config.cache)));
+        let dram_node = graph.add_node(ServerNode::new("dram", TimedServer::new(config.dram)));
 
         graph.connect(
             ingress_node,
@@ -544,10 +584,7 @@ impl GmemSubgraph {
         match graph.try_put(self.ingress_node, now, service_req) {
             Ok(ticket) => {
                 self.stats.issued = self.stats.issued.saturating_add(1);
-                self.stats.bytes_issued = self
-                    .stats
-                    .bytes_issued
-                    .saturating_add(bytes as u64);
+                self.stats.bytes_issued = self.stats.bytes_issued.saturating_add(bytes as u64);
                 self.stats.inflight = self.stats.inflight.saturating_add(1);
                 self.stats.max_inflight = self.stats.max_inflight.max(self.stats.inflight);
                 Ok(GmemIssue {
@@ -586,11 +623,7 @@ impl GmemSubgraph {
         }
     }
 
-    fn collect_completions(
-        &mut self,
-        graph: &mut FlowGraph<CoreFlowPayload>,
-        now: Cycle,
-    ) {
+    fn collect_completions(&mut self, graph: &mut FlowGraph<CoreFlowPayload>, now: Cycle) {
         let completions = &mut self.completions;
         graph.with_node_mut(self.dram_node, |node| {
             while let Some(result) = node.take_ready(now) {
@@ -609,6 +642,7 @@ impl GmemSubgraph {
                             request,
                         });
                     }
+                    CoreFlowPayload::Smem(_) => continue,
                 }
             }
         });
@@ -622,19 +656,259 @@ impl GmemSubgraph {
 fn extract_gmem_request(request: ServiceRequest<CoreFlowPayload>) -> GmemRequest {
     match request.payload {
         CoreFlowPayload::Gmem(req) => req,
+        _ => panic!("expected gmem request"),
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SmemRequest {
+    pub id: u64,
+    pub warp: usize,
+    pub bytes: u32,
+    pub active_lanes: u32,
+    pub is_store: bool,
+    pub bank: usize,
+}
+
+impl SmemRequest {
+    pub fn new(warp: usize, bytes: u32, active_lanes: u32, is_store: bool, bank: usize) -> Self {
+        Self {
+            id: 0,
+            warp,
+            bytes,
+            active_lanes,
+            is_store,
+            bank,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SmemCompletion {
+    pub request: SmemRequest,
+    pub ticket_ready_at: Cycle,
+    pub completed_at: Cycle,
+}
+
+#[derive(Debug, Clone)]
+pub struct SmemIssue {
+    pub request_id: u64,
+    pub ticket: Ticket,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SmemRejectReason {
+    QueueFull,
+    Busy,
+}
+
+#[derive(Debug, Clone)]
+pub struct SmemReject {
+    pub request: SmemRequest,
+    pub retry_at: Cycle,
+    pub reason: SmemRejectReason,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SmemStats {
+    pub issued: u64,
+    pub completed: u64,
+    pub queue_full_rejects: u64,
+    pub busy_rejects: u64,
+    pub bytes_issued: u64,
+    pub bytes_completed: u64,
+    pub inflight: u64,
+    pub max_inflight: u64,
+    pub max_completion_queue: u64,
+    pub last_completion_cycle: Option<Cycle>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SmemFlowConfig {
+    pub crossbar: crate::timeq::ServerConfig,
+    pub bank: crate::timeq::ServerConfig,
+    pub num_banks: usize,
+    pub link_capacity: usize,
+}
+
+impl Default for SmemFlowConfig {
+    fn default() -> Self {
+        use crate::timeq::ServerConfig;
+        Self {
+            crossbar: ServerConfig {
+                base_latency: 1,
+                bytes_per_cycle: 32,
+                queue_capacity: 32,
+            },
+            bank: ServerConfig {
+                base_latency: 2,
+                bytes_per_cycle: 64,
+                queue_capacity: 32,
+            },
+            num_banks: 1,
+            link_capacity: 32,
+        }
+    }
+}
+
+struct SmemSubgraph {
+    ingress_node: NodeId,
+    bank_nodes: Vec<NodeId>,
+    completions: VecDeque<SmemCompletion>,
+    next_id: u64,
+    stats: SmemStats,
+}
+
+impl SmemSubgraph {
+    fn attach(graph: &mut FlowGraph<CoreFlowPayload>, config: &SmemFlowConfig) -> Self {
+        assert!(config.num_banks > 0, "SMEM must have at least one bank");
+        let ingress_node = graph.add_node(ServerNode::new(
+            "smem_crossbar",
+            TimedServer::new(config.crossbar),
+        ));
+
+        let mut bank_nodes = Vec::with_capacity(config.num_banks);
+        for bank_idx in 0..config.num_banks {
+            let bank_mod = bank_idx;
+            let num_banks = config.num_banks;
+            let node = graph.add_node(ServerNode::new(
+                format!("smem_bank_{bank_idx}"),
+                TimedServer::new(config.bank),
+            ));
+            graph.connect_filtered(
+                ingress_node,
+                node,
+                format!("smem_xbar->bank_{bank_idx}"),
+                Link::new(config.link_capacity),
+                move |payload| match payload {
+                    CoreFlowPayload::Smem(req) => (req.bank % num_banks) == bank_mod,
+                    _ => false,
+                },
+            );
+            bank_nodes.push(node);
+        }
+
+        Self {
+            ingress_node,
+            bank_nodes,
+            completions: VecDeque::new(),
+            next_id: 0,
+            stats: SmemStats::default(),
+        }
+    }
+
+    fn issue(
+        &mut self,
+        graph: &mut FlowGraph<CoreFlowPayload>,
+        now: Cycle,
+        mut request: SmemRequest,
+    ) -> Result<SmemIssue, SmemReject> {
+        let assigned_id = if request.id == 0 {
+            let id = self.next_id;
+            self.next_id += 1;
+            id
+        } else {
+            self.next_id = self.next_id.max(request.id + 1);
+            request.id
+        };
+        request.id = assigned_id;
+
+        let bytes = request.bytes;
+        let payload = CoreFlowPayload::Smem(request);
+        let service_req = ServiceRequest::new(payload, bytes);
+
+        match graph.try_put(self.ingress_node, now, service_req) {
+            Ok(ticket) => {
+                self.stats.issued = self.stats.issued.saturating_add(1);
+                self.stats.bytes_issued = self.stats.bytes_issued.saturating_add(bytes as u64);
+                self.stats.inflight = self.stats.inflight.saturating_add(1);
+                self.stats.max_inflight = self.stats.max_inflight.max(self.stats.inflight);
+                Ok(SmemIssue {
+                    request_id: assigned_id,
+                    ticket,
+                })
+            }
+            Err(bp) => match bp {
+                Backpressure::Busy {
+                    request,
+                    available_at,
+                } => {
+                    self.stats.busy_rejects += 1;
+                    let mut retry_at = available_at;
+                    if retry_at <= now {
+                        retry_at = now.saturating_add(1);
+                    }
+                    let request = extract_smem_request(request);
+                    Err(SmemReject {
+                        request,
+                        retry_at,
+                        reason: SmemRejectReason::Busy,
+                    })
+                }
+                Backpressure::QueueFull { request, .. } => {
+                    self.stats.queue_full_rejects += 1;
+                    let retry_at = now.saturating_add(1);
+                    let request = extract_smem_request(request);
+                    Err(SmemReject {
+                        request,
+                        retry_at,
+                        reason: SmemRejectReason::QueueFull,
+                    })
+                }
+            },
+        }
+    }
+
+    fn collect_completions(&mut self, graph: &mut FlowGraph<CoreFlowPayload>, now: Cycle) {
+        for &bank_node in &self.bank_nodes {
+            graph.with_node_mut(bank_node, |node| {
+                while let Some(result) = node.take_ready(now) {
+                    match result.payload {
+                        CoreFlowPayload::Smem(request) => {
+                            self.stats.completed = self.stats.completed.saturating_add(1);
+                            self.stats.bytes_completed = self
+                                .stats
+                                .bytes_completed
+                                .saturating_add(request.bytes as u64);
+                            self.stats.inflight = self.stats.inflight.saturating_sub(1);
+                            self.stats.last_completion_cycle = Some(now);
+                            self.completions.push_back(SmemCompletion {
+                                ticket_ready_at: result.ticket.ready_at(),
+                                completed_at: now,
+                                request,
+                            });
+                        }
+                        _ => {}
+                    }
+                }
+            });
+        }
+        self.stats.max_completion_queue = self
+            .stats
+            .max_completion_queue
+            .max(self.completions.len() as u64);
+    }
+}
+
+fn extract_smem_request(request: ServiceRequest<CoreFlowPayload>) -> SmemRequest {
+    match request.payload {
+        CoreFlowPayload::Smem(req) => req,
+        _ => panic!("expected smem request"),
     }
 }
 
 pub struct CoreGraph {
     graph: FlowGraph<CoreFlowPayload>,
     gmem: GmemSubgraph,
+    smem: SmemSubgraph,
 }
 
 impl CoreGraph {
     pub fn new(config: CoreGraphConfig) -> Self {
         let mut graph = FlowGraph::new();
         let gmem = GmemSubgraph::attach(&mut graph, &config.gmem);
-        Self { graph, gmem }
+        let smem = SmemSubgraph::attach(&mut graph, &config.smem);
+        Self { graph, gmem, smem }
     }
 
     pub fn issue_gmem(
@@ -648,6 +922,7 @@ impl CoreGraph {
     pub fn tick(&mut self, now: Cycle) {
         self.graph.tick(now);
         self.gmem.collect_completions(&mut self.graph, now);
+        self.smem.collect_completions(&mut self.graph, now);
     }
 
     pub fn pop_gmem_completion(&mut self) -> Option<GmemCompletion> {
@@ -664,6 +939,30 @@ impl CoreGraph {
 
     pub fn clear_gmem_stats(&mut self) {
         self.gmem.stats = GmemStats::default();
+    }
+
+    pub fn issue_smem(
+        &mut self,
+        now: Cycle,
+        request: SmemRequest,
+    ) -> Result<SmemIssue, SmemReject> {
+        self.smem.issue(&mut self.graph, now, request)
+    }
+
+    pub fn pop_smem_completion(&mut self) -> Option<SmemCompletion> {
+        self.smem.completions.pop_front()
+    }
+
+    pub fn pending_smem_completions(&self) -> usize {
+        self.smem.completions.len()
+    }
+
+    pub fn smem_stats(&self) -> SmemStats {
+        self.smem.stats
+    }
+
+    pub fn clear_smem_stats(&mut self) {
+        self.smem.stats = SmemStats::default();
     }
 }
 
