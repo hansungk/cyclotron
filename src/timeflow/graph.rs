@@ -404,4 +404,159 @@ mod tests {
             assert_eq!("payload", result.payload);
         });
     }
+
+    #[test]
+    fn filtered_links_route_payloads() {
+        #[derive(Clone, Debug)]
+        struct Payload {
+            bank: usize,
+            value: &'static str,
+        }
+        let mut graph: FlowGraph<Payload> = FlowGraph::new();
+        let src = graph.add_node(ServerNode::new(
+            "src",
+            TimedServer::new(ServerConfig {
+                base_latency: 0,
+                bytes_per_cycle: 4,
+                queue_capacity: 8,
+                ..ServerConfig::default()
+            }),
+        ));
+        let sink0 = graph.add_node(ServerNode::new(
+            "sink0",
+            TimedServer::new(ServerConfig::default()),
+        ));
+        let sink1 = graph.add_node(ServerNode::new(
+            "sink1",
+            TimedServer::new(ServerConfig::default()),
+        ));
+
+        graph.connect_filtered(src, sink0, "src->0", Link::new(4), |payload: &Payload| {
+            payload.bank == 0
+        });
+        graph.connect_filtered(src, sink1, "src->1", Link::new(4), |payload: &Payload| {
+            payload.bank == 1
+        });
+
+        graph
+            .try_put(
+                src,
+                0,
+                ServiceRequest::new(
+                    Payload {
+                        bank: 0,
+                        value: "A",
+                    },
+                    4,
+                ),
+            )
+            .unwrap();
+        graph
+            .try_put(
+                src,
+                1,
+                ServiceRequest::new(
+                    Payload {
+                        bank: 1,
+                        value: "B",
+                    },
+                    4,
+                ),
+            )
+            .unwrap();
+
+        for cycle in 0..10 {
+            graph.tick(cycle);
+        }
+
+        graph.with_node_mut(sink0, |node| {
+            let result = node.take_ready(10).expect("sink0 result");
+            assert_eq!("A", result.payload.value);
+        });
+        graph.with_node_mut(sink1, |node| {
+            let result = node.take_ready(10).expect("sink1 result");
+            assert_eq!("B", result.payload.value);
+        });
+    }
+
+    #[test]
+    fn link_capacity_enforced() {
+        let mut link = Link::with_byte_limit(1, Some(8));
+        let make_result = |size| {
+            let mut server = TimedServer::new(ServerConfig::default());
+            let ticket = server
+                .try_enqueue(0, ServiceRequest::new("dummy", size))
+                .unwrap();
+            ServiceResult {
+                payload: "req",
+                ticket,
+            }
+        };
+        let result = make_result(4);
+        assert!(link.try_push(result).is_ok());
+
+        let result = make_result(4);
+        assert!(matches!(
+            link.try_push(result),
+            Err(LinkBackpressure::Capacity { .. })
+        ));
+
+        let mut link = Link::with_byte_limit(2, Some(8));
+        let result = make_result(6);
+        link.try_push(result).unwrap();
+        let result = make_result(4);
+        assert!(matches!(
+            link.try_push(result),
+            Err(LinkBackpressure::Bytes { .. })
+        ));
+    }
+
+    #[test]
+    fn busy_nodes_propagate_backpressure() {
+        struct BusyNode;
+        impl TimedNode<&'static str> for BusyNode {
+            fn name(&self) -> &str {
+                "busy"
+            }
+            fn try_put(
+                &mut self,
+                now: Cycle,
+                request: ServiceRequest<&'static str>,
+            ) -> Result<Ticket, Backpressure<&'static str>> {
+                Err(Backpressure::Busy {
+                    request,
+                    available_at: now + 5,
+                })
+            }
+            fn tick(&mut self, _now: Cycle) {}
+            fn peek_ready(&mut self, _now: Cycle) -> Option<&ServiceResult<&'static str>> {
+                None
+            }
+            fn take_ready(&mut self, _now: Cycle) -> Option<ServiceResult<&'static str>> {
+                None
+            }
+            fn outstanding(&self) -> usize {
+                0
+            }
+        }
+
+        let mut graph: FlowGraph<&'static str> = FlowGraph::new();
+        let src = graph.add_node(ServerNode::new(
+            "src",
+            TimedServer::new(ServerConfig::default()),
+        ));
+        let dst = graph.add_node(BusyNode);
+        graph.connect(src, dst, "link", Link::new(2));
+        graph
+            .try_put(src, 0, ServiceRequest::new("req", 4))
+            .unwrap();
+
+        for cycle in 0..5 {
+            graph.tick(cycle);
+        }
+
+        let stats = graph.edge_stats(0);
+        assert!(stats.downstream_backpressure > 0);
+        assert!(stats.last_delivery_cycle.is_none());
+    }
 }

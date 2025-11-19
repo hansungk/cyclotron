@@ -25,7 +25,7 @@ impl Ticket {
         }
     }
 
-    // Cycle at which the request entered the server
+    // Cycle at which the request is issued at
     pub fn issued_at(&self) -> Cycle {
         self.issued_at
     }
@@ -141,7 +141,7 @@ pub struct ServerStats {
     pub max_outstanding: u64,
 }
 
-// Single-lane server that enforces the configured latency/bandwidth budget and 
+// Single-lane server that enforces the configured latency/bandwidth budget and
 // keeps track of outstanding work
 #[derive(Debug)]
 pub struct TimedServer<T> {
@@ -159,6 +159,10 @@ impl<T> TimedServer<T> {
     pub fn new(config: ServerConfig) -> Self {
         assert!(config.bytes_per_cycle > 0, "bytes_per_cycle must be > 0");
         assert!(config.queue_capacity > 0, "queue_capacity must be > 0");
+        assert!(
+            config.completions_per_cycle > 0,
+            "completions_per_cycle must be > 0"
+        );
         Self {
             config,
             inflight: VecDeque::with_capacity(config.queue_capacity),

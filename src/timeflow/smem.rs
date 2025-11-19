@@ -264,4 +264,36 @@ mod tests {
         }
         assert_eq!(1, subgraph.completions.len());
     }
+
+    #[test]
+    fn smem_backpressure_is_reported() {
+        let mut cfg = SmemFlowConfig::default();
+        cfg.bank.queue_capacity = 1;
+        cfg.crossbar.queue_capacity = 1;
+        let mut graph: FlowGraph<CoreFlowPayload> = FlowGraph::new();
+        let mut subgraph = SmemSubgraph::attach(&mut graph, &cfg);
+        let req0 = SmemRequest::new(0, 32, 0xF, false, 0);
+        subgraph.issue(&mut graph, 0, req0).unwrap();
+        let req1 = SmemRequest::new(0, 32, 0xF, false, 0);
+        let err = subgraph.issue(&mut graph, 0, req1).unwrap_err();
+        assert_eq!(SmemRejectReason::QueueFull, err.reason);
+    }
+
+    #[test]
+    fn smem_stats_track_activity() {
+        let mut graph: FlowGraph<CoreFlowPayload> = FlowGraph::new();
+        let mut subgraph = SmemSubgraph::attach(&mut graph, &SmemFlowConfig::default());
+        let req = SmemRequest::new(0, 32, 0xF, false, 0);
+        let issue = subgraph.issue(&mut graph, 0, req).unwrap();
+        let ready_at = issue.ticket.ready_at();
+        for cycle in 0..=ready_at.saturating_add(100) {
+            graph.tick(cycle);
+            subgraph.collect_completions(&mut graph, cycle);
+        }
+        let stats = subgraph.stats;
+        assert_eq!(1, stats.issued);
+        assert_eq!(1, stats.completed);
+        assert_eq!(32, stats.bytes_issued);
+        assert_eq!(32, stats.bytes_completed);
+    }
 }

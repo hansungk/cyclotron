@@ -262,4 +262,53 @@ mod tests {
         }
         assert_eq!(1, subgraph.completions.len());
     }
+
+    #[test]
+    fn gmem_backpressure_is_reported() {
+        let mut cfg = GmemFlowConfig::default();
+        cfg.coalescer.queue_capacity = 1;
+        let mut graph: FlowGraph<CoreFlowPayload> = FlowGraph::new();
+        let mut subgraph = GmemSubgraph::attach(&mut graph, &cfg);
+
+        let req0 = GmemRequest::new(0, 16, 0xF, true);
+        subgraph.issue(&mut graph, 0, req0).unwrap();
+        let req1 = GmemRequest::new(0, 16, 0xF, true);
+        let err = subgraph.issue(&mut graph, 0, req1).unwrap_err();
+        assert_eq!(GmemRejectReason::QueueFull, err.reason);
+    }
+
+    #[test]
+    fn gmem_stats_track_activity() {
+        let mut graph: FlowGraph<CoreFlowPayload> = FlowGraph::new();
+        let mut subgraph = GmemSubgraph::attach(&mut graph, &GmemFlowConfig::default());
+        let req0 = GmemRequest::new(0, 16, 0xF, true);
+        let issue = subgraph.issue(&mut graph, 0, req0).unwrap();
+        let ready_at = issue.ticket.ready_at();
+        for cycle in 0..=ready_at.saturating_add(100) {
+            graph.tick(cycle);
+            subgraph.collect_completions(&mut graph, cycle);
+        }
+        let stats = subgraph.stats;
+        assert_eq!(1, stats.issued);
+        assert_eq!(1, stats.completed);
+        assert_eq!(16, stats.bytes_issued);
+        assert_eq!(16, stats.bytes_completed);
+        assert_eq!(0, stats.inflight);
+        assert!(stats.max_inflight >= 1);
+    }
+
+    #[test]
+    fn gmem_allows_overlapping_requests() {
+        let mut graph: FlowGraph<CoreFlowPayload> = FlowGraph::new();
+        let mut subgraph = GmemSubgraph::attach(&mut graph, &GmemFlowConfig::default());
+        let req0 = GmemRequest::new(0, 16, 0xF, true);
+        let issue0 = subgraph.issue(&mut graph, 0, req0).unwrap();
+        let req1 = GmemRequest::new(0, 16, 0xF, true);
+        let issue1 = subgraph.issue(&mut graph, 1, req1).unwrap();
+        assert!(issue1.ticket.ready_at() > issue0.ticket.ready_at());
+        assert!(
+            issue1.ticket.ready_at() - issue0.ticket.ready_at()
+                < GmemFlowConfig::default().coalescer.base_latency + 50
+        );
+    }
 }
