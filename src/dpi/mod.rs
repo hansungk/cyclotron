@@ -245,12 +245,13 @@ pub unsafe fn cyclotron_difftest_reg_rs(
     }
 
     let isq = &mut context.issue_queue[0];
-    for line in isq.iter_mut().rev() {
+    // iter_mut() order equals the enqueue order, which equals the program order.  This way we
+    // match RTL against the oldest same-PC model trace
+    for line in isq.iter_mut() {
         // search for the oldest-matching PC
         if line.line.pc != pc {
             continue;
         }
-        line.checked = true;
 
         let compare_reg_addr_and_exit = |rtl: u8, model: u8, name: &str| {
             if rtl != model {
@@ -291,6 +292,9 @@ pub unsafe fn cyclotron_difftest_reg_rs(
                 compare_reg_data_and_exit(rs3_data, &line.line.rs3_data, "rs3");
             }
         }
+
+        line.checked = true;
+        break;
     }
 
     // clean up checked lines at the front
