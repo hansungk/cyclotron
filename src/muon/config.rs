@@ -2,18 +2,13 @@ use serde::Deserialize;
 use crate::sim::config::Config;
 
 #[derive(Debug, Deserialize, Clone, Copy)]
+#[serde(default)]
 pub struct MuonConfig {
-    #[serde(default)]
     pub num_lanes: usize,
-    #[serde(default)]
     pub num_warps: usize,
-    #[serde(default)]
     pub num_cores: usize,
-    #[serde(default)]
     pub num_regs: usize,
-    #[serde(default)]
     pub start_pc: u32,
-    #[serde(default)]
     pub smem_size: usize,
     #[serde(skip)]
     pub lane_config: LaneConfig,

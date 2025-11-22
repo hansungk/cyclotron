@@ -5,6 +5,10 @@ num_cores = 1
 num_regs = 256
 start_pc = 0x10000000
 
+# shared memory is enormous for isa tests since those do loads and stores
+# to addresses ("tdat") after program binary, which is at 0x10000000
+smem_size = 0x20000000
+
 [neutrino]
 num_entries = 32
 num_deps = 3
