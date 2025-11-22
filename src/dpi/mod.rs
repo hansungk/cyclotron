@@ -17,7 +17,12 @@ struct Context {
     // to be used for diff-testing against RTL issue
     issue_queue: Vec<VecDeque<IssueQueueLine>>,
     sim_be: Sim, // cyclotron instance for the backend model
+    cycles_after_finished: usize,
+    difftested_insts: usize,
 }
+
+// must be large enough to let the core pipeline entirely drain
+const FINISH_COUNTDOWN: usize = 100;
 
 struct IssueQueueLine {
     line: trace::Line,
@@ -61,6 +66,8 @@ pub fn cyclotron_init_rs() {
         sim_isa,
         issue_queue: Vec::new(),
         sim_be,
+        cycles_after_finished: 0,
+        difftested_insts: 0,
     };
     c.sim_isa.top.reset();
     c.sim_be.top.reset();
@@ -209,7 +216,17 @@ pub unsafe fn cyclotron_frontend_rs(
         }
     }
 
-    *finished = sim.finished() as u8;
+    if sim.finished() {
+        context.cycles_after_finished += 1;
+    }
+
+    *finished = (context.cycles_after_finished >= FINISH_COUNTDOWN) as u8;
+    if *finished == 1 {
+        println!("Cyclotron: model finished execution");
+        if context.difftested_insts > 0 {
+            println!("Cyclotron: model finished execution");
+        }
+    }
 }
 
 #[no_mangle]
@@ -246,9 +263,8 @@ pub unsafe fn cyclotron_difftest_reg_rs(
 
     let isq = &mut context.issue_queue[0];
     // iter_mut() order equals the enqueue order, which equals the program order.  This way we
-    // match RTL against the oldest same-PC model trace
+    // match RTL against the oldest same-PC model instruction
     for line in isq.iter_mut() {
-        // search for the oldest-matching PC
         if line.line.pc != pc {
             continue;
         }
@@ -308,6 +324,11 @@ pub unsafe fn cyclotron_difftest_reg_rs(
     }
     for _ in 0..num_to_pop {
         isq.pop_front();
+    }
+
+    context.difftested_insts += 1;
+    if context.difftested_insts % 100 == 0 {
+        println!("DIFFTEST: Passed {} instructions", context.difftested_insts);
     }
 }
 
