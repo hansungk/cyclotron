@@ -6,7 +6,7 @@ use clap::Parser;
 use std::path::{Path, PathBuf};
 use toml::Table;
 
-#[derive(Parser)]
+#[derive(Parser, Default)]
 #[command(version, about)]
 pub struct CyclotronArgs {
     #[arg(help = "Path to config.toml")]
@@ -34,7 +34,7 @@ pub fn read_toml(filepath: &Path) -> String {
 
 /// Make a Sim object from the TOML configuration.
 /// If `cli_args` is given, override TOML options with CLI arguments.
-pub fn make_sim(toml_string: &str, cli_args: Option<CyclotronArgs>) -> Sim {
+pub fn make_sim(toml_string: &str, cli_args: &Option<CyclotronArgs>) -> Sim {
     let config_table: Table = toml::from_str(toml_string).expect("cannot parse config toml");
     let mut sim_config = SimConfig::from_section(config_table.get("sim"));
     let mem_config = MemConfig::from_section(config_table.get("mem"));
@@ -43,7 +43,7 @@ pub fn make_sim(toml_string: &str, cli_args: Option<CyclotronArgs>) -> Sim {
 
     // override toml configs with CLI args
     if let Some(args) = cli_args {
-        sim_config.elf = args.binary_path.unwrap_or(sim_config.elf); 
+        sim_config.elf = args.binary_path.as_ref().cloned().unwrap_or(sim_config.elf);
         sim_config.log_level = args.log.unwrap_or(sim_config.log_level);
         sim_config.trace = args.gen_trace.unwrap_or(sim_config.trace);
         muon_config.num_lanes = args.num_lanes.unwrap_or(muon_config.num_lanes);

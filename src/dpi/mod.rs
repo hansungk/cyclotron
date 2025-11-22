@@ -3,8 +3,11 @@ use crate::base::behavior::*;
 use crate::muon::core::MuonCore;
 use crate::sim::top::Sim;
 use crate::sim::trace;
+use crate::ui::CyclotronArgs;
 use std::collections::VecDeque;
+use std::ffi::CStr;
 use std::iter::zip;
+use std::os::raw::c_char;
 use std::path::PathBuf;
 use std::sync::RwLock;
 
@@ -24,6 +27,7 @@ struct Context {
 // must be large enough to let the core pipeline entirely drain
 const FINISH_COUNTDOWN: usize = 100;
 
+#[derive(Clone)]
 struct IssueQueueLine {
     line: trace::Line,
     checked: bool,
@@ -46,21 +50,39 @@ pub fn assert_single_core(sim: &Sim) {
 #[no_mangle]
 /// Entry point to the DPI interface.  This must be called from Verilog once at the start in an
 /// initial block.
-pub fn cyclotron_init_rs() {
+pub extern "C" fn cyclotron_init_rs(c_elfname: *const c_char) {
     let log_level = LevelFilter::Debug;
-
     Builder::new().filter_level(log_level).init();
+
     let toml_path = PathBuf::from("config.toml");
     let toml_string = crate::ui::read_toml(&toml_path);
 
+    let elfname = unsafe {
+        if c_elfname.is_null() {
+            String::new()
+        } else {
+            CStr::from_ptr(c_elfname).to_string_lossy().into_owned()
+        }
+    };
+    let mut cyclotron_args = CyclotronArgs::default();
+    if !elfname.is_empty() {
+        cyclotron_args.binary_path = Some(PathBuf::from(&elfname));
+    }
+
     // make separate sim instances for the golden ISA model and the backend model to prevent
     // double-execution on the same GMEM
-    let sim_isa = crate::ui::make_sim(&toml_string, None);
-    let sim_be = crate::ui::make_sim(&toml_string, None);
+    let arg = Some(cyclotron_args);
+    let sim_isa = crate::ui::make_sim(&toml_string, &arg);
+    let sim_be = crate::ui::make_sim(&toml_string, &arg);
     assert_single_core(&sim_isa);
     assert_single_core(&sim_be);
 
-    println!("cyclotron_init_rs: created sim object from {}", toml_path.display());
+    let final_elfname = sim_isa.config.elf.as_path();
+    println!(
+        "Cyclotron: created sim object from {} [ELF file: {}]",
+        toml_path.display(),
+        final_elfname.display()
+    );
 
     let mut c = Context {
         sim_isa,
@@ -73,10 +95,7 @@ pub fn cyclotron_init_rs() {
     c.sim_be.top.reset();
 
     let config = &c.sim_isa.top.clusters[0].cores[0].conf().clone();
-    c.issue_queue = Vec::new();
-    for _ in 0..config.num_warps {
-        c.issue_queue.push(VecDeque::new());
-    }
+    c.issue_queue = vec![VecDeque::new(); config.num_warps];
 
     let mut context = CELL.write().unwrap();
     if context.as_ref().is_some() {
@@ -87,7 +106,7 @@ pub fn cyclotron_init_rs() {
 
 #[no_mangle]
 /// Get un-decoded instruction bits from the instruction trace.
-pub fn cyclotron_fetch_rs(fetch_pc: u32, fetch_warp: u32, inst_ptr: *mut u64) {
+pub unsafe extern "C" fn cyclotron_fetch_rs(fetch_pc: u32, fetch_warp: u32, inst_ptr: *mut u64) {
     let mut context_guard = CELL.write().unwrap();
     let context = context_guard.as_mut().expect("DPI context not initialized!");
     let sim = &mut context.sim_isa;
@@ -109,7 +128,7 @@ fn peek_heads(c: &MuonCore, num_warps: usize) -> Vec<Option<trace::Line>> {
 /// model.  Models the fetch/decode frontend up until the ibuffers, and exposes per-warp ibuffer
 /// head entries.
 /// SAFETY: All signals are arrays of size num_warps.
-pub unsafe fn cyclotron_frontend_rs(
+pub unsafe extern "C" fn cyclotron_frontend_rs(
     ibuf_ready_vec: *const u8,
     ibuf_valid_vec: *mut u8,
     ibuf_pc_vec: *mut u32,
@@ -232,7 +251,7 @@ pub unsafe fn cyclotron_frontend_rs(
 #[no_mangle]
 /// Do a differential test between the register values read at instruction issue from RTL, and the
 /// values logged in Cyclotron trace.
-pub unsafe fn cyclotron_difftest_reg_rs(
+pub unsafe extern "C" fn cyclotron_difftest_reg_rs(
     valid: u8,
     // TODO: wid, tmask
     pc: u32,
