@@ -236,16 +236,16 @@ pub unsafe extern "C" fn cyclotron_frontend_rs(
     }
 
     if sim.finished() {
+        if context.cycles_after_finished == 0 {
+            println!("Cyclotron: model finished execution");
+        }
         context.cycles_after_finished += 1;
+    }
+    if context.cycles_after_finished == FINISH_COUNTDOWN && context.difftested_insts > 0 {
+        println!("DIFFTEST: PASS: {} instructions", context.difftested_insts);
     }
 
     *finished = (context.cycles_after_finished >= FINISH_COUNTDOWN) as u8;
-    if *finished == 1 {
-        println!("Cyclotron: model finished execution");
-        if context.difftested_insts > 0 {
-            println!("Cyclotron: model finished execution");
-        }
-    }
 }
 
 #[no_mangle]
