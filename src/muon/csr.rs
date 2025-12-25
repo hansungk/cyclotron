@@ -19,6 +19,7 @@ pub struct CSRFile {
     lane_id: usize,
     block_idx: (u32, u32, u32),
     thread_idx: (u32, u32, u32),
+    pp: u32,
 }
 
 impl ModuleBehaviors for CSRFile {
@@ -124,6 +125,7 @@ impl CSRFile {
             0xfc6, self.thread_idx.0; // thread_idx.x
             0xfc7, self.thread_idx.1; // thread_idx.y
             0xfc8, self.thread_idx.2; // thread_idx.z
+            0xfc9, self.pp; // param pointer
         ])
     }
 
@@ -193,8 +195,9 @@ impl CSRFile {
         }
     }
 
-    pub fn set_block_thread(&mut self, block_idx: (u32, u32, u32), thread_idx: (u32, u32, u32)) {
+    pub fn set_block_thread_pp(&mut self, block_idx: (u32, u32, u32), thread_idx: (u32, u32, u32), pp: u32) {
         self.block_idx = block_idx;
         self.thread_idx = thread_idx;
+        self.pp = pp;
     }
 }
