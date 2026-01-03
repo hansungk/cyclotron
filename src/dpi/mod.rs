@@ -52,15 +52,15 @@ pub fn assert_single_core(sim: &Sim) {
 /// block.  This function can be called multiple times in different .v shims.
 pub extern "C" fn cyclotron_init_rs(c_elfname: *const c_char) {
     if CELL.read().unwrap().is_some() {
-        // cyclotron is already initialized by some other call; exit
+        // DPI context is already initialized by some other call; exit
         return;
     }
 
     let log_level = LevelFilter::Debug;
     Builder::new().filter_level(log_level).init();
 
-    let toml_path = PathBuf::from("config.toml");
-    let toml_string = crate::ui::read_toml(&toml_path);
+    // let toml_path = PathBuf::from("config.toml");
+    // let toml_string = crate::ui::read_toml(&toml_path);
 
     let elfname = unsafe {
         if c_elfname.is_null() {
@@ -77,15 +77,15 @@ pub extern "C" fn cyclotron_init_rs(c_elfname: *const c_char) {
     // make separate sim instances for the golden ISA model and the backend model to prevent
     // double-execution on the same GMEM
     let arg = Some(cyclotron_args);
-    let sim_isa = crate::ui::make_sim(&toml_string, &arg);
-    let sim_be = crate::ui::make_sim(&toml_string, &arg);
+    let sim_isa = crate::ui::make_sim(None, &arg);
+    let sim_be = crate::ui::make_sim(None, &arg);
     assert_single_core(&sim_isa);
     assert_single_core(&sim_be);
 
     let final_elfname = sim_isa.config.elf.as_path();
+    // TODO: print config summary
     println!(
-        "Cyclotron: created sim object from {} [ELF file: {}]",
-        toml_path.display(),
+        "Cyclotron: created sim object with ELF file: {}",
         final_elfname.display()
     );
 
