@@ -48,9 +48,14 @@ pub fn assert_single_core(sim: &Sim) {
 }
 
 #[no_mangle]
-/// Entry point to the DPI interface.  This must be called from Verilog once at the start in an
-/// initial block.
+/// Entry point to the DPI interface.  This must be called from Verilog at the start in an initial
+/// block.  This function can be called multiple times in different .v shims.
 pub extern "C" fn cyclotron_init_rs(c_elfname: *const c_char) {
+    if CELL.read().unwrap().is_some() {
+        // cyclotron is already initialized by some other call; exit
+        return
+    }
+
     let log_level = LevelFilter::Debug;
     Builder::new().filter_level(log_level).init();
 
