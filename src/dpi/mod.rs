@@ -53,7 +53,7 @@ pub fn assert_single_core(sim: &Sim) {
 pub extern "C" fn cyclotron_init_rs(c_elfname: *const c_char) {
     if CELL.read().unwrap().is_some() {
         // cyclotron is already initialized by some other call; exit
-        return
+        return;
     }
 
     let log_level = LevelFilter::Debug;
@@ -258,8 +258,9 @@ pub unsafe extern "C" fn cyclotron_frontend_rs(
 /// values logged in Cyclotron trace.
 pub unsafe extern "C" fn cyclotron_difftest_reg_rs(
     valid: u8,
-    // TODO: wid, tmask
+    // TODO: tmask
     pc: u32,
+    warp_id: u32,
     rs1_enable: u8,
     rs1_address: u8,
     rs1_data_raw: *const u32,
@@ -285,7 +286,13 @@ pub unsafe extern "C" fn cyclotron_difftest_reg_rs(
         return;
     }
 
-    let isq = &mut context.issue_queue[0];
+    let isq = &mut context.issue_queue[warp_id as usize];
+    if isq.is_empty() {
+        println!(
+            "DIFFTEST: rtl over-ran model, remnant rtl inst: pc:{:x}, warp:{}", pc, warp_id
+        );
+    }
+
     // iter_mut() order equals the enqueue order, which equals the program order.  This way we
     // match RTL against the oldest same-PC model instruction
     for line in isq.iter_mut() {
@@ -296,8 +303,8 @@ pub unsafe extern "C" fn cyclotron_difftest_reg_rs(
         let compare_reg_addr_and_exit = |rtl: u8, model: u8, name: &str| {
             if rtl != model {
                 println!(
-                    "DIFFTEST: {} address match fail, pc: {:x}, rtl:{}, model:{}",
-                    name, pc, rtl, model,
+                    "DIFFTEST: {} address match fail, pc:{:x}, warp: {}, rtl:{}, model:{}",
+                    name, pc, warp_id, rtl, model,
                 );
                 panic!();
             }
@@ -306,8 +313,8 @@ pub unsafe extern "C" fn cyclotron_difftest_reg_rs(
             let res = compare_vector_reg_data(rtl, model);
             if let Err(e) = res {
                 println!(
-                    "DIFFTEST: {} data match fail, pc: {:x}, lane:{}, rtl:{}, model:{}",
-                    name, pc, e.lane, e.rtl, e.model
+                    "DIFFTEST: {} data match fail, pc:{:x}, warp:{}, lane:{}, rtl:{}, model:{}",
+                    name, pc, warp_id, e.lane, e.rtl, e.model
                 );
                 panic!();
             }
@@ -336,6 +343,8 @@ pub unsafe extern "C" fn cyclotron_difftest_reg_rs(
         line.checked = true;
         break;
     }
+
+    // TODO: check rtl under-run of model
 
     // clean up checked lines at the front
     let mut num_to_pop = 0;
