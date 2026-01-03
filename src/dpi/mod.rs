@@ -289,8 +289,10 @@ pub unsafe extern "C" fn cyclotron_difftest_reg_rs(
     let isq = &mut context.issue_queue[warp_id as usize];
     if isq.is_empty() {
         println!(
-            "DIFFTEST: rtl over-ran model, remnant rtl inst: pc:{:x}, warp:{}", pc, warp_id
+            "DIFFTEST fail: rtl over-ran model, remnant rtl inst: pc:{:x}, warp:{}",
+            pc, warp_id
         );
+        panic!("DIFFTEST fail");
     }
 
     // iter_mut() order equals the enqueue order, which equals the program order.  This way we
@@ -303,20 +305,20 @@ pub unsafe extern "C" fn cyclotron_difftest_reg_rs(
         let compare_reg_addr_and_exit = |rtl: u8, model: u8, name: &str| {
             if rtl != model {
                 println!(
-                    "DIFFTEST: {} address match fail, pc:{:x}, warp: {}, rtl:{}, model:{}",
+                    "DIFFTEST fail: {} address mismatch, pc:{:x}, warp: {}, rtl:{}, model:{}",
                     name, pc, warp_id, rtl, model,
                 );
-                panic!();
+                panic!("DIFFTEST fail");
             }
         };
         let compare_reg_data_and_exit = |rtl: &[u32], model: &[Option<u32>], name: &str| {
             let res = compare_vector_reg_data(rtl, model);
             if let Err(e) = res {
                 println!(
-                    "DIFFTEST: {} data match fail, pc:{:x}, warp:{}, lane:{}, rtl:{}, model:{}",
+                    "DIFFTEST fail: {} data mismatch, pc:{:x}, warp:{}, lane:{}, rtl:{}, model:{}",
                     name, pc, warp_id, e.lane, e.rtl, e.model
                 );
-                panic!();
+                panic!("DIFFTEST fail");
             }
         };
 
@@ -361,7 +363,7 @@ pub unsafe extern "C" fn cyclotron_difftest_reg_rs(
 
     context.difftested_insts += 1;
     if context.difftested_insts % 100 == 0 {
-        println!("DIFFTEST: Passed {} instructions", context.difftested_insts);
+        println!("DIFFTEST pass: Checked {} instructions", context.difftested_insts);
     }
 }
 
