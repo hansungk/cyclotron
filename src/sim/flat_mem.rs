@@ -57,9 +57,25 @@ impl FlatMemory {
     pub fn copy_elf(&mut self, elf: &ElfBackedMem) {
         for (section, data) in elf.sections.iter() {
             let (start, end) = *section;
+            let gpu_offset = 0x100000000;
+            let gpu_start: usize;
+            let gpu_end: usize;
+            if start >= 0x100000000 && end < 0x200000000 {
+                // try to detect if this is a CPU-GPU fused ELF, and if so relocate to GPU-private
+                // GMEM address space. TODO: hacky and loosey-goosey.
+                gpu_start = start - gpu_offset;
+                gpu_end = end - gpu_offset;
+                println!(
+                    "Cyclotron: copy_elf: detected CPU-fused ELF; relocating section [{start:x}..{end:x}] to [{gpu_start:x}..{gpu_end:x}]"
+                );
+            } else {
+                gpu_start = start;
+                gpu_end = end;
+            }
+
             let len = self.bytes.len();
-            let bytes = &mut self.bytes.get_mut(start..end).expect(&format!(
-                "copy_elf: copy dest ({start:x}..{end:x}) out-of-range of FlatMemory (0..{len:x})"
+            let bytes = &mut self.bytes.get_mut(gpu_start..gpu_end).expect(&format!(
+                "copy_elf: copy dest ({gpu_start:x}..{gpu_end:x}) out-of-range of FlatMemory (0..{len:x})"
             ));
             bytes.copy_from_slice(&data);
         }
