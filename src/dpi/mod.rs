@@ -278,15 +278,12 @@ pub unsafe extern "C" fn cyclotron_difftest_reg_rs(
     rs3_address: u8,
     rs3_data_raw: *const u32,
 ) {
-    if valid == 0 {
-        return;
-    }
-
     let mut context_guard = CELL.write().unwrap();
     let context = context_guard.as_mut().expect("DPI context not initialized!");
     let sim = &mut context.sim_isa;
     let config = sim.top.clusters[0].cores[0].conf().clone();
 
+    // runs regardless of valid == 0/1 to ensure model run-ahead of rtl
     if sim_tick == 1 {
         sim.tick();
 
@@ -295,6 +292,9 @@ pub unsafe extern "C" fn cyclotron_difftest_reg_rs(
         push_issue_queue(core, &mut context.issue_queue, &all_warp_pop);
     }
 
+    if valid == 0 {
+        return;
+    }
     let rs1_data = unsafe { std::slice::from_raw_parts(rs1_data_raw, config.num_lanes) };
     let rs2_data = unsafe { std::slice::from_raw_parts(rs2_data_raw, config.num_lanes) };
     let rs3_data = unsafe { std::slice::from_raw_parts(rs3_data_raw, config.num_lanes) };
