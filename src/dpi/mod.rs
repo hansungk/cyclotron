@@ -128,6 +128,21 @@ fn peek_heads(c: &MuonCore, num_warps: usize) -> Vec<Option<trace::Line>> {
         .collect::<Vec<_>>()
 }
 
+fn push_issue_queue(c: &mut MuonCore, issue_queue: &mut Vec<VecDeque<IssueQueueLine>>, per_warp_pop: &[bool]) {
+    let num_warps = per_warp_pop.len();
+    let heads = peek_heads(c, num_warps);
+    for (w, (o_line, pop)) in zip(heads, per_warp_pop).enumerate() {
+        if o_line.is_some() && *pop {
+            c.get_tracer_mut().consume(w);
+            let iline = IssueQueueLine {
+                line: o_line.unwrap(),
+                checked: false,
+            };
+            issue_queue[w].push_back(iline);
+        }
+    }
+}
+
 #[no_mangle]
 /// Get a per-warp decoded instruction bundle from the instruction trace, and advance the ISA
 /// model.  Models the fetch/decode frontend up until the ibuffers, and exposes per-warp ibuffer
@@ -180,21 +195,11 @@ pub unsafe extern "C" fn cyclotron_frontend_rs(
     let raw = unsafe { std::slice::from_raw_parts_mut(ibuf_raw_vec, config.num_warps) };
     let finished = unsafe { finished_ptr.as_mut().expect("pointer was null") };
 
-    // upon RTL fire, consume tracer queue and move line to the issue queue
-    // this has to happen before the sim::tick() call below, so that it respects the
+    // upon RTL fire, consume the instruction line in the tracer queue, and move it to the issue
+    // queue.  This has to happen before the sim::tick() call below, so that it respects the
     // dequeue->enqueue data hazard
-    // TODO: disable issue queue if no difftest
-    let heads = peek_heads(core, config.num_warps);
-    for (w, (o_line, rdy)) in zip(heads, ready).enumerate() {
-        if o_line.is_some() && *rdy == 1 {
-            core.get_tracer_mut().consume(w);
-            let iline = IssueQueueLine {
-                line: o_line.unwrap(),
-                checked: false,
-            };
-            context.issue_queue[w].push_back(iline);
-        }
-    }
+    let per_warp_ready = ready.iter().map(|r| *r == 1).collect::<Vec<bool>>();
+    push_issue_queue(core, &mut context.issue_queue, &per_warp_ready);
 
     // advance simulation to populate the tracer buffers
     sim.tick();
