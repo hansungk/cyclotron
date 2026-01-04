@@ -18,7 +18,7 @@ struct Context {
     sim_isa: Sim, // cyclotron instance for the ISA model
     // holds fetch/decoded, but not issued, instructions
     // to be used for diff-testing against RTL issue
-    issue_queue: Vec<VecDeque<IssueQueueLine>>,
+    issue_queue: Vec<IssueQueue>,
     sim_be: Sim, // cyclotron instance for the backend model
     cycles_after_finished: usize,
     difftested_insts: usize,
@@ -32,6 +32,7 @@ struct IssueQueueLine {
     line: trace::Line,
     checked: bool,
 }
+type IssueQueue = VecDeque<IssueQueueLine>;
 
 /// Global singleton to maintain simulator context across independent DPI calls.
 static CELL: RwLock<Option<Context>> = RwLock::new(None);
@@ -128,7 +129,7 @@ fn peek_heads(c: &MuonCore, num_warps: usize) -> Vec<Option<trace::Line>> {
         .collect::<Vec<_>>()
 }
 
-fn push_issue_queue(c: &mut MuonCore, issue_queue: &mut Vec<VecDeque<IssueQueueLine>>, per_warp_pop: &[bool]) {
+fn push_issue_queue(c: &mut MuonCore, issue_queue: &mut Vec<IssueQueue>, per_warp_pop: &[bool]) {
     let num_warps = per_warp_pop.len();
     let heads = peek_heads(c, num_warps);
     for (w, (o_line, pop)) in zip(heads, per_warp_pop).enumerate() {
@@ -310,8 +311,12 @@ pub unsafe extern "C" fn cyclotron_difftest_reg_rs(
 
     // iter_mut() order equals the enqueue order, which equals the program order.  This way we
     // match RTL against the oldest same-PC model instruction
+    let mut checked = false;
     for line in isq.iter_mut() {
         if line.line.pc != pc {
+            continue;
+        }
+        if line.checked {
             continue;
         }
 
@@ -356,12 +361,30 @@ pub unsafe extern "C" fn cyclotron_difftest_reg_rs(
         }
 
         line.checked = true;
+        checked = true;
         break;
+    }
+
+    if !checked {
+        println!(
+            "DIFFTEST fail: pc mismatch: rtl reached instruction unseen by model, pc:{:x}, warp:{}",
+            pc, warp_id
+        );
+        panic!("DIFFTEST fail");
     }
 
     // TODO: check rtl under-run of model
 
     // clean up checked lines at the front
+    clear_front_checked(isq);
+
+    context.difftested_insts += 1;
+    if context.difftested_insts % 100 == 0 {
+        println!("DIFFTEST pass: Checked {} instructions", context.difftested_insts);
+    }
+}
+
+fn clear_front_checked(isq: &mut IssueQueue) {
     let mut num_to_pop = 0;
     for line in isq.iter() {
         if line.checked == true {
@@ -372,11 +395,6 @@ pub unsafe extern "C" fn cyclotron_difftest_reg_rs(
     }
     for _ in 0..num_to_pop {
         isq.pop_front();
-    }
-
-    context.difftested_insts += 1;
-    if context.difftested_insts % 100 == 0 {
-        println!("DIFFTEST pass: Checked {} instructions", context.difftested_insts);
     }
 }
 
