@@ -262,6 +262,7 @@ pub unsafe extern "C" fn cyclotron_frontend_rs(
 /// Do a differential test between the register values read at instruction issue from RTL, and the
 /// values logged in Cyclotron trace.
 pub unsafe extern "C" fn cyclotron_difftest_reg_rs(
+    sim_tick: u8,
     valid: u8,
     // TODO: tmask
     pc: u32,
@@ -276,25 +277,32 @@ pub unsafe extern "C" fn cyclotron_difftest_reg_rs(
     rs3_address: u8,
     rs3_data_raw: *const u32,
 ) {
+    if valid == 0 {
+        return;
+    }
+
     let mut context_guard = CELL.write().unwrap();
     let context = context_guard.as_mut().expect("DPI context not initialized!");
     let sim = &mut context.sim_isa;
+    let config = sim.top.clusters[0].cores[0].conf().clone();
 
-    let core = &mut sim.top.clusters[0].cores[0];
-    let config = core.conf().clone();
+    if sim_tick == 1 {
+        sim.tick();
+
+        let all_warp_pop = vec![true; config.num_warps];
+        let core = &mut sim.top.clusters[0].cores[0];
+        push_issue_queue(core, &mut context.issue_queue, &all_warp_pop);
+    }
 
     let rs1_data = unsafe { std::slice::from_raw_parts(rs1_data_raw, config.num_lanes) };
     let rs2_data = unsafe { std::slice::from_raw_parts(rs2_data_raw, config.num_lanes) };
     let rs3_data = unsafe { std::slice::from_raw_parts(rs3_data_raw, config.num_lanes) };
 
-    if valid == 0 {
-        return;
-    }
-
     let isq = &mut context.issue_queue[warp_id as usize];
+
     if isq.is_empty() {
         println!(
-            "DIFFTEST fail: rtl over-ran model, remnant rtl inst: pc:{:x}, warp:{}",
+            "DIFFTEST fail: rtl over-ran model, first remaining inst: pc:{:x}, warp:{}",
             pc, warp_id
         );
         panic!("DIFFTEST fail");
