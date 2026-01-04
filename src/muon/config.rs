@@ -19,11 +19,11 @@ impl Config for MuonConfig {}
 impl Default for MuonConfig {
     fn default() -> Self {
         Self {
-            num_lanes: 4,
-            num_warps: 1,
+            num_lanes: 16,
+            num_warps: 4,
             num_cores: 1,
-            num_regs: 128,
-            start_pc: 0x8000000u32,
+            num_regs: 256,
+            start_pc: 0x10000000u32,
             smem_size: 0x1_0000, // 64 KiB
             lane_config: LaneConfig::default(),
         }

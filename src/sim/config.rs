@@ -36,7 +36,7 @@ impl Default for SimConfig {
         Self {
             elf: PathBuf::new(),
             log_level: 0,
-            timeout: 10000,
+            timeout: 10000000,
             trace: false,
         }
     }
