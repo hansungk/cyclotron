@@ -78,7 +78,7 @@ impl CSRFile {
                 | (0 <<  3) /* D - Double precsision floating-point extension */
                 | (0 <<  4) /* E - RV32E base ISA */
                 | (1 <<  5) /* F - Single precsision floating-point extension */
-                | (0 <<  6) /* G - Additional standard extensions present */
+                | (1 <<  6) /* G - Additional standard extensions present */
                 | (0 <<  7) /* H - Hypervisor mode implemented */
                 | (1 <<  8) /* I - RV32I/64I/128I base ISA */
                 | (0 <<  9) /* J - Reserved */
@@ -92,7 +92,7 @@ impl CSRFile {
                 | (0 << 17) /* R - Reserved */
                 | (0 << 18) /* S - Supervisor mode implemented */
                 | (0 << 19) /* T - Tentatively reserved for Transactional Memory extension */
-                | (1 << 20) /* U - User mode implemented */
+                | (0 << 20) /* U - User mode implemented */
                 | (0 << 21) /* V - Tentatively reserved for Vector extension */
                 | (0 << 22) /* W - Reserved */
                 | (1 << 23) /* X - Non-standard extensions present */
