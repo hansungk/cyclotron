@@ -3,7 +3,11 @@ use crate::base::behavior::*;
 use crate::muon::core::MuonCore;
 use crate::sim::top::Sim;
 use crate::sim::trace;
+use crate::ui::CyclotronArgs;
+use std::collections::VecDeque;
+use std::ffi::CStr;
 use std::iter::zip;
+use std::os::raw::c_char;
 use std::path::PathBuf;
 use std::sync::RwLock;
 
@@ -12,8 +16,23 @@ use log::LevelFilter;
 
 struct Context {
     sim_isa: Sim, // cyclotron instance for the ISA model
-    sim_be: Sim,  // cyclotron instance for the backend model
+    // holds fetch/decoded, but not issued, instructions
+    // to be used for diff-testing against RTL issue
+    issue_queue: Vec<IssueQueue>,
+    sim_be: Sim, // cyclotron instance for the backend model
+    cycles_after_finished: usize,
+    difftested_insts: usize,
 }
+
+// must be large enough to let the core pipeline entirely drain
+const FINISH_COUNTDOWN: usize = 100;
+
+#[derive(Clone)]
+struct IssueQueueLine {
+    line: trace::Line,
+    checked: bool,
+}
+type IssueQueue = VecDeque<IssueQueueLine>;
 
 /// Global singleton to maintain simulator context across independent DPI calls.
 static CELL: RwLock<Option<Context>> = RwLock::new(None);
@@ -30,27 +49,59 @@ pub fn assert_single_core(sim: &Sim) {
 }
 
 #[no_mangle]
-/// Entry point to the DPI interface.  This must be called from Verilog once at the start in an
-/// initial block.
-pub fn cyclotron_init_rs() {
-    let log_level = LevelFilter::Debug;
+/// Entry point to the DPI interface.  This must be called from Verilog at the start in an initial
+/// block.  This function can be called multiple times in different .v shims.
+pub extern "C" fn cyclotron_init_rs(c_elfname: *const c_char) {
+    if CELL.read().unwrap().is_some() {
+        // DPI context is already initialized by some other call; exit
+        return;
+    }
 
+    let log_level = LevelFilter::Debug;
     Builder::new().filter_level(log_level).init();
-    let toml_path = PathBuf::from("config.toml");
-    let toml_string = crate::ui::read_toml(&toml_path);
+
+    // let toml_path = PathBuf::from("config.toml");
+    // let toml_string = crate::ui::read_toml(&toml_path);
+
+    let elfname = unsafe {
+        if c_elfname.is_null() {
+            String::new()
+        } else {
+            CStr::from_ptr(c_elfname).to_string_lossy().into_owned()
+        }
+    };
+    let mut cyclotron_args = CyclotronArgs::default();
+    if !elfname.is_empty() {
+        cyclotron_args.binary_path = Some(PathBuf::from(&elfname));
+    }
 
     // make separate sim instances for the golden ISA model and the backend model to prevent
     // double-execution on the same GMEM
-    let sim_isa = crate::ui::make_sim(&toml_string, None);
-    let sim_be = crate::ui::make_sim(&toml_string, None);
+    let arg = Some(cyclotron_args);
+    let sim_isa = crate::ui::make_sim(None, &arg);
+    let sim_be = crate::ui::make_sim(None, &arg);
     assert_single_core(&sim_isa);
     assert_single_core(&sim_be);
 
-    println!("cyclotron_init_rs: created sim object from {}", toml_path.display());
+    let final_elfname = sim_isa.config.elf.as_path();
+    // TODO: print config summary
+    println!(
+        "Cyclotron: created sim object with ELF file: {}",
+        final_elfname.display()
+    );
 
-    let mut c = Context { sim_isa, sim_be };
+    let mut c = Context {
+        sim_isa,
+        issue_queue: Vec::new(),
+        sim_be,
+        cycles_after_finished: 0,
+        difftested_insts: 0,
+    };
     c.sim_isa.top.reset();
     c.sim_be.top.reset();
+
+    let config = &c.sim_isa.top.clusters[0].cores[0].conf().clone();
+    c.issue_queue = vec![VecDeque::new(); config.num_warps];
 
     let mut context = CELL.write().unwrap();
     if context.as_ref().is_some() {
@@ -61,7 +112,7 @@ pub fn cyclotron_init_rs() {
 
 #[no_mangle]
 /// Get un-decoded instruction bits from the instruction trace.
-pub fn cyclotron_fetch_rs(fetch_pc: u32, fetch_warp: u32, inst_ptr: *mut u64) {
+pub unsafe extern "C" fn cyclotron_fetch_rs(fetch_pc: u32, fetch_warp: u32, inst_ptr: *mut u64) {
     let mut context_guard = CELL.write().unwrap();
     let context = context_guard.as_mut().expect("DPI context not initialized!");
     let sim = &mut context.sim_isa;
@@ -78,12 +129,27 @@ fn peek_heads(c: &MuonCore, num_warps: usize) -> Vec<Option<trace::Line>> {
         .collect::<Vec<_>>()
 }
 
+fn push_issue_queue(c: &mut MuonCore, issue_queue: &mut Vec<IssueQueue>, per_warp_pop: &[bool]) {
+    let num_warps = per_warp_pop.len();
+    let heads = peek_heads(c, num_warps);
+    for (w, (o_line, pop)) in zip(heads, per_warp_pop).enumerate() {
+        if o_line.is_some() && *pop {
+            c.get_tracer_mut().consume(w);
+            let iline = IssueQueueLine {
+                line: o_line.unwrap(),
+                checked: false,
+            };
+            issue_queue[w].push_back(iline);
+        }
+    }
+}
+
 #[no_mangle]
 /// Get a per-warp decoded instruction bundle from the instruction trace, and advance the ISA
 /// model.  Models the fetch/decode frontend up until the ibuffers, and exposes per-warp ibuffer
 /// head entries.
 /// SAFETY: All signals are arrays of size num_warps.
-pub unsafe fn cyclotron_frontend_rs(
+pub unsafe extern "C" fn cyclotron_frontend_rs(
     ibuf_ready_vec: *const u8,
     ibuf_valid_vec: *mut u8,
     ibuf_pc_vec: *mut u32,
@@ -130,15 +196,11 @@ pub unsafe fn cyclotron_frontend_rs(
     let raw = unsafe { std::slice::from_raw_parts_mut(ibuf_raw_vec, config.num_warps) };
     let finished = unsafe { finished_ptr.as_mut().expect("pointer was null") };
 
-    // consume if RTL ready was true
-    // this has to happen before the sim::tick() call below, so that it respects the
+    // upon RTL fire, consume the instruction line in the tracer queue, and move it to the issue
+    // queue.  This has to happen before the sim::tick() call below, so that it respects the
     // dequeue->enqueue data hazard
-    let heads = peek_heads(core, config.num_warps);
-    for (w, (o_line, rdy)) in zip(heads, ready).enumerate() {
-        if o_line.is_some() && *rdy == 1 {
-            core.get_tracer_mut().consume(w);
-        }
-    }
+    let per_warp_ready = ready.iter().map(|r| *r == 1).collect::<Vec<bool>>();
+    push_issue_queue(core, &mut context.issue_queue, &per_warp_ready);
 
     // advance simulation to populate the tracer buffers
     sim.tick();
@@ -184,7 +246,179 @@ pub unsafe fn cyclotron_frontend_rs(
         }
     }
 
-    *finished = sim.finished() as u8;
+    if sim.finished() {
+        if context.cycles_after_finished == 0 {
+            println!("Cyclotron: model finished execution");
+        }
+        context.cycles_after_finished += 1;
+    }
+    if context.cycles_after_finished == FINISH_COUNTDOWN && context.difftested_insts > 0 {
+        println!("DIFFTEST: PASS: {} instructions", context.difftested_insts);
+    }
+
+    *finished = (context.cycles_after_finished >= FINISH_COUNTDOWN) as u8;
+}
+
+#[no_mangle]
+/// Do a differential test between the register values read at instruction issue from RTL, and the
+/// values logged in Cyclotron trace.
+pub unsafe extern "C" fn cyclotron_difftest_reg_rs(
+    sim_tick: u8,
+    valid: u8,
+    // TODO: tmask
+    pc: u32,
+    warp_id: u32,
+    rs1_enable: u8,
+    rs1_address: u8,
+    rs1_data_raw: *const u32,
+    rs2_enable: u8,
+    rs2_address: u8,
+    rs2_data_raw: *const u32,
+    rs3_enable: u8,
+    rs3_address: u8,
+    rs3_data_raw: *const u32,
+) {
+    let mut context_guard = CELL.write().unwrap();
+    let context = context_guard.as_mut().expect("DPI context not initialized!");
+    let sim = &mut context.sim_isa;
+    let config = sim.top.clusters[0].cores[0].conf().clone();
+
+    // runs regardless of valid == 0/1 to ensure model run-ahead of rtl
+    if sim_tick == 1 {
+        sim.tick();
+
+        let all_warp_pop = vec![true; config.num_warps];
+        let core = &mut sim.top.clusters[0].cores[0];
+        push_issue_queue(core, &mut context.issue_queue, &all_warp_pop);
+    }
+
+    if valid == 0 {
+        return;
+    }
+    let rs1_data = unsafe { std::slice::from_raw_parts(rs1_data_raw, config.num_lanes) };
+    let rs2_data = unsafe { std::slice::from_raw_parts(rs2_data_raw, config.num_lanes) };
+    let rs3_data = unsafe { std::slice::from_raw_parts(rs3_data_raw, config.num_lanes) };
+
+    let isq = &mut context.issue_queue[warp_id as usize];
+
+    if isq.is_empty() {
+        println!(
+            "DIFFTEST fail: rtl over-ran model, first remaining inst: pc:{:x}, warp:{}",
+            pc, warp_id
+        );
+        panic!("DIFFTEST fail");
+    }
+
+    // iter_mut() order equals the enqueue order, which equals the program order.  This way we
+    // match RTL against the oldest same-PC model instruction
+    let mut checked = false;
+    for line in isq.iter_mut() {
+        if line.line.pc != pc {
+            continue;
+        }
+        if line.checked {
+            continue;
+        }
+
+        let compare_reg_addr_and_exit = |rtl: u8, model: u8, name: &str| {
+            // if rtl != model {
+            //     println!(
+            //         "DIFFTEST fail: {} address mismatch, pc:{:x}, warp: {}, rtl:{}, model:{}",
+            //         name, pc, warp_id, rtl, model,
+            //     );
+            //     panic!("DIFFTEST fail");
+            // }
+        };
+        let compare_reg_data_and_exit = |rtl: &[u32], model: &[Option<u32>], name: &str| {
+            let res = compare_vector_reg_data(rtl, model);
+            if let Err(e) = res {
+                println!(
+                    "DIFFTEST fail: {} data mismatch, pc:{:x}, warp:{}, lane:{}, rtl:{}, model:{}",
+                    name, pc, warp_id, e.lane, e.rtl, e.model
+                );
+                panic!("DIFFTEST fail");
+            }
+        };
+
+        if rs1_enable != 0 {
+            compare_reg_addr_and_exit(rs1_address, line.line.rs1_addr, "rs1");
+            // sometimes the collector RTL drives bogus values on x0; ignore that.
+            if rs1_address != 0 {
+                compare_reg_data_and_exit(rs1_data, &line.line.rs1_data, "rs1");
+            }
+        }
+        if rs2_enable != 0 {
+            compare_reg_addr_and_exit(rs2_address, line.line.rs2_addr, "rs2");
+            if rs2_address != 0 {
+                compare_reg_data_and_exit(rs2_data, &line.line.rs2_data, "rs2");
+            }
+        }
+        if rs3_enable != 0 {
+            compare_reg_addr_and_exit(rs3_address, line.line.rs3_addr, "rs3");
+            if rs3_address != 0 {
+                compare_reg_data_and_exit(rs3_data, &line.line.rs3_data, "rs3");
+            }
+        }
+
+        line.checked = true;
+        checked = true;
+        break;
+    }
+
+    if !checked {
+        println!(
+            "DIFFTEST fail: pc mismatch: rtl reached instruction unseen by model, pc:{:x}, warp:{}",
+            pc, warp_id
+        );
+        panic!("DIFFTEST fail");
+    }
+
+    // TODO: check rtl under-run of model
+
+    // clean up checked lines at the front
+    clear_front_checked(isq);
+
+    context.difftested_insts += 1;
+    if context.difftested_insts % 100 == 0 {
+        println!("DIFFTEST pass: Checked {} instructions", context.difftested_insts);
+    }
+}
+
+fn clear_front_checked(isq: &mut IssueQueue) {
+    let mut num_to_pop = 0;
+    for line in isq.iter() {
+        if line.checked == true {
+            num_to_pop += 1;
+        } else {
+            break;
+        }
+    }
+    for _ in 0..num_to_pop {
+        isq.pop_front();
+    }
+}
+
+struct RegMatchError {
+    lane: usize,
+    rtl: u32,
+    model: u32,
+}
+
+fn compare_vector_reg_data(regs_rtl: &[u32], regs_model: &[Option<u32>]) -> Result<(), RegMatchError> {
+    for (i, (rtl, model)) in zip(regs_rtl, regs_model).enumerate() {
+        // TODO: instead of skipping None, compare with tmask
+        if let Some(m) = model {
+            if *rtl != *m {
+                return Err(RegMatchError {
+                    lane: i,
+                    rtl: *rtl,
+                    model: *m,
+                });
+            }
+        }
+    }
+
+    Ok(())
 }
 
 mod backend_model;

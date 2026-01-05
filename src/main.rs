@@ -8,7 +8,7 @@ pub fn main() -> Result<(), u32> {
 
     let argv = CyclotronArgs::parse();
     let toml_string = read_toml(argv.config_path.as_path());
-    let mut sim = make_sim(&toml_string, Some(argv));
+    let mut sim = make_sim(Some(&toml_string), &Some(argv));
     let result = sim.simulate();
     result
 }

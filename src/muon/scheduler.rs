@@ -251,11 +251,6 @@ impl Scheduler {
                 self.base.state.tohost = Some(a0);
                 self.base.state.thread_masks[wid] = 0;
                 self.base.state.active_warps.mut_bit(wid, false);
-                if a0 == 0 {
-                    println!("test passed!")
-                } else {
-                    println!("test failed with tohost={}", a0);
-                }
                 // might want a tohost writeback here
                 SchedulerWriteback {
                     tohost: Some(a0),

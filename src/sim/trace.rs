@@ -54,9 +54,9 @@ impl Tracer {
             bufs: Vec::new(),
             rr: 0,
         };
-        (0..muon_config.num_warps).for_each(|_| {
+        for _ in 0..muon_config.num_warps {
             tracer.bufs.push(VecDeque::new());
-        });
+        }
         tracer
     }
 
@@ -104,6 +104,7 @@ impl Tracer {
     pub fn consume_round_robin(&mut self) -> Option<Line> {
         for i in 0..self.bufs.len() {
             let wid = self.rr + i;
+            self.rr = (self.rr + 1) % self.bufs.len();
             let buf = &self.bufs[wid];
             if buf.len() == 0 {
                 continue;
