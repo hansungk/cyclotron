@@ -47,13 +47,13 @@ impl Sim {
         for cycle in 0..self.top.timeout {
             if self.top.finished() {
                 println!("simulation finished after {} cycles", cycle + 1);
-                if let Some(mut tohost) = self.top.clusters[0].cores[0].scheduler.state_mut().tohost {
-                    if tohost > 0 {
-                        tohost >>= 1;
-                        println!("failed test case {}", tohost);
+                if let Some(tohost) = self.top.clusters[0].cores[0].scheduler.state().tohost {
+                    if tohost != 0 {
+                        let case = tohost >> 1;
+                        println!("Cyclotron: isa-test failed with tohost={}, case={}", tohost, case);
                         return Err(tohost)
                     } else {
-                        println!("test passed");
+                        println!("Cyclotron: isa-test reached tohost");
                     }
                 }
                 return Ok(());
