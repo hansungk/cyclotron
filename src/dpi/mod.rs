@@ -154,15 +154,36 @@ pub unsafe fn cyclotron_imem_rs(
 
 #[no_mangle]
 /// Get un-decoded instruction bits from the instruction trace.
-pub unsafe extern "C" fn cyclotron_fetch_rs(fetch_pc: u32, inst_ptr: *mut u64) {
+pub unsafe extern "C" fn cyclotron_fetch_rs(
+    req_valid: u8,
+    req_bits_tag: u64,
+    req_bits_pc: u32,
+    resp_valid_ptr: *mut u8,
+    resp_bits_tag_ptr: *mut u64,
+    resp_bits_inst_ptr: *mut u64,
+) {
     let mut context_guard = CELL.write().unwrap();
     let context = context_guard.as_mut().expect("DPI context not initialized!");
     let sim = &mut context.sim_isa;
     let core = &mut sim.top.clusters[0].cores[0];
 
-    let inst = core.fetch(0/*warp*/, fetch_pc);
-    let inst_ref = unsafe { inst_ptr.as_mut().expect("pointer was null") };
-    *inst_ref = inst;
+    let resp_valid = unsafe { resp_valid_ptr.as_mut().expect("pointer was null") };
+    let resp_bits_tag = unsafe { resp_bits_tag_ptr.as_mut().expect("pointer was null") };
+    let resp_bits_inst = unsafe { resp_bits_inst_ptr.as_mut().expect("pointer was null") };
+
+    *resp_valid = 0;
+    *resp_bits_tag = 0;
+    *resp_bits_inst = 0;
+    if req_valid != 1 {
+        return;
+    }
+
+    let inst = core.fetch(0 /*warp*/, req_bits_pc);
+
+    // 1-cycle latency
+    *resp_valid = 1;
+    *resp_bits_tag = req_bits_tag;
+    *resp_bits_inst = inst;
 }
 
 fn peek_heads(c: &MuonCore, num_warps: usize) -> Vec<Option<trace::Line>> {
