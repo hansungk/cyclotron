@@ -475,6 +475,7 @@ pub unsafe fn cyclotron_backend_rs(
     //     *data_pin = owb.unwrap_or(0);
     // }
 }
+
 #[no_mangle]
 /// Do a differential test between the register values read at instruction issue from RTL, and the
 /// values logged in Cyclotron trace.
@@ -635,6 +636,29 @@ fn compare_vector_reg_data(regs_rtl: &[u32], regs_model: &[Option<u32>]) -> Resu
     }
 
     Ok(())
+}
+
+#[no_mangle]
+/// Gather performance monitoring counters from Muon and generate high-level performance metrics
+/// and pipeline bottleneck analysis.
+pub unsafe extern "C" fn profile_perf_counters_rs(
+    inst_retired: u64,
+    cycles: u64,
+    finished: u8,
+) {
+    if finished != 1 {
+        return;
+    }
+
+    let ipc = inst_retired as f32 / cycles as f32;
+
+    println!("+-----------------------+");
+    println!(" Muon Performance Report");
+    println!("+-----------------------+");
+    println!("Instructions: {}", inst_retired);
+    println!("Cycles: {}", cycles);
+    println!("IPC: {:.3}", ipc);
+    println!("+-----------------------+");
 }
 
 mod mem_model;

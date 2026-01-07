@@ -609,7 +609,7 @@ impl ExecuteUnit {
         // lane id of first active thread
         let first_lid = tmask.trailing_zeros() as usize;
 
-        debug!("ISSUE: {}", issued);
+        debug!("ISSUE: {}, tmask: {:b}", issued, tmask);
 
         let empty = vec![None::<u32>; num_lanes];
         let empty_swb = SchedulerWriteback::default();
