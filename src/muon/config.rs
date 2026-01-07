@@ -20,7 +20,7 @@ impl Default for MuonConfig {
     fn default() -> Self {
         Self {
             num_lanes: 16,
-            num_warps: 4,
+            num_warps: 8,
             num_cores: 1,
             num_regs: 256,
             start_pc: 0x10000000u32,
