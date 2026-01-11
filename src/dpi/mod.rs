@@ -644,6 +644,9 @@ fn compare_vector_reg_data(regs_rtl: &[u32], regs_model: &[Option<u32>]) -> Resu
 pub unsafe extern "C" fn profile_perf_counters_rs(
     inst_retired: u64,
     cycles: u64,
+    cycles_decoded: u64,
+    cycles_eligible: u64,
+    cycles_issued: u64,
     finished: u8,
 ) {
     if finished != 1 {
@@ -651,12 +654,19 @@ pub unsafe extern "C" fn profile_perf_counters_rs(
     }
 
     let ipc = inst_retired as f32 / cycles as f32;
+    let frac = |cycle: u64| { cycle as f32 / cycles as f32 };
+    let percent = |cycle| { frac(cycle) * 100. };
 
+    println!("Muon core finished execution.");
+    println!("");
     println!("+-----------------------+");
     println!(" Muon Performance Report");
     println!("+-----------------------+");
     println!("Instructions: {}", inst_retired);
     println!("Cycles: {}", cycles);
+    println!("├─ with decoded insts: {} ({:.2}%)", cycles_decoded, percent(cycles_decoded));
+    println!("├─ with eligible insts: {} ({:.2}%)", cycles_eligible, percent(cycles_eligible));
+    println!("└─ with issued insts: {} ({:.2}%)", cycles_issued, percent(cycles_issued));
     println!("IPC: {:.3}", ipc);
     println!("+-----------------------+");
 }
