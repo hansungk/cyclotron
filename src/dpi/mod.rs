@@ -647,11 +647,30 @@ pub unsafe extern "C" fn profile_perf_counters_rs(
     cycles_decoded: u64,
     cycles_eligible: u64,
     cycles_issued: u64,
+    per_warp_cycles_decoded_ptr: *const u64,
+    per_warp_stalls_waw_ptr: *const u64,
+    per_warp_stalls_war_ptr: *const u64,
     finished: u8,
 ) {
     if finished != 1 {
         return;
     }
+
+    let mut context_guard = CELL.write().unwrap();
+    let context = context_guard.as_mut().expect("DPI context not initialized!");
+    let sim = &mut context.sim_isa;
+    let core = &mut sim.top.clusters[0].cores[0];
+    let config = core.conf().clone();
+
+    let per_warp_cycles_decoded = unsafe { std::slice::from_raw_parts(per_warp_cycles_decoded_ptr, config.num_warps) };
+    let per_warp_stalls_waw = unsafe { std::slice::from_raw_parts(per_warp_stalls_waw_ptr, config.num_warps) };
+    let per_warp_stalls_war = unsafe { std::slice::from_raw_parts(per_warp_stalls_war_ptr, config.num_warps) };
+    let all_warp_cycles_decoded: u64 = per_warp_cycles_decoded.iter().sum();
+    let all_warp_stalls_waw: u64 = per_warp_stalls_waw.iter().sum();
+    let all_warp_stalls_war: u64 = per_warp_stalls_war.iter().sum();
+    let avg_warp_stalls_waw = all_warp_stalls_waw as f32 / all_warp_cycles_decoded as f32;
+    let avg_warp_stalls_war = all_warp_stalls_war as f32 / all_warp_cycles_decoded as f32;
+    let avg_active_warps = all_warp_cycles_decoded as f32 / cycles_decoded as f32;
 
     let ipc = inst_retired as f32 / cycles as f32;
     let frac = |cycle: u64| { cycle as f32 / cycles as f32 };
@@ -667,6 +686,11 @@ pub unsafe extern "C" fn profile_perf_counters_rs(
     println!("├─ with decoded insts: {} ({:.2}%)", cycles_decoded, percent(cycles_decoded));
     println!("├─ with eligible insts: {} ({:.2}%)", cycles_eligible, percent(cycles_eligible));
     println!("└─ with issued insts: {} ({:.2}%)", cycles_issued, percent(cycles_issued));
+    println!("Per-warp cycles:");
+    println!("├─ with decoded insts [warp 0]: {}", per_warp_cycles_decoded[0]);
+    println!("├─ avg. active warps: {}", avg_active_warps);
+    println!("├─ avg. stalls due to write-after-write: {:.2}", avg_warp_stalls_waw);
+    println!("└─ avg. stalls due to write-after-read:  {:.2}", avg_warp_stalls_war);
     println!("IPC: {:.3}", ipc);
     println!("+-----------------------+");
 }
