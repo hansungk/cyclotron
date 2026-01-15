@@ -23,7 +23,8 @@ struct Context {
     // to be used for diff-testing against RTL issue
     issue_queue: Vec<IssueQueue>,
     sim_be: Sim, // cyclotron instance for the backend model
-    cycles_after_finished: usize,
+    cycles_after_cyclotron_finished: usize,
+    rtl_finished: bool,
     difftested_insts: usize,
 }
 
@@ -97,7 +98,8 @@ pub extern "C" fn cyclotron_init_rs(c_elfname: *const c_char) {
         sim_isa,
         issue_queue: Vec::new(),
         sim_be,
-        cycles_after_finished: 0,
+        cycles_after_cyclotron_finished: 0,
+        rtl_finished: false,
         difftested_insts: 0,
     };
     c.sim_isa.top.reset();
@@ -309,17 +311,18 @@ pub unsafe extern "C" fn cyclotron_frontend_rs(
         }
     }
 
+    // give some time for the RTL to finish after the sim frontend finished
     if sim.finished() {
-        if context.cycles_after_finished == 0 {
+        if context.cycles_after_cyclotron_finished == 0 {
             println!("Cyclotron: model finished execution");
         }
-        context.cycles_after_finished += 1;
+        context.cycles_after_cyclotron_finished += 1;
     }
-    if context.cycles_after_finished == FINISH_COUNTDOWN && context.difftested_insts > 0 {
+    if context.cycles_after_cyclotron_finished == FINISH_COUNTDOWN && context.difftested_insts > 0 {
         println!("DIFFTEST: PASS: {} instructions", context.difftested_insts);
     }
 
-    *finished = (context.cycles_after_finished >= FINISH_COUNTDOWN) as u8;
+    *finished = (context.cycles_after_cyclotron_finished >= FINISH_COUNTDOWN) as u8;
 }
 
 /// Issue a decoded instruction bundle to the backend model, and get the writeback bundle back.
@@ -648,33 +651,44 @@ pub unsafe extern "C" fn profile_perf_counters_rs(
     cycles_eligible: u64,
     cycles_issued: u64,
     per_warp_cycles_decoded_ptr: *const u64,
+    per_warp_cycles_issued_ptr: *const u64,
     per_warp_stalls_waw_ptr: *const u64,
     per_warp_stalls_war_ptr: *const u64,
+    per_warp_stalls_busy_ptr: *const u64,
     finished: u8,
 ) {
-    if finished != 1 {
-        return;
-    }
-
     let mut context_guard = CELL.write().unwrap();
     let context = context_guard.as_mut().expect("DPI context not initialized!");
     let sim = &mut context.sim_isa;
     let core = &mut sim.top.clusters[0].cores[0];
     let config = core.conf().clone();
 
+    if finished != 1 {
+        return;
+    } else if context.rtl_finished {
+        return;
+    }
+
+    context.rtl_finished = true;
+
     let per_warp_cycles_decoded = unsafe { std::slice::from_raw_parts(per_warp_cycles_decoded_ptr, config.num_warps) };
+    let per_warp_cycles_issued = unsafe { std::slice::from_raw_parts(per_warp_cycles_issued_ptr, config.num_warps) };
     let per_warp_stalls_waw = unsafe { std::slice::from_raw_parts(per_warp_stalls_waw_ptr, config.num_warps) };
     let per_warp_stalls_war = unsafe { std::slice::from_raw_parts(per_warp_stalls_war_ptr, config.num_warps) };
+    let per_warp_stalls_busy = unsafe { std::slice::from_raw_parts(per_warp_stalls_busy_ptr, config.num_warps) };
     let all_warp_cycles_decoded: u64 = per_warp_cycles_decoded.iter().sum();
+    let all_warp_cycles_issued: u64 = per_warp_cycles_issued.iter().sum();
     let all_warp_stalls_waw: u64 = per_warp_stalls_waw.iter().sum();
     let all_warp_stalls_war: u64 = per_warp_stalls_war.iter().sum();
-    let avg_warp_stalls_waw = all_warp_stalls_waw as f32 / all_warp_cycles_decoded as f32;
-    let avg_warp_stalls_war = all_warp_stalls_war as f32 / all_warp_cycles_decoded as f32;
+    let all_warp_stalls_busy: u64 = per_warp_stalls_busy.iter().sum();
+    let avg_warp_stalls_waw = all_warp_stalls_waw as f32 / all_warp_cycles_issued as f32;
+    let avg_warp_stalls_war = all_warp_stalls_war as f32 / all_warp_cycles_issued as f32;
+    let avg_warp_stalls_busy = all_warp_stalls_busy as f32 / all_warp_cycles_issued as f32;
     let avg_active_warps = all_warp_cycles_decoded as f32 / cycles_decoded as f32;
 
     let ipc = inst_retired as f32 / cycles as f32;
-    let frac = |cycle: u64| { cycle as f32 / cycles as f32 };
-    let percent = |cycle| { frac(cycle) * 100. };
+    let frac = |cycle: u64| cycle as f32 / cycles as f32;
+    let percent = |cycle| frac(cycle) * 100.;
 
     println!("Muon core finished execution.");
     println!("");
@@ -690,7 +704,8 @@ pub unsafe extern "C" fn profile_perf_counters_rs(
     println!("├─ with decoded insts [warp 0]: {}", per_warp_cycles_decoded[0]);
     println!("├─ avg. active warps: {}", avg_active_warps);
     println!("├─ avg. stalls due to write-after-write: {:.2}", avg_warp_stalls_waw);
-    println!("└─ avg. stalls due to write-after-read:  {:.2}", avg_warp_stalls_war);
+    println!("├─ avg. stalls due to write-after-read:  {:.2}", avg_warp_stalls_war);
+    println!("└─ avg. stalls due to busy FUs: {:.2}", avg_warp_stalls_busy);
     println!("IPC: {:.3}", ipc);
     println!("+-----------------------+");
 }
