@@ -16,7 +16,6 @@ pub struct MuonState {}
 
 pub struct MuonCore {
     base: ModuleBase<MuonState, MuonConfig>,
-    pub id: usize,
     pub scheduler: Scheduler,
     pub warps: Vec<Warp>,
     pub(crate) shared_mem: FlatMemory,
@@ -26,16 +25,16 @@ pub struct MuonCore {
 }
 
 impl MuonCore {
-    pub fn new(config: Arc<MuonConfig>, id: usize, logger: &Arc<Logger>, gmem: Arc<RwLock<FlatMemory>>) -> Self {
+    pub fn new(config: Arc<MuonConfig>, cluster_id: usize, core_id: usize, logger: &Arc<Logger>, gmem: Arc<RwLock<FlatMemory>>) -> Self {
         let num_warps = config.num_warps;
         let mut core = MuonCore {
             base: Default::default(),
-            id,
-            scheduler: Scheduler::new(Arc::clone(&config), id),
+            scheduler: Scheduler::new(Arc::clone(&config), core_id),
             warps: (0..num_warps).map(|warp_id| Warp::new(Arc::new(MuonConfig {
                 lane_config: LaneConfig {
                     warp_id,
-                    core_id: id,
+                    core_id,
+                    cluster_id,
                     ..config.lane_config
                 },
                 ..*config
@@ -45,7 +44,7 @@ impl MuonCore {
             tracer: Arc::new(Tracer::new(&config)),
         };
 
-        info!(core.logger, "muon core {} instantiated!", id);
+        info!(core.logger, "muon core {} in cluster {} instantiated!", core_id, cluster_id);
 
         core.init_conf(Arc::clone(&config));
         core

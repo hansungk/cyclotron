@@ -35,6 +35,7 @@ pub struct LaneConfig {
     pub lane_id: usize,
     pub warp_id: usize,
     pub core_id: usize,
+    pub cluster_id: usize,
 }
 
 impl Default for LaneConfig {
@@ -43,6 +44,7 @@ impl Default for LaneConfig {
             lane_id: 0,
             warp_id: 0,
             core_id: 0,
+            cluster_id: 0,
         }
     }
 }

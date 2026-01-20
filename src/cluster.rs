@@ -1,11 +1,11 @@
 use crate::base::behavior::*;
 use crate::muon::core::MuonCore;
+use crate::neutrino::neutrino::Neutrino;
 use crate::sim::flat_mem::FlatMemory;
+use crate::sim::log::Logger;
+use crate::sim::top::ClusterConfig;
 use log::info;
 use std::sync::{Arc, RwLock};
-use crate::neutrino::neutrino::Neutrino;
-use crate::sim::top::ClusterConfig;
-use crate::sim::log::Logger;
 
 pub struct Cluster {
     id: usize,
@@ -18,7 +18,13 @@ impl Cluster {
     pub fn new(config: Arc<ClusterConfig>, id: usize, logger: &Arc<Logger>, gmem: Arc<RwLock<FlatMemory>>) -> Self {
         let mut cores = Vec::new();
         for cid in 0..config.muon_config.num_cores {
-            cores.push(MuonCore::new(Arc::new(config.muon_config), cid, logger, gmem.clone()));
+            cores.push(MuonCore::new(
+                Arc::new(config.muon_config),
+                id,
+                cid,
+                logger,
+                gmem.clone(),
+            ));
         }
         Cluster {
             id,
@@ -57,9 +63,8 @@ impl ModuleBehaviors for Cluster {
             core.process(&mut self.neutrino).unwrap();
         }
         self.neutrino.tick_one();
-        self.neutrino.update(&mut self.cores.iter_mut()
-            .map(|c| &mut c.scheduler)
-            .collect());
+        self.neutrino
+            .update(&mut self.cores.iter_mut().map(|c| &mut c.scheduler).collect());
     }
 
     fn reset(&mut self) {
