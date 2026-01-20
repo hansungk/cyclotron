@@ -4,6 +4,7 @@ mkdir -p logs
 failures=0
 
 for isatest in test/isa-tests/*; do
+    test -x "$isatest" || continue
     name=$(basename "$isatest")
     log="logs/${name}.out"
     echo "Running $name ..."
