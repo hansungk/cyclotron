@@ -234,11 +234,11 @@ impl Warp {
         }
     }
 
-    pub fn set_block_threads_pp(&mut self, block_idx: (u32, u32, u32), thread_idxs: &Vec<(u32, u32, u32)>, pp: u32) {
+    pub fn set_block_threads_bp(&mut self, block_idx: (u32, u32, u32), thread_idxs: &Vec<(u32, u32, u32)>, bp: u32) {
         assert!(thread_idxs.len() <= self.base.state.csr_file.len());
         assert!(thread_idxs.len() > 0);
         for (csr_file, thread_idx) in zip(self.base.state.csr_file.iter_mut(), thread_idxs.iter()) {
-            csr_file.set_block_thread_pp(block_idx, *thread_idx, pp);
+            csr_file.set_block_thread_bp(block_idx, *thread_idx, bp);
         }
     }
 }

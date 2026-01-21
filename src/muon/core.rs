@@ -55,11 +55,11 @@ impl MuonCore {
         self.scheduler.spawn_single_warp()
     }
 
-    pub fn spawn_n_warps(&mut self, pc: u32, block_idx: (u32, u32, u32), thread_idxs: Vec<Vec<(u32, u32, u32)>>, pp: u32) {
+    pub fn spawn_n_warps(&mut self, pc: u32, block_idx: (u32, u32, u32), thread_idxs: Vec<Vec<(u32, u32, u32)>>, bp: u32) {
         assert!(thread_idxs.len() <= self.conf().num_warps && thread_idxs.len() > 0);
         self.scheduler.spawn_n_warps(pc, &thread_idxs);
         for (warp, warp_thread_idxs) in self.warps.iter_mut().zip(thread_idxs.iter()) {
-            warp.set_block_threads_pp(block_idx, warp_thread_idxs, pp);
+            warp.set_block_threads_bp(block_idx, warp_thread_idxs, bp);
         }
     }
 
