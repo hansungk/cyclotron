@@ -145,7 +145,8 @@ impl CyclotronTop {
         top
     }
 
-    pub fn gmem_load_word(&self, addr: u32) -> [u8; 4] {
+    /// Load a word from gmem.
+    pub fn gmem_load(&self, addr: u32) -> [u8; 4] {
         self.gmem
             .read()
             .expect("lock poisoned")
@@ -153,7 +154,8 @@ impl CyclotronTop {
             .expect("load failed")
     }
 
-    pub fn gmem_store_word(&self, addr: u32, data: u32, size: u32) {
+    /// Store a data with given size to gmem.  Doesn't support partial writes.
+    pub fn gmem_store(&self, addr: u32, data: u32, size: u32) {
         let mut gmem = self.gmem.write().expect("lock poisoned");
         let data_bytes = data.to_le_bytes();
         match size {

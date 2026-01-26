@@ -472,7 +472,7 @@ impl ExecuteUnit {
             0 => mem.write(addr, &data[0..1]), // store byte
             1 => mem.write(addr, &data[0..2]), // store half
             2 => mem.write(addr, &data[0..4]), // store word
-            _ => panic!("unimplemented store type"),
+            _ => panic!("unimplemented store size"),
         }.expect("store failed");
 
         None

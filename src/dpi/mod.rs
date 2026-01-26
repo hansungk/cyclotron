@@ -236,32 +236,43 @@ pub unsafe extern "C" fn cyclotron_gmem_rs(
         if req_valid[lane] != 1 {
             continue;
         }
-        if req_bits_store[lane] == 1 {
-            panic!("cyclotron_gmem_rs: lane {lane}: store not supported yet!");
-        }
-
-        // println!(
-        //     "cyclotron_gmem_rs: lane {lane}: load: addr {:x}, size {}",
-        //     req_bits_address[lane], req_bits_size[lane]
-        // );
-        if req_bits_size[lane] != 2 {
-            println!(
-                "cyclotron_gmem_rs: lane {lane}: load size {} != 2 detected; mask: {}",
-                req_bits_size[lane], req_bits_mask[lane]
-            );
-        }
 
         // TL requires address be always to beat width, which we assume is 32bit
         let beat_width_bytes = 4;
         let address_aligned = req_bits_address[lane] & !(beat_width_bytes - 1);
         let top = &mut sim.top;
-        let data = top.gmem_load_word(address_aligned);
 
-        // 1-cycle latency
-        resp_valid[lane] = 1;
-        resp_bits_tag[lane] = req_bits_tag[lane];
-        resp_bits_data[lane] = u32::from_le_bytes(data);
-        let _ = req_bits_data[lane]; // unused for now
+        let is_store = req_bits_store[lane] == 1;
+
+        if false {
+            println!(
+                "cyclotron_gmem_rs: lane {lane}: {}: addr {:x}, data: {:x}, size {}, mask {:b}",
+                if is_store { "store" } else { "load" },
+                req_bits_address[lane], req_bits_data[lane], req_bits_size[lane], req_bits_mask[lane]
+            );
+        }
+
+        if !is_store { // load
+            let data = top.gmem_load(address_aligned);
+
+            // 1-cycle latency
+            resp_valid[lane] = 1;
+            resp_bits_tag[lane] = req_bits_tag[lane];
+            resp_bits_data[lane] = u32::from_le_bytes(data);
+        } else { // store
+            let address = req_bits_address[lane];
+            let size = req_bits_size[lane];
+            let data = req_bits_data[lane];
+            // this relies on `address` not being beat-aligned, but `data` always aligned
+            let word_offset = address % beat_width_bytes;
+            let data_unaligned = data >> (word_offset * 8);
+            top.gmem_store(address, data_unaligned, size as u32);
+
+            // 1-cycle latency
+            resp_valid[lane] = 1;
+            resp_bits_tag[lane] = req_bits_tag[lane];
+            resp_bits_data[lane] = 0u32; // not used
+        }
     }
 }
 
