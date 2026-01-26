@@ -467,16 +467,11 @@ impl ExecuteUnit {
 
         let addr = alu_result as usize;
         let data = issued_inst.rs2_data[lane].unwrap().to_le_bytes();
-        match issued_inst.f3 & 3 {
-            0 => {
-                mem.write(addr, &data[0..1])
-            },
-            1 => {
-                mem.write(addr, &data[0..2])
-            },
-            2 => {
-                mem.write(addr, &data[0..4])
-            },
+        let size = issued_inst.f3 & 3;
+        match size {
+            0 => mem.write(addr, &data[0..1]), // store byte
+            1 => mem.write(addr, &data[0..2]), // store half
+            2 => mem.write(addr, &data[0..4]), // store word
             _ => panic!("unimplemented store type"),
         }.expect("store failed");
 

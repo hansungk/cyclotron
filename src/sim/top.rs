@@ -1,16 +1,17 @@
 use crate::base::behavior::*;
+use crate::base::mem::HasMemory;
+use crate::base::module::IsModule;
 use crate::cluster::Cluster;
 use crate::command_proc::CommandProcessor;
 use crate::muon::config::MuonConfig;
-use crate::base::module::IsModule;
-use crate::sim::config::{SimConfig, MemConfig};
+use crate::neutrino::config::NeutrinoConfig;
+use crate::sim::config::{MemConfig, SimConfig};
 use crate::sim::elf::ElfBackedMem;
 use crate::sim::flat_mem::FlatMemory;
 use crate::sim::log::Logger;
+use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
-use serde::Deserialize;
-use crate::neutrino::config::NeutrinoConfig;
 
 pub struct Sim {
     pub config: SimConfig,
@@ -19,19 +20,25 @@ pub struct Sim {
 }
 
 impl Sim {
-    pub fn new(sim_config: SimConfig, muon_config: MuonConfig,
-               neutrino_config: NeutrinoConfig,
-               mem_config: MemConfig) -> Sim {
+    pub fn new(
+        sim_config: SimConfig,
+        muon_config: MuonConfig,
+        neutrino_config: NeutrinoConfig,
+        mem_config: MemConfig,
+    ) -> Sim {
         let logger = Arc::new(Logger::new(sim_config.log_level));
-        let top = CyclotronTop::new(Arc::new(CyclotronConfig {
-            timeout: sim_config.timeout,
-            elf: sim_config.elf.clone(),
-            cluster_config: ClusterConfig {
-                muon_config,
-                neutrino_config,
-            },
-            mem_config,
-        }), &logger);
+        let top = CyclotronTop::new(
+            Arc::new(CyclotronConfig {
+                timeout: sim_config.timeout,
+                elf: sim_config.elf.clone(),
+                cluster_config: ClusterConfig {
+                    muon_config,
+                    neutrino_config,
+                },
+                mem_config,
+            }),
+            &logger,
+        );
 
         let mut sim = Sim {
             config: sim_config,
@@ -51,7 +58,7 @@ impl Sim {
                     if tohost != 0 {
                         let case = tohost >> 1;
                         println!("Cyclotron: isa-test failed with tohost={}, case={}", tohost, case);
-                        return Err(tohost)
+                        return Err(tohost);
                     } else {
                         println!("Cyclotron: isa-test reached tohost");
                     }
@@ -70,8 +77,14 @@ impl Sim {
         }
         self.top.tick_one();
 
-        assert!(self.top.clusters.len() == 1, "Sim::tick() only supports 1-cluster 1-core config as of now.");
-        assert!(self.top.clusters[0].cores.len() == 1, "Sim::tick() only supports 1-cluster 1-core config as of now.");
+        assert!(
+            self.top.clusters.len() == 1,
+            "Sim::tick() only supports 1-cluster 1-core config as of now."
+        );
+        assert!(
+            self.top.clusters[0].cores.len() == 1,
+            "Sim::tick() only supports 1-cluster 1-core config as of now."
+        );
 
         // now the tracer should hold the instructions
         // TODO: report cycle
@@ -113,21 +126,42 @@ impl CyclotronTop {
         // in hardware too?
         let mut gmem = FlatMemory::new(Some(config.mem_config));
         gmem.copy_elf(&imem);
-        
+
         let gmem = Arc::new(RwLock::new(gmem));
-        
+
         for id in 0..1 {
             clusters.push(Cluster::new(cluster_config.clone(), id, logger, gmem.clone()));
         }
         let top = CyclotronTop {
-            cproc: CommandProcessor::new(Arc::new(config.cluster_config.muon_config.clone()),
-                1 /*FIXME: properly get thread dimension*/),
+            cproc: CommandProcessor::new(
+                Arc::new(config.cluster_config.muon_config.clone()),
+                1, /*FIXME: properly get thread dimension*/
+            ),
             clusters,
             timeout: config.timeout,
             gmem,
         };
 
         top
+    }
+
+    pub fn gmem_load_word(&self, addr: u32) -> [u8; 4] {
+        self.gmem
+            .read()
+            .expect("lock poisoned")
+            .read_n::<4>(addr as usize)
+            .expect("load failed")
+    }
+
+    pub fn gmem_store_word(&self, addr: u32, data: u32, size: u32) {
+        let mut gmem = self.gmem.write().expect("lock poisoned");
+        let data_bytes = data.to_le_bytes();
+        match size {
+            0 => gmem.write(addr as usize, &data_bytes[0..1]), // store byte
+            1 => gmem.write(addr as usize, &data_bytes[0..2]), // store half
+            2 => gmem.write(addr as usize, &data_bytes[0..4]), // store word
+            _ => panic!("unimplemented store type"),
+        }.expect("store failed");
     }
 
     pub fn finished(&self) -> bool {
