@@ -188,6 +188,78 @@ pub unsafe extern "C" fn cyclotron_fetch_rs(
     *resp_bits_inst = inst;
 }
 
+#[no_mangle]
+/// Get un-decoded instruction bits from the instruction trace.
+pub unsafe extern "C" fn cyclotron_gmem_rs(
+    req_valid_ptr: *const u8,
+    req_ready_ptr: *mut u8,
+    req_bits_store_ptr: *const u8,
+    req_bits_address_ptr: *const u32,
+    req_bits_size_ptr: *const u8,
+    req_bits_tag_ptr: *const u32,
+    req_bits_data_ptr: *const u32,
+    req_bits_mask_ptr: *const u8,
+    resp_ready_ptr: *const u8,
+    resp_valid_ptr: *mut u8,
+    resp_bits_tag_ptr: *mut u32,
+    resp_bits_data_ptr: *mut u32,
+) {
+    let mut context_guard = CELL.write().unwrap();
+    let context = context_guard.as_mut().expect("DPI context not initialized!");
+    let sim = &mut context.sim_be;
+
+    let core = &mut sim.top.clusters[0].cores[0];
+    let num_lanes = core.conf().num_lanes;
+
+    let req_valid = std::slice::from_raw_parts(req_valid_ptr, num_lanes);
+    let req_ready = std::slice::from_raw_parts_mut(req_ready_ptr, num_lanes);
+    let req_bits_store = std::slice::from_raw_parts(req_bits_store_ptr, num_lanes);
+    let req_bits_address = std::slice::from_raw_parts(req_bits_address_ptr, num_lanes);
+    let req_bits_size = std::slice::from_raw_parts(req_bits_size_ptr, num_lanes);
+    let req_bits_tag = std::slice::from_raw_parts(req_bits_tag_ptr, num_lanes);
+    let req_bits_data = std::slice::from_raw_parts(req_bits_data_ptr, num_lanes);
+    let req_bits_mask = std::slice::from_raw_parts(req_bits_mask_ptr, num_lanes);
+    let resp_ready = std::slice::from_raw_parts(resp_ready_ptr, num_lanes);
+    let resp_valid = std::slice::from_raw_parts_mut(resp_valid_ptr, num_lanes);
+    let resp_bits_tag = std::slice::from_raw_parts_mut(resp_bits_tag_ptr, num_lanes);
+    let resp_bits_data = std::slice::from_raw_parts_mut(resp_bits_data_ptr, num_lanes);
+
+    for lane in 0..num_lanes {
+        req_ready[lane] = true as u8; // cyclotron mem never blocks
+        resp_valid[lane] = 0;
+        resp_bits_tag[lane] = 0;
+        resp_bits_data[lane] = 0;
+    }
+
+    for lane in 0..num_lanes {
+        if req_valid[lane] != 1 {
+            continue;
+        }
+        if req_bits_store[lane] == 1 {
+            panic!("cyclotron_gmem_rs: lane {lane}: store not supported yet!");
+        }
+
+        println!(
+            "cyclotron_gmem_rs: lane {lane}: load: addr {:x}, size {}",
+            req_bits_address[lane], req_bits_size[lane]
+        );
+        if req_bits_size[lane] != 2 {
+            println!(
+                "cyclotron_gmem_rs: lane {lane}: load size {} != 2 detected; mask: {}",
+                req_bits_size[lane], req_bits_mask[lane]
+            );
+        }
+        let top = &mut sim.top;
+        let data = top.gmem_load_word(req_bits_address[lane]);
+
+        // 1-cycle latency
+        resp_valid[lane] = 1;
+        resp_bits_tag[lane] = req_bits_tag[lane];
+        resp_bits_data[lane] = u32::from_le_bytes(data);
+        let _ = req_bits_data[lane]; // unused for now
+    }
+}
+
 fn peek_heads(c: &MuonCore, num_warps: usize) -> Vec<Option<trace::Line>> {
     (0..num_warps)
         .map(|w| c.get_tracer().peek(w).cloned())
