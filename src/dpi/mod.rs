@@ -219,7 +219,8 @@ pub unsafe extern "C" fn cyclotron_gmem_rs(
     let req_bits_tag = std::slice::from_raw_parts(req_bits_tag_ptr, num_lanes);
     let req_bits_data = std::slice::from_raw_parts(req_bits_data_ptr, num_lanes);
     let req_bits_mask = std::slice::from_raw_parts(req_bits_mask_ptr, num_lanes);
-    let resp_ready = std::slice::from_raw_parts(resp_ready_ptr, num_lanes);
+    // ignore upstream ready
+    let _resp_ready = std::slice::from_raw_parts(resp_ready_ptr, num_lanes);
     let resp_valid = std::slice::from_raw_parts_mut(resp_valid_ptr, num_lanes);
     let resp_bits_tag = std::slice::from_raw_parts_mut(resp_bits_tag_ptr, num_lanes);
     let resp_bits_data = std::slice::from_raw_parts_mut(resp_bits_data_ptr, num_lanes);
@@ -239,18 +240,22 @@ pub unsafe extern "C" fn cyclotron_gmem_rs(
             panic!("cyclotron_gmem_rs: lane {lane}: store not supported yet!");
         }
 
-        println!(
-            "cyclotron_gmem_rs: lane {lane}: load: addr {:x}, size {}",
-            req_bits_address[lane], req_bits_size[lane]
-        );
+        // println!(
+        //     "cyclotron_gmem_rs: lane {lane}: load: addr {:x}, size {}",
+        //     req_bits_address[lane], req_bits_size[lane]
+        // );
         if req_bits_size[lane] != 2 {
             println!(
                 "cyclotron_gmem_rs: lane {lane}: load size {} != 2 detected; mask: {}",
                 req_bits_size[lane], req_bits_mask[lane]
             );
         }
+
+        // TL requires address be always to beat width, which we assume is 32bit
+        let beat_width_bytes = 4;
+        let address_aligned = req_bits_address[lane] & !(beat_width_bytes - 1);
         let top = &mut sim.top;
-        let data = top.gmem_load_word(req_bits_address[lane]);
+        let data = top.gmem_load_word(address_aligned);
 
         // 1-cycle latency
         resp_valid[lane] = 1;
