@@ -17,6 +17,10 @@ use std::sync::RwLock;
 use env_logger::Builder;
 use log::LevelFilter;
 
+// TODO: these are just set to something big enough; need to pump proper parameters from Chisel
+const CORES_PER_CLUSTER: usize = 16;
+const NUM_CLUSTERS: usize = 16;
+
 struct Context {
     sim_isa: Sim, // cyclotron instance for the ISA model
     // holds fetch/decoded, but not issued, instructions
@@ -24,7 +28,7 @@ struct Context {
     issue_queue: Vec<IssueQueue>,
     sim_be: Sim, // cyclotron instance for the backend model
     cycles_after_cyclotron_finished: usize,
-    rtl_finished: bool,
+    rtl_finished: Vec<bool>,
     difftested_insts: usize,
 }
 
@@ -99,7 +103,7 @@ pub extern "C" fn cyclotron_init_rs(c_elfname: *const c_char) {
         issue_queue: Vec::new(),
         sim_be,
         cycles_after_cyclotron_finished: 0,
-        rtl_finished: false,
+        rtl_finished: vec![false; NUM_CLUSTERS * CORES_PER_CLUSTER],
         difftested_insts: 0,
     };
     c.sim_isa.top.reset();
@@ -733,6 +737,8 @@ fn compare_vector_reg_data(regs_rtl: &[u32], regs_model: &[Option<u32>]) -> Resu
 /// Gather performance monitoring counters from Muon and generate high-level performance metrics
 /// and pipeline bottleneck analysis.
 pub unsafe extern "C" fn profile_perf_counters_rs(
+    cluster_id: u32,
+    core_id: u32,
     inst_retired: u64,
     cycles: u64,
     cycles_decoded: u64,
@@ -751,13 +757,14 @@ pub unsafe extern "C" fn profile_perf_counters_rs(
     let core = &mut sim.top.clusters[0].cores[0];
     let config = core.conf().clone();
 
+    let global_core_id = cluster_id as usize * CORES_PER_CLUSTER + core_id as usize;
     if finished != 1 {
         return;
-    } else if context.rtl_finished {
+    } else if context.rtl_finished[global_core_id] {
         return;
     }
 
-    context.rtl_finished = true;
+    context.rtl_finished[global_core_id] = true;
 
     let per_warp_cycles_decoded = unsafe { std::slice::from_raw_parts(per_warp_cycles_decoded_ptr, config.num_warps) };
     let per_warp_cycles_issued = unsafe { std::slice::from_raw_parts(per_warp_cycles_issued_ptr, config.num_warps) };
@@ -778,7 +785,8 @@ pub unsafe extern "C" fn profile_perf_counters_rs(
     let frac = |cycle: u64| cycle as f32 / cycles as f32;
     let percent = |cycle| frac(cycle) * 100.;
 
-    println!("Muon core finished execution.");
+    println!("");
+    println!("Muon [cluster {} core {}] finished execution.", cluster_id, core_id);
     println!("");
     println!("+-----------------------+");
     println!(" Muon Performance Report");
