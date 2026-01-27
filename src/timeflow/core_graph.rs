@@ -7,10 +7,13 @@ use crate::timeflow::smem::{
 };
 use crate::timeflow::types::CoreFlowPayload;
 use crate::timeq::Cycle;
+use serde::Deserialize;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct CoreGraphConfig {
+    #[serde(default)]
     pub gmem: GmemFlowConfig,
+    #[serde(default)]
     pub smem: SmemFlowConfig,
 }
 
@@ -99,15 +102,15 @@ mod tests {
     #[test]
     fn core_graph_completes_gmem_requests() {
         let mut cfg = CoreGraphConfig::default();
-        cfg.gmem.coalescer.base_latency = 1;
-        cfg.gmem.cache.base_latency = 2;
-        cfg.gmem.dram.base_latency = 3;
+        cfg.gmem.nodes.coalescer.base_latency = 1;
+        cfg.gmem.nodes.l0d_tag.base_latency = 2;
+        cfg.gmem.nodes.dram.base_latency = 3;
 
         let mut graph = CoreGraph::new(cfg);
         let request = GmemRequest::new(0, 16, 0xF, true);
         let issue = graph.issue_gmem(0, request).expect("issue should succeed");
         let ready_at = issue.ticket.ready_at();
-        for cycle in 0..=ready_at.saturating_add(10) {
+        for cycle in 0..=ready_at.saturating_add(500) {
             graph.tick(cycle);
         }
         assert_eq!(1, graph.pending_gmem_completions());

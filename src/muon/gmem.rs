@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::env;
 use std::fs::File;
 use std::io::{BufWriter, Write};
@@ -8,8 +9,9 @@ use crate::info;
 use crate::muon::scheduler::Scheduler;
 use crate::sim::log::Logger;
 use crate::timeflow::{
-    CoreGraph, CoreGraphConfig, GmemIssue, GmemReject, GmemRejectReason, GmemRequest, GmemStats,
-    SmemIssue, SmemReject, SmemRejectReason, SmemRequest, SmemStats,
+    ClusterGmemGraph, CoreGraph, CoreGraphConfig, GmemIssue, GmemPolicyConfig, GmemReject,
+    GmemRejectReason, GmemRequest, GmemStats, SmemIssue, SmemReject, SmemRejectReason, SmemRequest,
+    SmemStats,
 };
 use crate::timeq::{Cycle, Ticket};
 
@@ -21,8 +23,13 @@ pub struct CoreStats {
 
 pub struct CoreTimingModel {
     graph: CoreGraph,
-    pending_gmem: Vec<Option<(u64, Cycle)>>,
-    pending_smem: Vec<Option<(u64, Cycle)>>,
+    pending_gmem: Vec<VecDeque<(u64, Cycle)>>,
+    pending_smem: Vec<VecDeque<(u64, Cycle)>>,
+    cluster_gmem: Arc<std::sync::RwLock<ClusterGmemGraph>>,
+    core_id: usize,
+    cluster_id: usize,
+    gmem_policy: GmemPolicyConfig,
+    next_gmem_id: u64,
     logger: Arc<Logger>,
     trace: Option<TraceSink>,
     log_stats: bool,
@@ -31,7 +38,14 @@ pub struct CoreTimingModel {
 }
 
 impl CoreTimingModel {
-    pub fn new(config: CoreGraphConfig, num_warps: usize, logger: Arc<Logger>) -> Self {
+    pub fn new(
+        config: CoreGraphConfig,
+        num_warps: usize,
+        core_id: usize,
+        cluster_id: usize,
+        cluster_gmem: Arc<std::sync::RwLock<ClusterGmemGraph>>,
+        logger: Arc<Logger>,
+    ) -> Self {
         let trace_path = env::var("CYCLOTRON_TIMING_TRACE").ok().map(PathBuf::from);
         let log_stats = env::var("CYCLOTRON_TIMING_LOG_STATS")
             .ok()
@@ -40,16 +54,29 @@ impl CoreTimingModel {
                 lowered == "1" || lowered == "true" || lowered == "yes"
             })
             .unwrap_or(false);
-        Self::with_options(config, num_warps, logger, trace_path, log_stats)
+        Self::with_options(
+            config,
+            num_warps,
+            core_id,
+            cluster_id,
+            cluster_gmem,
+            logger,
+            trace_path,
+            log_stats,
+        )
     }
 
     pub fn with_options(
         config: CoreGraphConfig,
         num_warps: usize,
+        core_id: usize,
+        cluster_id: usize,
+        cluster_gmem: Arc<std::sync::RwLock<ClusterGmemGraph>>,
         logger: Arc<Logger>,
         trace_path: Option<PathBuf>,
         log_stats: bool,
     ) -> Self {
+        let gmem_policy = config.gmem.policy;
         let trace = trace_path.and_then(|path| match TraceSink::new(path) {
             Ok(sink) => Some(sink),
             Err(err) => {
@@ -60,8 +87,13 @@ impl CoreTimingModel {
 
         Self {
             graph: CoreGraph::new(config),
-            pending_gmem: vec![None; num_warps],
-            pending_smem: vec![None; num_warps],
+            pending_gmem: vec![VecDeque::new(); num_warps],
+            pending_smem: vec![VecDeque::new(); num_warps],
+            cluster_gmem,
+            core_id,
+            cluster_id,
+            gmem_policy,
+            next_gmem_id: 0,
             logger,
             trace,
             log_stats,
@@ -81,31 +113,25 @@ impl CoreTimingModel {
             return Err(now.saturating_add(1));
         }
 
-        if self.pending_gmem[warp].is_some() {
-            let wait_until = now.saturating_add(1);
-            scheduler.set_resource_wait_until(warp, Some(wait_until));
-            scheduler.replay_instruction(warp);
-            info!(
-                self.logger,
-                "[gmem] warp {} has outstanding request, retry@{}", warp, wait_until
-            );
-            self.trace_event(
-                now,
-                "gmem_reject_outstanding",
-                warp,
-                None,
-                request.bytes,
-                Some("outstanding"),
-            );
-            return Err(wait_until);
-        }
-
         request.warp = warp;
+        request.core_id = self.core_id;
+        request.cluster_id = self.cluster_id;
+        if request.id == 0 {
+            request.id = self.next_gmem_id;
+        }
+        self.decorate_gmem_request(&mut request);
         let issue_bytes = request.bytes;
-        match self.graph.issue_gmem(now, request) {
+        let issue_result = {
+            let mut cluster = self.cluster_gmem.write().unwrap();
+            cluster.issue(self.core_id, now, request)
+        };
+        match issue_result {
             Ok(GmemIssue { request_id, ticket }) => {
+                if request_id >= self.next_gmem_id {
+                    self.next_gmem_id = request_id.saturating_add(1);
+                }
                 let ready_at = ticket.ready_at();
-                self.set_gmem_pending(warp, Some((request_id, ready_at)), scheduler);
+                self.add_gmem_pending(warp, request_id, ready_at, scheduler);
                 self.trace_event(now, "gmem_issue", warp, Some(request_id), issue_bytes, None);
                 info!(
                     self.logger,
@@ -161,31 +187,12 @@ impl CoreTimingModel {
             return Err(now.saturating_add(1));
         }
 
-        if self.pending_smem[warp].is_some() {
-            let wait_until = now.saturating_add(1);
-            scheduler.set_resource_wait_until(warp, Some(wait_until));
-            scheduler.replay_instruction(warp);
-            self.trace_event(
-                now,
-                "smem_reject_outstanding",
-                warp,
-                None,
-                request.bytes,
-                Some("outstanding"),
-            );
-            info!(
-                self.logger,
-                "[smem] warp {} has outstanding request, retry@{}", warp, wait_until
-            );
-            return Err(wait_until);
-        }
-
         request.warp = warp;
         match self.graph.issue_smem(now, request) {
             Ok(SmemIssue { request_id, ticket }) => {
                 let ready_at = ticket.ready_at();
                 let size_bytes = ticket.size_bytes();
-                self.set_smem_pending(warp, Some((request_id, ready_at)), scheduler);
+                self.add_smem_pending(warp, request_id, ready_at, scheduler);
                 self.trace_event(now, "smem_issue", warp, Some(request_id), size_bytes, None);
                 info!(
                     self.logger,
@@ -230,18 +237,100 @@ impl CoreTimingModel {
         }
     }
 
-    pub fn tick(&mut self, now: Cycle, scheduler: &mut Scheduler) {
-        let prev_gmem = self.graph.gmem_stats().completed;
-        let prev_smem = self.graph.smem_stats().completed;
-        self.graph.tick(now);
+    fn decorate_gmem_request(&self, request: &mut GmemRequest) {
+        let policy = self.gmem_policy;
+        if request.kind.is_mem() {
+            let key = request
+                .id
+                .wrapping_mul(0x9e37_79b9_7f4a_7c15)
+                ^ (request.warp as u64).wrapping_shl(32)
+                ^ policy.seed;
+            request.l0_hit = Self::decide(policy.l0_hit_rate, key ^ 0xA1A1_A1A1_A1A1_A1A1);
+            request.l1_hit = if request.l0_hit {
+                false
+            } else {
+                Self::decide(policy.l1_hit_rate, key ^ 0xB2B2_B2B2_B2B2_B2B2)
+            };
+            request.l2_hit = if request.l0_hit || request.l1_hit {
+                false
+            } else {
+                Self::decide(policy.l2_hit_rate, key ^ 0xC3C3_C3C3_C3C3_C3C3)
+            };
+            request.l1_writeback = !request.l1_hit
+                && Self::decide(policy.l1_writeback_rate, key ^ 0xD4D4_D4D4_D4D4_D4D4);
+            request.l2_writeback = !request.l2_hit
+                && Self::decide(policy.l2_writeback_rate, key ^ 0xE5E5_E5E5_E5E5_E5E5);
 
-        while let Some(completion) = self.graph.pop_gmem_completion() {
+            let l1_banks = policy.l1_banks.max(1) as u64;
+            let l2_banks = policy.l2_banks.max(1) as u64;
+            request.l1_bank = (Self::hash_u64(key ^ 0x1111_2222_3333_4444) % l1_banks) as usize;
+            request.l2_bank = (Self::hash_u64(key ^ 0x5555_6666_7777_8888) % l2_banks) as usize;
+        } else {
+            request.bytes = policy.flush_bytes.max(1);
+            request.l0_hit = false;
+            request.l1_hit = false;
+            request.l2_hit = false;
+            request.l1_writeback = false;
+            request.l2_writeback = false;
+            request.l1_bank = 0;
+            request.l2_bank = 0;
+        }
+    }
+
+    fn decide(rate: f64, key: u64) -> bool {
+        let clamped = if rate < 0.0 {
+            0.0
+        } else if rate > 1.0 {
+            1.0
+        } else {
+            rate
+        };
+        if clamped <= 0.0 {
+            return false;
+        }
+        if clamped >= 1.0 {
+            return true;
+        }
+        let threshold = (clamped * (u64::MAX as f64)) as u64;
+        Self::hash_u64(key) <= threshold
+    }
+
+    fn hash_u64(mut x: u64) -> u64 {
+        x ^= x >> 33;
+        x = x.wrapping_mul(0xff51afd7ed558ccd);
+        x ^= x >> 33;
+        x = x.wrapping_mul(0xc4ceb9fe1a85ec53);
+        x ^= x >> 33;
+        x
+    }
+
+    pub fn tick(&mut self, now: Cycle, scheduler: &mut Scheduler) {
+        let prev_gmem = self
+            .cluster_gmem
+            .read()
+            .unwrap()
+            .stats(self.core_id)
+            .completed;
+        let prev_smem = self.graph.smem_stats().completed;
+        let mut gmem_completions = Vec::new();
+        let mut gmem_stats_snapshot = None;
+        {
+            let mut cluster = self.cluster_gmem.write().unwrap();
+            cluster.tick(now);
+
+            while let Some(completion) = cluster.pop_completion(self.core_id) {
+                gmem_completions.push(completion);
+            }
+
+            if self.log_stats {
+                gmem_stats_snapshot = Some(cluster.stats(self.core_id));
+            }
+        }
+
+        for completion in gmem_completions {
             let warp = completion.request.warp;
             let completed_id = completion.request.id;
-            if matches!(self.pending_gmem.get(warp).copied().flatten(), Some((id, _)) if id == completed_id)
-            {
-                self.set_gmem_pending(warp, None, scheduler);
-            } else {
+            if !self.remove_gmem_pending(warp, completed_id, scheduler) {
                 continue;
             }
             self.trace_event(
@@ -254,17 +343,19 @@ impl CoreTimingModel {
             );
             info!(
                 self.logger,
-                "[gmem] warp {} completed request {} done@{}", warp, completed_id, now
+                "[gmem] warp {} completed request {} done@{}",
+                warp,
+                completed_id,
+                now
             );
         }
+
+        self.graph.tick(now);
 
         while let Some(completion) = self.graph.pop_smem_completion() {
             let warp = completion.request.warp;
             let completed_id = completion.request.id;
-            if matches!(self.pending_smem.get(warp).copied().flatten(), Some((id, _)) if id == completed_id)
-            {
-                self.set_smem_pending(warp, None, scheduler);
-            } else {
+            if !self.remove_smem_pending(warp, completed_id, scheduler) {
                 continue;
             }
             self.trace_event(
@@ -282,20 +373,21 @@ impl CoreTimingModel {
         }
 
         if self.log_stats {
-            let gmem_stats = self.graph.gmem_stats();
-            if gmem_stats.completed != prev_gmem {
-                info!(
-                    self.logger,
-                    "[gmem] stats issued={} completed={} inflight={} queue_full_rejects={} busy_rejects={} bytes_issued={} bytes_completed={}",
-                    gmem_stats.issued,
-                    gmem_stats.completed,
-                    gmem_stats.inflight,
-                    gmem_stats.queue_full_rejects,
-                    gmem_stats.busy_rejects,
-                    gmem_stats.bytes_issued,
-                    gmem_stats.bytes_completed
-                );
-                self.last_logged_gmem_completed = gmem_stats.completed;
+            if let Some(gmem_stats) = gmem_stats_snapshot {
+                if gmem_stats.completed != prev_gmem {
+                    info!(
+                        self.logger,
+                        "[gmem] stats issued={} completed={} inflight={} queue_full_rejects={} busy_rejects={} bytes_issued={} bytes_completed={}",
+                        gmem_stats.issued,
+                        gmem_stats.completed,
+                        gmem_stats.inflight,
+                        gmem_stats.queue_full_rejects,
+                        gmem_stats.busy_rejects,
+                        gmem_stats.bytes_issued,
+                        gmem_stats.bytes_completed
+                    );
+                    self.last_logged_gmem_completed = gmem_stats.completed;
+                }
             }
 
             let smem_stats = self.graph.smem_stats();
@@ -317,36 +409,50 @@ impl CoreTimingModel {
     }
 
     pub fn has_pending_gmem(&self, warp: usize) -> bool {
-        self.pending_gmem.get(warp).and_then(|slot| *slot).is_some()
+        self.pending_gmem
+            .get(warp)
+            .map(|queue| !queue.is_empty())
+            .unwrap_or(false)
     }
 
     pub fn outstanding_gmem(&self) -> usize {
         self.pending_gmem
             .iter()
-            .filter(|entry| entry.is_some())
-            .count()
+            .map(|queue| queue.len())
+            .sum()
     }
 
     pub fn has_pending_smem(&self, warp: usize) -> bool {
-        self.pending_smem.get(warp).and_then(|slot| *slot).is_some()
+        self.pending_smem
+            .get(warp)
+            .map(|queue| !queue.is_empty())
+            .unwrap_or(false)
     }
 
     pub fn outstanding_smem(&self) -> usize {
         self.pending_smem
             .iter()
-            .filter(|entry| entry.is_some())
-            .count()
+            .map(|queue| queue.len())
+            .sum()
     }
 
     pub fn stats(&self) -> CoreStats {
+        let gmem_stats = self
+            .cluster_gmem
+            .read()
+            .unwrap()
+            .stats(self.core_id);
         CoreStats {
-            gmem: self.graph.gmem_stats(),
+            gmem: gmem_stats,
             smem: self.graph.smem_stats(),
         }
     }
 
     pub fn clear_stats(&mut self) {
-        self.graph.clear_gmem_stats();
+        self.cluster_gmem
+            .write()
+            .unwrap()
+            .clear_stats(self.core_id);
         self.graph.clear_smem_stats();
         self.last_logged_gmem_completed = 0;
         self.last_logged_smem_completed = 0;
@@ -366,55 +472,77 @@ impl CoreTimingModel {
         }
     }
 
-    fn set_gmem_pending(
+    fn add_gmem_pending(
         &mut self,
         warp: usize,
-        entry: Option<(u64, Cycle)>,
+        request_id: u64,
+        ready_at: Cycle,
         scheduler: &mut Scheduler,
     ) {
         if let Some(slot) = self.pending_gmem.get_mut(warp) {
-            *slot = entry;
+            slot.push_back((request_id, ready_at));
         }
         self.update_scheduler_state(warp, scheduler);
     }
 
-    fn set_smem_pending(
+    fn remove_gmem_pending(
         &mut self,
         warp: usize,
-        entry: Option<(u64, Cycle)>,
+        request_id: u64,
+        scheduler: &mut Scheduler,
+    ) -> bool {
+        if let Some(slot) = self.pending_gmem.get_mut(warp) {
+            if let Some(pos) = slot.iter().position(|(id, _)| *id == request_id) {
+                slot.remove(pos);
+                self.update_scheduler_state(warp, scheduler);
+                return true;
+            }
+        }
+        false
+    }
+
+    fn add_smem_pending(
+        &mut self,
+        warp: usize,
+        request_id: u64,
+        ready_at: Cycle,
         scheduler: &mut Scheduler,
     ) {
         if let Some(slot) = self.pending_smem.get_mut(warp) {
-            *slot = entry;
+            slot.push_back((request_id, ready_at));
         }
         self.update_scheduler_state(warp, scheduler);
     }
 
-    fn earliest_ready(&self, warp: usize) -> Option<Cycle> {
-        let mut earliest = None;
-        if let Some((_, ready)) = self.pending_gmem.get(warp).copied().flatten() {
-            earliest = Some(ready);
+    fn remove_smem_pending(
+        &mut self,
+        warp: usize,
+        request_id: u64,
+        scheduler: &mut Scheduler,
+    ) -> bool {
+        if let Some(slot) = self.pending_smem.get_mut(warp) {
+            if let Some(pos) = slot.iter().position(|(id, _)| *id == request_id) {
+                slot.remove(pos);
+                self.update_scheduler_state(warp, scheduler);
+                return true;
+            }
         }
-        if let Some((_, ready)) = self.pending_smem.get(warp).copied().flatten() {
-            earliest = Some(match earliest {
-                Some(curr) => curr.min(ready),
-                None => ready,
-            });
-        }
-        earliest
+        false
     }
 
     fn update_scheduler_state(&mut self, warp: usize, scheduler: &mut Scheduler) {
-        let gmem_pending = self.pending_gmem.get(warp).and_then(|x| *x).is_some();
-        let smem_pending = self.pending_smem.get(warp).and_then(|x| *x).is_some();
+        let gmem_pending = self
+            .pending_gmem
+            .get(warp)
+            .map(|queue| !queue.is_empty())
+            .unwrap_or(false);
+        let smem_pending = self
+            .pending_smem
+            .get(warp)
+            .map(|queue| !queue.is_empty())
+            .unwrap_or(false);
         if !gmem_pending && !smem_pending {
-            scheduler.set_resource_pending(warp, false);
             scheduler.clear_resource_wait(warp);
-        } else {
-            scheduler.set_resource_pending(warp, true);
-            if let Some(deadline) = self.earliest_ready(warp) {
-                scheduler.set_resource_wait_until(warp, Some(deadline));
-            }
         }
     }
 }
@@ -471,7 +599,7 @@ mod tests {
     use crate::muon::config::{LaneConfig, MuonConfig};
     use crate::muon::scheduler::Scheduler;
     use crate::sim::log::Logger;
-    use crate::timeflow::{CoreGraphConfig, GmemFlowConfig, SmemFlowConfig};
+    use crate::timeflow::{ClusterGmemGraph, CoreGraphConfig, GmemFlowConfig, SmemFlowConfig};
     use crate::timeq::{module_now, ServerConfig};
     use std::sync::Arc;
 
@@ -483,22 +611,16 @@ mod tests {
     }
 
     fn make_model(num_warps: usize) -> CoreTimingModel {
-        let gmem = GmemFlowConfig {
-            coalescer: ServerConfig {
-                queue_capacity: 1,
-                ..ServerConfig::default()
-            },
-            cache: ServerConfig {
-                queue_capacity: 1,
-                ..ServerConfig::default()
-            },
-            dram: ServerConfig {
-                queue_capacity: 1,
-                ..ServerConfig::default()
-            },
-            link_capacity: 1,
-        };
+        let mut gmem = GmemFlowConfig::default();
+        gmem.nodes.coalescer.queue_capacity = 1;
+        gmem.nodes.l0d_tag.queue_capacity = 1;
+        gmem.nodes.dram.queue_capacity = 1;
+        gmem.links.default.entries = 1;
         let smem = SmemFlowConfig {
+            lane: ServerConfig {
+                queue_capacity: 1,
+                ..ServerConfig::default()
+            },
             crossbar: ServerConfig {
                 queue_capacity: 1,
                 ..ServerConfig::default()
@@ -508,11 +630,17 @@ mod tests {
                 ..ServerConfig::default()
             },
             num_banks: 1,
+            num_lanes: 1,
             link_capacity: 1,
         };
         let cfg = CoreGraphConfig { gmem, smem };
         let logger = Arc::new(Logger::silent());
-        CoreTimingModel::new(cfg, num_warps, logger)
+        let cluster_gmem = Arc::new(std::sync::RwLock::new(ClusterGmemGraph::new(
+            cfg.gmem.clone(),
+            1,
+            1,
+        )));
+        CoreTimingModel::new(cfg, num_warps, 0, 0, cluster_gmem, logger)
     }
 
     #[test]
@@ -526,7 +654,6 @@ mod tests {
         let ticket = model
             .issue_gmem_request(now, 0, request, &mut scheduler)
             .expect("request should accept");
-        assert!(scheduler.resource_pending(0));
         assert!(model.has_pending_gmem(0));
         let stats = model.stats();
         assert_eq!(stats.gmem.issued, 1);
@@ -537,7 +664,7 @@ mod tests {
         let mut released = false;
         for _ in 0..200 {
             model.tick(cycle, &mut scheduler);
-            if !scheduler.resource_pending(0) {
+            if !model.has_pending_gmem(0) {
                 released = true;
                 break;
             }
@@ -618,22 +745,12 @@ mod tests {
         let threads = vec![vec![(0, 0, 0)], vec![(0, 0, 1)]];
         scheduler.spawn_n_warps(0x8000_0000, &threads);
 
-        let gmem = GmemFlowConfig {
-            coalescer: ServerConfig {
-                queue_capacity: 2,
-                ..ServerConfig::default()
-            },
-            cache: ServerConfig {
-                queue_capacity: 2,
-                ..ServerConfig::default()
-            },
-            dram: ServerConfig {
-                queue_capacity: 2,
-                ..ServerConfig::default()
-            },
-            link_capacity: 2,
-        };
+        let gmem = GmemFlowConfig::default();
         let smem = SmemFlowConfig {
+            lane: ServerConfig {
+                queue_capacity: 1,
+                ..ServerConfig::default()
+            },
             crossbar: ServerConfig {
                 queue_capacity: 1,
                 ..ServerConfig::default()
@@ -643,11 +760,17 @@ mod tests {
                 ..ServerConfig::default()
             },
             num_banks: 2,
+            num_lanes: 1,
             link_capacity: 1,
         };
         let cfg = CoreGraphConfig { gmem, smem };
         let logger = Arc::new(Logger::silent());
-        let mut model = CoreTimingModel::new(cfg, 2, logger);
+        let cluster_gmem = Arc::new(std::sync::RwLock::new(ClusterGmemGraph::new(
+            cfg.gmem.clone(),
+            1,
+            1,
+        )));
+        let mut model = CoreTimingModel::new(cfg, 2, 0, 0, cluster_gmem, logger);
 
         let now = module_now(&scheduler);
         let req0 = SmemRequest::new(0, 32, 0xF, false, 0);

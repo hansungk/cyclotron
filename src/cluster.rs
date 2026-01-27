@@ -1,11 +1,11 @@
 use crate::base::behavior::*;
 use crate::muon::core::MuonCore;
+use crate::neutrino::neutrino::Neutrino;
 use crate::sim::flat_mem::FlatMemory;
+use crate::sim::log::Logger;
+use crate::sim::top::ClusterConfig;
 use log::info;
 use std::sync::{Arc, RwLock};
-use crate::neutrino::neutrino::Neutrino;
-use crate::sim::top::ClusterConfig;
-use crate::sim::log::Logger;
 
 pub struct Cluster {
     id: usize,
@@ -15,10 +15,26 @@ pub struct Cluster {
 }
 
 impl Cluster {
-    pub fn new(config: Arc<ClusterConfig>, id: usize, logger: &Arc<Logger>, gmem: Arc<RwLock<FlatMemory>>) -> Self {
+    pub fn new(
+        config: Arc<ClusterConfig>,
+        id: usize,
+        logger: &Arc<Logger>,
+        gmem: Arc<RwLock<FlatMemory>>,
+        gmem_timing: Arc<RwLock<crate::timeflow::ClusterGmemGraph>>,
+    ) -> Self {
         let mut cores = Vec::new();
         for cid in 0..config.muon_config.num_cores {
-            cores.push(MuonCore::new(Arc::new(config.muon_config), cid, logger, gmem.clone()));
+            let timing_core_id = id * config.muon_config.num_cores + cid;
+            cores.push(MuonCore::new(
+                Arc::new(config.muon_config),
+                cid,
+                logger,
+                gmem.clone(),
+                config.timing_config.clone(),
+                timing_core_id,
+                id,
+                gmem_timing.clone(),
+            ));
         }
         Cluster {
             id,
@@ -57,9 +73,8 @@ impl ModuleBehaviors for Cluster {
             core.process(&mut self.neutrino).unwrap();
         }
         self.neutrino.tick_one();
-        self.neutrino.update(&mut self.cores.iter_mut()
-            .map(|c| &mut c.scheduler)
-            .collect());
+        self.neutrino
+            .update(&mut self.cores.iter_mut().map(|c| &mut c.scheduler).collect());
     }
 
     fn reset(&mut self) {

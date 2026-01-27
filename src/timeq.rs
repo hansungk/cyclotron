@@ -1,4 +1,5 @@
 use crate::base::module::IsModule;
+use serde::Deserialize;
 use std::collections::VecDeque;
 
 pub type Cycle = u64;
@@ -98,7 +99,8 @@ impl<T> Backpressure<T> {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(default)]
 pub struct ServerConfig {
     // Fixed latency added to every request
     pub base_latency: Cycle,

@@ -35,6 +35,10 @@ impl MuonCore {
         id: usize,
         logger: &Arc<Logger>,
         gmem: Arc<RwLock<FlatMemory>>,
+        timing_config: CoreGraphConfig,
+        timing_core_id: usize,
+        timing_cluster_id: usize,
+        cluster_gmem: Arc<std::sync::RwLock<crate::timeflow::ClusterGmemGraph>>,
     ) -> Self {
         let num_warps = config.num_warps;
         let mut core = MuonCore {
@@ -61,8 +65,11 @@ impl MuonCore {
             logger: logger.clone(),
             tracer: Arc::new(Tracer::new(&config)),
             timing_model: CoreTimingModel::new(
-                CoreGraphConfig::default(),
+                timing_config,
                 num_warps,
+                timing_core_id,
+                timing_cluster_id,
+                cluster_gmem,
                 logger.clone(),
             ),
         };

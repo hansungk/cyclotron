@@ -1,10 +1,10 @@
-use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
-use log::info;
 use crate::base::behavior::*;
 use crate::base::module::*;
 use crate::muon::config::MuonConfig;
 use crate::muon::execute::CSRType;
+use log::info;
+use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
 
 #[derive(Debug, Default)]
 pub struct CSRState {
@@ -31,8 +31,7 @@ impl ModuleBehaviors for CSRFile {
     }
 }
 
-module!(CSRFile, CSRState, MuonConfig,
-);
+module!(CSRFile, CSRState, MuonConfig,);
 
 macro_rules! get_ref_rw_match {
     ($self:expr, $variable:expr, [$( $addr:expr, $init:expr );* $(;)?]) => {
@@ -63,10 +62,10 @@ impl CSRFile {
 
     // these are constant values
     fn csr_ro_ref(&self, addr: u32) -> Option<u32> {
-        let mhartid = self.conf().num_lanes * self.conf().num_warps *
-            self.conf().lane_config.core_id +
-            self.conf().num_lanes * self.conf().lane_config.warp_id +
-            self.lane_id;
+        let mhartid =
+            self.conf().num_lanes * self.conf().num_warps * self.conf().lane_config.core_id
+                + self.conf().num_lanes * self.conf().lane_config.warp_id
+                + self.lane_id;
         get_ro_match!(addr, [
             0xf11, 0; // mvendorid
             0xf12, 0; // marchid
@@ -153,12 +152,13 @@ impl CSRFile {
     }
 
     pub fn user_access(&mut self, addr: u32, value: u32, op: CSRType) -> u32 {
-        if let Some(w) = self.csr_rw_ref_user(addr) { // writable
+        if let Some(w) = self.csr_rw_ref_user(addr) {
+            // writable
             let old_value = w.clone();
             match op {
-                CSRType::RC | CSRType::RCI => { *w &= !value }
-                CSRType::RS | CSRType::RSI => { *w |= value }
-                CSRType::RW | CSRType::RWI => { *w  = value }
+                CSRType::RC | CSRType::RCI => *w &= !value,
+                CSRType::RS | CSRType::RSI => *w |= value,
+                CSRType::RW | CSRType::RWI => *w = value,
             }
             let new_value = *w;
             if (addr >= 0x001 && addr <= 0x003) && (new_value != old_value) {
@@ -173,17 +173,21 @@ impl CSRFile {
                 }
             }
             old_value
-        } else { // read-only
-            self.csr_rw_ref_emu(addr).map(|x| *x).or(self.csr_ro_ref(addr))
+        } else {
+            // read-only
+            self.csr_rw_ref_emu(addr)
+                .map(|x| *x)
+                .or(self.csr_ro_ref(addr))
                 .expect(&format!("reading nonexistent csr {}", addr))
         }
     }
 
-    pub fn emu_access(&mut self, addr :u32, value: u32) {
+    pub fn emu_access(&mut self, addr: u32, value: u32) {
         if let Some(emu_ref) = self.csr_rw_ref_emu(addr) {
             *emu_ref = value
         } else {
-            *self.csr_rw_ref_user(addr)
+            *self
+                .csr_rw_ref_user(addr)
                 .expect(&format!("setting nonexistent csr 0x{:x}", addr)) = value;
             if addr == 0x003 {
                 info!("set fcsr to 0x{:x}", value);

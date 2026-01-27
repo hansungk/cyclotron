@@ -8,18 +8,18 @@ pub trait HasMemory {
         assert!((n % 4 == 0) && n > 0, "word sized reads only");
         assert!(addr + n - 1 < (1 << 32), "32-bit address range");
 
-        // program binary might try and do this, which we should flag as 
+        // program binary might try and do this, which we should flag as
         // correctness issue
         if addr & 0x3 != 0 {
             bail!("unaligned memory read of size {} @ {:#08x}", n, addr);
         }
-        
+
         self.read_impl(addr, n)
     }
     fn read_n<const N: usize>(&self, addr: usize) -> Result<[u8; N], anyhow::Error> {
         self.read(addr, N).map(|slice| slice.try_into().unwrap())
     }
-    
+
     fn write_impl(&mut self, addr: usize, data: &[u8]) -> Result<(), anyhow::Error>;
     fn write(&mut self, addr: usize, data: &[u8]) -> Result<(), anyhow::Error> {
         let n: usize = data.len();
@@ -29,12 +29,14 @@ pub trait HasMemory {
         if n < 4 {
             assert!(n == 1 || n == 2, "subword stores must be byte or half");
             alignment = n;
-        }
-        else {
-            assert!(n % 4 == 0, "stores larger than a word must be integer number of words");
+        } else {
+            assert!(
+                n % 4 == 0,
+                "stores larger than a word must be integer number of words"
+            );
             alignment = 4;
         }
-        
+
         if addr % alignment != 0 {
             bail!("unaligned memory write of size {} @ {:#08x}", n, addr);
         }

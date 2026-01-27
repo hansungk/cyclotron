@@ -34,9 +34,7 @@ pub struct SchedulerState {
     pub tohost: Option<u32>,
     pc: Vec<u32>,
     ipdom_stack: Vec<VecDeque<IpdomEntry>>,
-    resource_pending: Vec<bool>,
     resource_wait_until: Vec<Option<Cycle>>,
-    resource_pending_mask: u32,
     neutrino_stalled_mask: u32,
 }
 
@@ -79,9 +77,7 @@ impl Scheduler {
                     tohost: None,
                     pc: vec![config.start_pc; num_warps],
                     ipdom_stack: (0..num_warps).map(|_| VecDeque::new()).collect(),
-                    resource_pending: vec![false; num_warps],
                     resource_wait_until: vec![None; num_warps],
-                    resource_pending_mask: 0,
                     neutrino_stalled_mask: 0,
                 },
                 ..ModuleBase::default()
@@ -321,10 +317,6 @@ impl Scheduler {
             self.recompute_stall_masks();
         }
 
-        if self.base.state.resource_pending[wid] {
-            return None;
-        }
-
         let pc = self.state().pc[wid];
         let sched = Schedule {
             pc,
@@ -345,23 +337,6 @@ impl Scheduler {
             *entry = None;
         }
         self.recompute_stall_masks();
-    }
-
-    pub fn set_resource_pending(&mut self, wid: usize, pending: bool) {
-        if let Some(entry) = self.base.state.resource_pending.get_mut(wid) {
-            *entry = pending;
-        }
-        self.base.state.resource_pending_mask.mut_bit(wid, pending);
-        self.recompute_stall_masks();
-    }
-
-    pub fn resource_pending(&self, wid: usize) -> bool {
-        self.base
-            .state
-            .resource_pending
-            .get(wid)
-            .copied()
-            .unwrap_or(false)
     }
 
     pub fn set_resource_wait_until(&mut self, wid: usize, wait_until: Option<Cycle>) {
@@ -393,9 +368,8 @@ impl Scheduler {
 
     fn recompute_stall_masks(&mut self) {
         let wait_mask = self.resource_wait_mask();
-        self.base.state.stalled_warps = self.base.state.neutrino_stalled_mask
-            | self.base.state.resource_pending_mask
-            | wait_mask;
+        self.base.state.stalled_warps =
+            self.base.state.neutrino_stalled_mask | wait_mask;
     }
 
     // TODO: This should differentiate between different threadblocks.
@@ -422,8 +396,6 @@ impl ModuleBehaviors for Scheduler {
         self.base.state.active_warps = 0;
         self.base.state.stalled_warps = 0;
         self.base.state.neutrino_stalled_mask = 0;
-        self.base.state.resource_pending_mask = 0;
-        self.base.state.resource_pending = vec![false; self.conf().num_warps];
         self.base.state.resource_wait_until = vec![None; self.conf().num_warps];
     }
 }

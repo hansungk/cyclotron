@@ -39,7 +39,10 @@ impl<T: PrimInt + Unsigned + TryFrom<u64>> BitSlice for T {
 
     fn mut_bit(&mut self, idx: usize, to: bool) {
         let self64: u64 = self.to_u64().unwrap();
-        *self = (self64 & (!(1u64 << idx)) | ((to as u64) << idx)).try_into().map_err(|_| "").unwrap();
+        *self = (self64 & (!(1u64 << idx)) | ((to as u64) << idx))
+            .try_into()
+            .map_err(|_| "")
+            .unwrap();
     }
 }
 
@@ -82,7 +85,11 @@ impl BitMask for Vec<bool> {
 }
 
 macro_rules! parse_val {
-    ($value:expr) => {$value.parse().map_err(|_| format!("parse config value {} failed", $value))};
+    ($value:expr) => {
+        $value
+            .parse()
+            .map_err(|_| format!("parse config value {} failed", $value))
+    };
 }
 pub(crate) use parse_val;
 
@@ -99,27 +106,32 @@ pub(crate) use for2d;
 
 macro_rules! map2d {
     ($matrix:expr, $closure:expr) => {
-        $matrix.iter().enumerate().map(|(i, row)| {
-            row.iter().enumerate().map(|(j, item)| {
-                $closure(i, j as u32, item)
-            }).collect::<Vec<_>>()
-        }).collect::<Vec<_>>()
+        $matrix
+            .iter()
+            .enumerate()
+            .map(|(i, row)| {
+                row.iter()
+                    .enumerate()
+                    .map(|(j, item)| $closure(i, j as u32, item))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>()
     };
 }
 pub(crate) use map2d;
 
 macro_rules! zip2d {
     ($matrix0:expr, matrix1:expr) => {
-        $matrix0.iter().zip(matrix1).map(|(a, b)| {
-            a.iter().zip(b)
-        })
+        $matrix0.iter().zip(matrix1).map(|(a, b)| a.iter().zip(b))
     };
 }
 pub(crate) use zip2d;
 
 macro_rules! fill {
     ($value:expr, $n:expr) => {
-        std::iter::repeat_with(|| $value).take($n).collect::<Vec<_>>()
+        std::iter::repeat_with(|| $value)
+            .take($n)
+            .collect::<Vec<_>>()
     };
 }
 pub(crate) use fill;

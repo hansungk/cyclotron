@@ -7,7 +7,8 @@ pub mod types;
 
 pub use core_graph::{CoreGraph, CoreGraphConfig};
 pub use gmem::{
-    GmemCompletion, GmemFlowConfig, GmemIssue, GmemReject, GmemRejectReason, GmemRequest, GmemStats,
+    ClusterGmemGraph, GmemCompletion, GmemFlowConfig, GmemIssue, GmemPolicyConfig, GmemReject,
+    GmemRejectReason, GmemRequest, GmemRequestKind, GmemStats,
 };
 pub use graph::{EdgeStats, FlowGraph, Link, LinkBackpressure, TimedNode};
 pub use server_node::ServerNode;

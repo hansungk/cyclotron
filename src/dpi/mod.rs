@@ -41,12 +41,15 @@ pub fn cyclotron_init_rs() {
 
     // make separate sim instances for the golden ISA model and the backend model to prevent
     // double-execution on the same GMEM
-    let sim_isa = crate::ui::make_sim(&toml_string, None);
-    let sim_be = crate::ui::make_sim(&toml_string, None);
+    let sim_isa = crate::ui::make_sim(&toml_string, None, Some(toml_path.as_path()));
+    let sim_be = crate::ui::make_sim(&toml_string, None, Some(toml_path.as_path()));
     assert_single_core(&sim_isa);
     assert_single_core(&sim_be);
 
-    println!("cyclotron_init_rs: created sim object from {}", toml_path.display());
+    println!(
+        "cyclotron_init_rs: created sim object from {}",
+        toml_path.display()
+    );
 
     let mut c = Context { sim_isa, sim_be };
     c.sim_isa.top.reset();
@@ -63,7 +66,9 @@ pub fn cyclotron_init_rs() {
 /// Get un-decoded instruction bits from the instruction trace.
 pub fn cyclotron_fetch_rs(fetch_pc: u32, fetch_warp: u32, inst_ptr: *mut u64) {
     let mut context_guard = CELL.write().unwrap();
-    let context = context_guard.as_mut().expect("DPI context not initialized!");
+    let context = context_guard
+        .as_mut()
+        .expect("DPI context not initialized!");
     let sim = &mut context.sim_isa;
     let core = &mut sim.top.clusters[0].cores[0];
     let inst = core.fetch(fetch_warp, fetch_pc);
@@ -104,7 +109,9 @@ pub unsafe fn cyclotron_frontend_rs(
     finished_ptr: *mut u8,
 ) {
     let mut context_guard = CELL.write().unwrap();
-    let context = context_guard.as_mut().expect("DPI context not initialized!");
+    let context = context_guard
+        .as_mut()
+        .expect("DPI context not initialized!");
     let sim = &mut context.sim_isa;
 
     let core = &mut sim.top.clusters[0].cores[0];

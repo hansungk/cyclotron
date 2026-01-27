@@ -430,11 +430,7 @@ impl ExecuteUnit {
         let load_addr = alu_result >> 2 << 2;
         let load_span = (1u32 << load_size) - 1;
         let load_end = alu_result.wrapping_add(load_span);
-        assert_eq!(
-            alu_result >> 2,
-            load_end >> 2,
-            "misaligned load"
-        );
+        assert_eq!(alu_result >> 2, load_end >> 2, "misaligned load");
 
         let load_data_bytes = if shared_load {
             smem.read_n::<4>(load_addr as usize).expect("load failed")

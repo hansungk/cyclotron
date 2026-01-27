@@ -4,6 +4,7 @@ use crate::timeflow::graph::{FlowGraph, Link};
 use crate::timeflow::server_node::ServerNode;
 use crate::timeflow::types::{CoreFlowPayload, NodeId};
 use crate::timeq::{Backpressure, Cycle, ServerConfig, ServiceRequest, Ticket, TimedServer};
+use serde::Deserialize;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SmemStats {
@@ -68,13 +69,19 @@ pub struct SmemReject {
     pub reason: SmemRejectReason,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct SmemFlowConfig {
+    #[serde(default)]
     pub lane: ServerConfig,
+    #[serde(default)]
     pub crossbar: ServerConfig,
+    #[serde(default)]
     pub bank: ServerConfig,
+    #[serde(default)]
     pub num_banks: usize,
+    #[serde(default)]
     pub num_lanes: usize,
+    #[serde(default)]
     pub link_capacity: usize,
 }
 

@@ -1,8 +1,8 @@
+use crate::base::module::IsModule;
 use crate::dpi::CELL;
 use crate::muon::decode::{DecodedInst, MicroOp};
-use log::debug;
-use crate::base::module::IsModule;
 use crate::timeq::module_now;
+use log::debug;
 
 #[no_mangle]
 pub unsafe fn cyclotron_imem_rs(
@@ -20,7 +20,9 @@ pub unsafe fn cyclotron_imem_rs(
     imem_resp_bits_data_ptr: *mut u64,
 ) {
     let mut context_guard = CELL.write().unwrap();
-    let context = context_guard.as_mut().expect("DPI context not initialized!");
+    let context = context_guard
+        .as_mut()
+        .expect("DPI context not initialized!");
     let sim = &mut context.sim_be;
     let cluster = &mut sim.top.clusters[0];
     let core = &mut cluster.cores[0];
@@ -28,7 +30,8 @@ pub unsafe fn cyclotron_imem_rs(
     let imem_req_ready = unsafe { imem_req_ready_ptr.as_mut().expect("pointer was null") };
     let imem_resp_valid = unsafe { imem_resp_valid_ptr.as_mut().expect("pointer was null") };
     let imem_resp_bits_tag = unsafe { imem_resp_bits_tag_ptr.as_mut().expect("pointer was null") };
-    let imem_resp_bits_data = unsafe { imem_resp_bits_data_ptr.as_mut().expect("pointer was null") };
+    let imem_resp_bits_data =
+        unsafe { imem_resp_bits_data_ptr.as_mut().expect("pointer was null") };
 
     *imem_req_ready = imem_resp_ready;
 
@@ -86,7 +89,9 @@ pub unsafe fn cyclotron_backend_rs(
     finished_ptr: *mut u8,
 ) {
     let mut context_guard = CELL.write().unwrap();
-    let context = context_guard.as_mut().expect("DPI context not initialized!");
+    let context = context_guard
+        .as_mut()
+        .expect("DPI context not initialized!");
     let sim = &mut context.sim_be;
     let cluster = &mut sim.top.clusters[0];
     let core = &mut cluster.cores[0];
@@ -104,17 +109,51 @@ pub unsafe fn cyclotron_backend_rs(
     let writeback_wid = unsafe { writeback_wid_ptr.as_mut().expect("pointer was null") };
     // let writeback_rd_addr = unsafe { writeback_rd_addr_ptr.as_mut().expect("pointer was null") };
     // let writeback_rd_data = unsafe { std::slice::from_raw_parts_mut(writeback_rd_data_ptr, config.num_lanes) };
-    let writeback_set_pc_valid = unsafe { writeback_set_pc_valid_ptr.as_mut().expect("pointer was null") };
+    let writeback_set_pc_valid = unsafe {
+        writeback_set_pc_valid_ptr
+            .as_mut()
+            .expect("pointer was null")
+    };
     let writeback_set_pc = unsafe { writeback_set_pc_ptr.as_mut().expect("pointer was null") };
-    let writeback_set_tmask_valid = unsafe { writeback_set_tmask_valid_ptr.as_mut().expect("pointer was null") };
-    let writeback_set_tmask = unsafe { writeback_set_tmask_ptr.as_mut().expect("pointer was null") };
-    let writeback_wspawn_valid = unsafe { writeback_wspawn_valid_ptr.as_mut().expect("pointer was null") };
-    let writeback_wspawn_count = unsafe { writeback_wspawn_count_ptr.as_mut().expect("pointer was null") };
-    let writeback_wspawn_pc = unsafe { writeback_wspawn_pc_ptr.as_mut().expect("pointer was null") };
-    let writeback_ipdom_valid = unsafe { writeback_ipdom_valid_ptr.as_mut().expect("pointer was null") };
-    let writeback_ipdom_restored_mask = unsafe { writeback_ipdom_restored_mask_ptr.as_mut().expect("pointer was null") };
-    let writeback_ipdom_else_mask = unsafe { writeback_ipdom_else_mask_ptr.as_mut().expect("pointer was null") };
-    let writeback_ipdom_else_pc = unsafe { writeback_ipdom_else_pc_ptr.as_mut().expect("pointer was null") };
+    let writeback_set_tmask_valid = unsafe {
+        writeback_set_tmask_valid_ptr
+            .as_mut()
+            .expect("pointer was null")
+    };
+    let writeback_set_tmask =
+        unsafe { writeback_set_tmask_ptr.as_mut().expect("pointer was null") };
+    let writeback_wspawn_valid = unsafe {
+        writeback_wspawn_valid_ptr
+            .as_mut()
+            .expect("pointer was null")
+    };
+    let writeback_wspawn_count = unsafe {
+        writeback_wspawn_count_ptr
+            .as_mut()
+            .expect("pointer was null")
+    };
+    let writeback_wspawn_pc =
+        unsafe { writeback_wspawn_pc_ptr.as_mut().expect("pointer was null") };
+    let writeback_ipdom_valid = unsafe {
+        writeback_ipdom_valid_ptr
+            .as_mut()
+            .expect("pointer was null")
+    };
+    let writeback_ipdom_restored_mask = unsafe {
+        writeback_ipdom_restored_mask_ptr
+            .as_mut()
+            .expect("pointer was null")
+    };
+    let writeback_ipdom_else_mask = unsafe {
+        writeback_ipdom_else_mask_ptr
+            .as_mut()
+            .expect("pointer was null")
+    };
+    let writeback_ipdom_else_pc = unsafe {
+        writeback_ipdom_else_pc_ptr
+            .as_mut()
+            .expect("pointer was null")
+    };
     let finished = unsafe { finished_ptr.as_mut().expect("pointer was null") };
 
     if issue_valid != 1 {
@@ -146,10 +185,14 @@ pub unsafe fn cyclotron_backend_rs(
         raw: issue_raw_inst,
     };
 
-    core.warps[issue_warp_id as usize].state_mut().csr_file.iter_mut().for_each(|c| {
-        // c.emu_access(0xcc3, schedule.active_warps);
-        c.emu_access(0xcc4, issue_tmask);
-    });
+    core.warps[issue_warp_id as usize]
+        .state_mut()
+        .csr_file
+        .iter_mut()
+        .for_each(|c| {
+            // c.emu_access(0xcc3, schedule.active_warps);
+            c.emu_access(0xcc4, issue_tmask);
+        });
 
     debug!("issue warp id is {}", issue_warp_id);
     debug!("{}", decoded);

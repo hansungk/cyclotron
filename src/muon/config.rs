@@ -1,5 +1,5 @@
-use serde::Deserialize;
 use crate::sim::config::Config;
+use serde::Deserialize;
 
 #[derive(Debug, Deserialize, Clone, Copy)]
 pub struct MuonConfig {

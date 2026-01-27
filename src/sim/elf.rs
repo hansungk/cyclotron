@@ -1,8 +1,8 @@
-use std::path::Path;
-use std::{collections::HashMap, fs};
+use crate::base::mem::HasMemory;
 use anyhow::anyhow;
 use goblin::elf::{section_header, Elf};
-use crate::base::mem::HasMemory;
+use std::path::Path;
+use std::{collections::HashMap, fs};
 
 pub struct ElfBackedMem {
     pub sections: HashMap<(usize, usize), Vec<u8>>,
@@ -21,7 +21,7 @@ impl HasMemory for ElfBackedMem {
             }
         }
 
-        Err(anyhow!("address not present in any section")) 
+        Err(anyhow!("address not present in any section"))
     }
 
     fn write_impl(&mut self, _addr: usize, _data: &[u8]) -> Result<(), anyhow::Error> {
@@ -32,9 +32,10 @@ impl HasMemory for ElfBackedMem {
 impl ElfBackedMem {
     pub fn new(path: &Path) -> ElfBackedMem {
         let mut me = ElfBackedMem {
-            sections: Default::default()
+            sections: Default::default(),
         };
-        me.load_path(path.as_ref()).expect(&format!("Elf file {:?} not found", path));
+        me.load_path(path.as_ref())
+            .expect(&format!("Elf file {:?} not found", path));
         me
     }
 
@@ -63,8 +64,8 @@ impl ElfBackedMem {
                     self.sections.insert(range, bytes);
                 } else {
                     return Err(format!(
-                            "Invalid section bounds: offset {} size {}",
-                            offset, size
+                        "Invalid section bounds: offset {} size {}",
+                        offset, size
                     ));
                 }
             }

@@ -1,8 +1,11 @@
 use std::io::Write;
 
-use crate::{base::mem::HasMemory, sim::{config::MemConfig, elf::ElfBackedMem}};
+use crate::{
+    base::mem::HasMemory,
+    sim::{config::MemConfig, elf::ElfBackedMem},
+};
 
-/// Gigantic 4 GB vector to model memory space; relies on lazy allocation within OS to avoid actually 
+/// Gigantic 4 GB vector to model memory space; relies on lazy allocation within OS to avoid actually
 /// causing memory pressure. Avoids hash-table lookup for every memory access
 #[derive(Debug, Clone)]
 pub struct FlatMemory {
@@ -12,7 +15,7 @@ pub struct FlatMemory {
 
 impl HasMemory for FlatMemory {
     fn read_impl(&self, addr: usize, n: usize) -> Result<&[u8], anyhow::Error> {
-        Ok(self.bytes[addr..addr+n].try_into().unwrap())
+        Ok(self.bytes[addr..addr + n].try_into().unwrap())
     }
 
     fn write_impl(&mut self, addr: usize, data: &[u8]) -> Result<(), anyhow::Error> {
@@ -33,7 +36,7 @@ impl HasMemory for FlatMemory {
             }
         }
 
-        let bytes = &mut self.bytes[addr..addr+data.len()];
+        let bytes = &mut self.bytes[addr..addr + data.len()];
         bytes.copy_from_slice(data);
 
         Ok(())

@@ -1,16 +1,17 @@
 use crate::base::behavior::*;
+use crate::base::module::IsModule;
 use crate::cluster::Cluster;
 use crate::command_proc::CommandProcessor;
 use crate::muon::config::MuonConfig;
-use crate::base::module::IsModule;
-use crate::sim::config::{SimConfig, MemConfig};
+use crate::neutrino::config::NeutrinoConfig;
+use crate::sim::config::{MemConfig, SimConfig};
 use crate::sim::elf::ElfBackedMem;
 use crate::sim::flat_mem::FlatMemory;
 use crate::sim::log::Logger;
+use crate::timeflow::CoreGraphConfig;
+use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
-use serde::Deserialize;
-use crate::neutrino::config::NeutrinoConfig;
 
 pub struct Sim {
     pub config: SimConfig,
@@ -19,19 +20,27 @@ pub struct Sim {
 }
 
 impl Sim {
-    pub fn new(sim_config: SimConfig, muon_config: MuonConfig,
-               neutrino_config: NeutrinoConfig,
-               mem_config: MemConfig) -> Sim {
+    pub fn new(
+        sim_config: SimConfig,
+        muon_config: MuonConfig,
+        neutrino_config: NeutrinoConfig,
+        mem_config: MemConfig,
+        timing_config: CoreGraphConfig,
+    ) -> Sim {
         let logger = Arc::new(Logger::new(sim_config.log_level));
-        let top = CyclotronTop::new(Arc::new(CyclotronConfig {
-            timeout: sim_config.timeout,
-            elf: sim_config.elf.clone(),
-            cluster_config: ClusterConfig {
-                muon_config,
-                neutrino_config,
-            },
-            mem_config,
-        }), &logger);
+        let top = CyclotronTop::new(
+            Arc::new(CyclotronConfig {
+                timeout: sim_config.timeout,
+                elf: sim_config.elf.clone(),
+                cluster_config: ClusterConfig {
+                    muon_config,
+                    neutrino_config,
+                    timing_config,
+                },
+                mem_config,
+            }),
+            &logger,
+        );
 
         let mut sim = Sim {
             config: sim_config,
@@ -47,11 +56,12 @@ impl Sim {
         for cycle in 0..self.top.timeout {
             if self.top.finished() {
                 println!("simulation finished after {} cycles", cycle + 1);
-                if let Some(mut tohost) = self.top.clusters[0].cores[0].scheduler.state_mut().tohost {
+                if let Some(mut tohost) = self.top.clusters[0].cores[0].scheduler.state_mut().tohost
+                {
                     if tohost > 0 {
                         tohost >>= 1;
                         println!("failed test case {}", tohost);
-                        return Err(tohost)
+                        return Err(tohost);
                     } else {
                         println!("test passed");
                     }
@@ -70,8 +80,14 @@ impl Sim {
         }
         self.top.tick_one();
 
-        assert!(self.top.clusters.len() == 1, "Sim::tick() only supports 1-cluster 1-core config as of now.");
-        assert!(self.top.clusters[0].cores.len() == 1, "Sim::tick() only supports 1-cluster 1-core config as of now.");
+        assert!(
+            self.top.clusters.len() == 1,
+            "Sim::tick() only supports 1-cluster 1-core config as of now."
+        );
+        assert!(
+            self.top.clusters[0].cores.len() == 1,
+            "Sim::tick() only supports 1-cluster 1-core config as of now."
+        );
 
         // now the tracer should hold the instructions
         // TODO: report cycle
@@ -89,10 +105,11 @@ pub struct CyclotronConfig {
     pub mem_config: MemConfig,
 }
 
-#[derive(Debug, Deserialize, Clone, Copy)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct ClusterConfig {
     pub muon_config: MuonConfig,
     pub neutrino_config: NeutrinoConfig,
+    pub timing_config: CoreGraphConfig,
 }
 
 pub struct CyclotronTop {
@@ -100,6 +117,7 @@ pub struct CyclotronTop {
     pub clusters: Vec<Cluster>,
     pub timeout: u64,
     pub gmem: Arc<RwLock<FlatMemory>>,
+    pub gmem_timing: Arc<RwLock<crate::timeflow::ClusterGmemGraph>>,
 }
 
 impl CyclotronTop {
@@ -113,18 +131,35 @@ impl CyclotronTop {
         // in hardware too?
         let mut gmem = FlatMemory::new(Some(config.mem_config));
         gmem.copy_elf(&imem);
-        
+
         let gmem = Arc::new(RwLock::new(gmem));
-        
-        for id in 0..1 {
-            clusters.push(Cluster::new(cluster_config.clone(), id, logger, gmem.clone()));
+
+        let num_clusters = 1;
+        let cores_per_cluster = cluster_config.muon_config.num_cores;
+        let gmem_timing = Arc::new(RwLock::new(crate::timeflow::ClusterGmemGraph::new(
+            cluster_config.timing_config.gmem.clone(),
+            num_clusters,
+            cores_per_cluster,
+        )));
+
+        for id in 0..num_clusters {
+            clusters.push(Cluster::new(
+                cluster_config.clone(),
+                id,
+                logger,
+                gmem.clone(),
+                gmem_timing.clone(),
+            ));
         }
         let top = CyclotronTop {
-            cproc: CommandProcessor::new(Arc::new(config.cluster_config.muon_config.clone()),
-                1 /*FIXME: properly get thread dimension*/),
+            cproc: CommandProcessor::new(
+                Arc::new(config.cluster_config.muon_config.clone()),
+                1, /*FIXME: properly get thread dimension*/
+            ),
             clusters,
             timeout: config.timeout,
             gmem,
+            gmem_timing,
         };
 
         top
