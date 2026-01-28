@@ -235,7 +235,15 @@ impl Warp {
         }
 
         if decoded.opcode == Opcode::CUSTOM2 && decoded.raw.bit(17) {
-            timing_model.notify_barrier_arrive(now, self.wid, scheduler);
+            if tmask != 0 {
+                let first_lid = tmask.trailing_zeros() as usize;
+                let rf = self.base.state.reg_file.as_slice();
+                let barrier_id = rf
+                    .get(first_lid)
+                    .map(|lrf| lrf.read_gpr(decoded.rs1_addr))
+                    .unwrap_or(0);
+                timing_model.notify_barrier_arrive(now, self.wid, barrier_id, scheduler);
+            }
         }
 
         // operand collection

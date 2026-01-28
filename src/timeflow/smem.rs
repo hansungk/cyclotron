@@ -96,6 +96,8 @@ pub struct SmemFlowConfig {
     #[serde(default)]
     pub bank: ServerConfig,
     #[serde(default)]
+    pub dual_port: bool,
+    #[serde(default)]
     pub num_banks: usize,
     #[serde(default)]
     pub num_lanes: usize,
@@ -142,6 +144,7 @@ impl Default for SmemFlowConfig {
                 queue_capacity: 32,
                 ..ServerConfig::default()
             },
+            dual_port: false,
             num_banks: 1,
             num_lanes: 1,
             num_subbanks: 1,
@@ -156,6 +159,9 @@ pub(crate) struct SmemSubgraph {
     serial_node: Option<NodeId>,
     lane_nodes: Vec<NodeId>,
     bank_nodes: Vec<NodeId>,
+    bank_read_nodes: Vec<NodeId>,
+    bank_write_nodes: Vec<NodeId>,
+    dual_port: bool,
     subbank_nodes: Vec<Vec<NodeId>>,
     pub(crate) completions: VecDeque<SmemCompletion>,
     next_id: u64,
@@ -211,6 +217,8 @@ impl SmemSubgraph {
         }
 
         let mut bank_nodes = Vec::with_capacity(config.num_banks);
+        let mut bank_read_nodes = Vec::with_capacity(config.num_banks);
+        let mut bank_write_nodes = Vec::with_capacity(config.num_banks);
         let mut subbank_nodes = Vec::with_capacity(config.num_banks);
         for bank_idx in 0..config.num_banks {
             let bank_mod = bank_idx;
@@ -249,19 +257,56 @@ impl SmemSubgraph {
                 bank_subbanks.push(subbank_node);
             }
 
-            let node = graph.add_node(ServerNode::new(
-                format!("smem_bank_{bank_idx}"),
-                TimedServer::new(config.bank),
-            ));
-            for &subbank_node in &bank_subbanks {
-                graph.connect(
-                    subbank_node,
-                    node,
-                    format!("smem_subbank->bank_{bank_idx}"),
-                    Link::new(config.link_capacity),
-                );
+            if config.dual_port {
+                let read_node = graph.add_node(ServerNode::new(
+                    format!("smem_bank_r_{bank_idx}"),
+                    TimedServer::new(config.bank),
+                ));
+                let write_node = graph.add_node(ServerNode::new(
+                    format!("smem_bank_w_{bank_idx}"),
+                    TimedServer::new(config.bank),
+                ));
+                for &subbank_node in &bank_subbanks {
+                    graph.connect_filtered(
+                        subbank_node,
+                        read_node,
+                        format!("smem_subbank->bank_r_{bank_idx}"),
+                        Link::new(config.link_capacity),
+                        |payload| match payload {
+                            CoreFlowPayload::Smem(req) => !req.is_store,
+                            _ => false,
+                        },
+                    );
+                    graph.connect_filtered(
+                        subbank_node,
+                        write_node,
+                        format!("smem_subbank->bank_w_{bank_idx}"),
+                        Link::new(config.link_capacity),
+                        |payload| match payload {
+                            CoreFlowPayload::Smem(req) => req.is_store,
+                            _ => false,
+                        },
+                    );
+                }
+                bank_read_nodes.push(read_node);
+                bank_write_nodes.push(write_node);
+                bank_nodes.push(read_node);
+                bank_nodes.push(write_node);
+            } else {
+                let node = graph.add_node(ServerNode::new(
+                    format!("smem_bank_{bank_idx}"),
+                    TimedServer::new(config.bank),
+                ));
+                for &subbank_node in &bank_subbanks {
+                    graph.connect(
+                        subbank_node,
+                        node,
+                        format!("smem_subbank->bank_{bank_idx}"),
+                        Link::new(config.link_capacity),
+                    );
+                }
+                bank_nodes.push(node);
             }
-            bank_nodes.push(node);
             subbank_nodes.push(bank_subbanks);
         }
 
@@ -269,6 +314,9 @@ impl SmemSubgraph {
             serial_node,
             lane_nodes,
             bank_nodes,
+            bank_read_nodes,
+            bank_write_nodes,
+            dual_port: config.dual_port,
             subbank_nodes,
             completions: VecDeque::new(),
             next_id: 0,

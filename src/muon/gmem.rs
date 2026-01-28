@@ -516,11 +516,17 @@ impl CoreTimingModel {
         }
     }
 
-    pub fn notify_barrier_arrive(&mut self, now: Cycle, warp: usize, scheduler: &mut Scheduler) {
+    pub fn notify_barrier_arrive(
+        &mut self,
+        now: Cycle,
+        warp: usize,
+        barrier_id: u32,
+        scheduler: &mut Scheduler,
+    ) {
         if !self.barrier.is_enabled() {
             return;
         }
-        let _ = self.barrier.arrive(now, warp);
+        let _ = self.barrier.arrive(now, warp, barrier_id);
         if let Some(slot) = self.barrier_inflight.get_mut(warp) {
             *slot = true;
         }
@@ -1791,6 +1797,7 @@ mod tests {
                 queue_capacity: 1,
                 ..ServerConfig::default()
             },
+            dual_port: false,
             num_banks: 1,
             num_lanes: 1,
             num_subbanks: 1,
@@ -1976,6 +1983,7 @@ mod tests {
                 queue_capacity: 2,
                 ..ServerConfig::default()
             },
+            dual_port: false,
             num_banks: 2,
             num_lanes: 1,
             num_subbanks: 1,

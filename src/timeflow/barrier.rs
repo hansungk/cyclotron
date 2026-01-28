@@ -7,6 +7,7 @@ use crate::timeq::{Cycle, ServerConfig, ServiceRequest, TimedServer};
 pub struct BarrierConfig {
     pub enabled: bool,
     pub expected_warps: usize,
+    pub barrier_id_bits: u32,
     #[serde(flatten)]
     pub queue: ServerConfig,
 }
@@ -16,6 +17,7 @@ impl Default for BarrierConfig {
         Self {
             enabled: false,
             expected_warps: 0,
+            barrier_id_bits: 0,
             queue: ServerConfig {
                 base_latency: 1,
                 bytes_per_cycle: 1,
@@ -30,9 +32,16 @@ impl Default for BarrierConfig {
 pub struct BarrierManager {
     enabled: bool,
     expected_warps: usize,
-    server: TimedServer<()>,
+    barrier_id_bits: u32,
+    server: TimedServer<u32>,
+    states: std::collections::HashMap<u32, BarrierState>,
+    num_warps: usize,
+}
+
+struct BarrierState {
     arrived: Vec<bool>,
     releasing: Vec<usize>,
+    release_at: Option<Cycle>,
 }
 
 impl BarrierManager {
@@ -45,44 +54,49 @@ impl BarrierManager {
         Self {
             enabled: config.enabled,
             expected_warps: expected,
+            barrier_id_bits: config.barrier_id_bits,
             server: TimedServer::new(config.queue),
-            arrived: vec![false; num_warps.max(1)],
-            releasing: Vec::new(),
+            states: std::collections::HashMap::new(),
+            num_warps: num_warps.max(1),
         }
     }
 
-    pub fn arrive(&mut self, now: Cycle, warp: usize) -> Option<Cycle> {
+    pub fn arrive(&mut self, now: Cycle, warp: usize, barrier_id: u32) -> Option<Cycle> {
         if !self.enabled {
             return Some(now);
         }
-        if self.expected_warps == 0 || warp >= self.arrived.len() {
+        if self.expected_warps == 0 || warp >= self.num_warps {
             return Some(now);
         }
 
-        if !self.releasing.is_empty() {
-            return self
-                .server
-                .oldest_ticket()
-                .map(|ticket| ticket.ready_at())
-                .or_else(|| Some(now));
+        let id = self.normalize_id(barrier_id);
+        let state = self.states.entry(id).or_insert_with(|| BarrierState {
+            arrived: vec![false; self.num_warps],
+            releasing: Vec::new(),
+            release_at: None,
+        });
+
+        if let Some(release_at) = state.release_at {
+            return Some(release_at);
         }
 
-        self.arrived[warp] = true;
-        let arrived_count = self.arrived.iter().filter(|&&v| v).count();
+        state.arrived[warp] = true;
+        let arrived_count = state.arrived.iter().filter(|&&v| v).count();
         if arrived_count < self.expected_warps {
             return None;
         }
 
-        let request = ServiceRequest::new((), 0);
+        let request = ServiceRequest::new(id, 0);
         if let Ok(ticket) = self.server.try_enqueue(now, request) {
             let mut warps = Vec::new();
-            for (idx, arrived) in self.arrived.iter_mut().enumerate() {
+            for (idx, arrived) in state.arrived.iter_mut().enumerate() {
                 if *arrived {
                     warps.push(idx);
                     *arrived = false;
                 }
             }
-            self.releasing = warps;
+            state.releasing = warps;
+            state.release_at = Some(ticket.ready_at());
             Some(ticket.ready_at())
         } else {
             None
@@ -93,17 +107,37 @@ impl BarrierManager {
         if !self.enabled {
             return None;
         }
-        let mut released: Option<Vec<usize>> = None;
-        self.server.service_ready(now, |_| {
-            if !self.releasing.is_empty() {
-                released = Some(std::mem::take(&mut self.releasing));
+        let mut released = Vec::new();
+        self.server.service_ready(now, |result| {
+            let barrier_id = result.payload;
+            if let Some(state) = self.states.get_mut(&barrier_id) {
+                if !state.releasing.is_empty() {
+                    released.extend(state.releasing.drain(..));
+                }
+                state.release_at = None;
             }
         });
-        released
+
+        if released.is_empty() {
+            None
+        } else {
+            Some(released)
+        }
     }
 
     pub fn is_enabled(&self) -> bool {
         self.enabled
+    }
+
+    fn normalize_id(&self, barrier_id: u32) -> u32 {
+        if self.barrier_id_bits == 0 {
+            barrier_id
+        } else if self.barrier_id_bits >= 32 {
+            barrier_id
+        } else {
+            let mask = (1u32 << self.barrier_id_bits) - 1;
+            barrier_id & mask
+        }
     }
 }
 
@@ -119,12 +153,30 @@ mod tests {
         cfg.queue.base_latency = 2;
 
         let mut barrier = BarrierManager::new(cfg, 2);
-        assert!(barrier.arrive(0, 0).is_none());
-        let release_at = barrier.arrive(0, 1).expect("barrier should schedule");
+        assert!(barrier.arrive(0, 0, 0).is_none());
+        let release_at = barrier.arrive(0, 1, 0).expect("barrier should schedule");
         assert!(release_at >= 2);
 
         assert!(barrier.tick(1).is_none());
         let released = barrier.tick(release_at).expect("barrier should release");
         assert_eq!(released.len(), 2);
+    }
+
+    #[test]
+    fn barrier_tracks_multiple_ids() {
+        let mut cfg = BarrierConfig::default();
+        cfg.enabled = true;
+        cfg.expected_warps = 2;
+        cfg.queue.base_latency = 1;
+
+        let mut barrier = BarrierManager::new(cfg, 2);
+        assert!(barrier.arrive(0, 0, 1).is_none());
+        assert!(barrier.arrive(0, 1, 2).is_none());
+
+        let rel0 = barrier.arrive(0, 1, 1).expect("barrier 1 should schedule");
+        let rel1 = barrier.arrive(0, 0, 2).expect("barrier 2 should schedule");
+        let cycle = rel0.min(rel1);
+        let released = barrier.tick(cycle).unwrap_or_default();
+        assert!(!released.is_empty(), "expected some warps released");
     }
 }
