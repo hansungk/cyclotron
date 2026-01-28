@@ -1,6 +1,7 @@
 use crate::timeq::{Backpressure, Cycle, ServerConfig, ServiceRequest, TimedServer};
+use std::cmp::max;
 
-use super::GmemRequest;
+use super::request::GmemRequest;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct MissMetadata {
@@ -142,6 +143,11 @@ pub(crate) struct MshrAdmission {
     server: TimedServer<()>,
 }
 
+pub(crate) enum AdmissionBackpressure {
+    Busy { retry_at: Cycle },
+    QueueFull { retry_at: Cycle },
+}
+
 impl MshrAdmission {
     pub(crate) fn new(config: ServerConfig) -> Self {
         let mut cfg = config;
@@ -152,9 +158,24 @@ impl MshrAdmission {
         }
     }
 
-    pub(crate) fn try_admit(&mut self, now: Cycle) -> Result<Cycle, Backpressure<()>> {
+    pub(crate) fn try_admit(&mut self, now: Cycle) -> Result<Cycle, AdmissionBackpressure> {
         let request = ServiceRequest::new((), 0);
-        self.server.try_enqueue(now, request).map(|ticket| ticket.ready_at())
+        match self.server.try_enqueue(now, request) {
+            Ok(ticket) => Ok(ticket.ready_at()),
+            Err(Backpressure::Busy { available_at, .. }) => Err(AdmissionBackpressure::Busy {
+                retry_at: max(available_at, now.saturating_add(1)),
+            }),
+            Err(Backpressure::QueueFull { .. }) => {
+                let retry_at = self
+                    .server
+                    .oldest_ticket()
+                    .map(|ticket| ticket.ready_at())
+                    .unwrap_or_else(|| self.server.available_at());
+                Err(AdmissionBackpressure::QueueFull {
+                    retry_at: max(retry_at, now.saturating_add(1)),
+                })
+            }
+        }
     }
 
     pub(crate) fn tick(&mut self, now: Cycle) {

@@ -125,3 +125,18 @@ queue_capacity = 1024
 num_banks = 4
 num_lanes = 16
 link_capacity = 1024
+
+[icache.hit]
+base_latency = 0
+bytes_per_cycle = 1
+queue_capacity = 1024
+
+[icache.miss]
+base_latency = 0
+bytes_per_cycle = 1
+queue_capacity = 1024
+
+[icache.policy]
+hit_rate = 1.0
+line_bytes = 32
+seed = 0

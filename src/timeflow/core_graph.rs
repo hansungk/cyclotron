@@ -2,6 +2,8 @@ use crate::timeflow::gmem::{
     GmemCompletion, GmemFlowConfig, GmemIssue, GmemReject, GmemRequest, GmemStats, GmemSubgraph,
 };
 use crate::timeflow::graph::FlowGraph;
+use crate::timeflow::icache::IcacheFlowConfig;
+use crate::timeflow::lsu::LsuFlowConfig;
 use crate::timeflow::smem::{
     SmemCompletion, SmemFlowConfig, SmemIssue, SmemReject, SmemRequest, SmemStats, SmemSubgraph,
 };
@@ -15,6 +17,10 @@ pub struct CoreGraphConfig {
     pub gmem: GmemFlowConfig,
     #[serde(default)]
     pub smem: SmemFlowConfig,
+    #[serde(default)]
+    pub lsu: LsuFlowConfig,
+    #[serde(default)]
+    pub icache: IcacheFlowConfig,
 }
 
 impl Default for CoreGraphConfig {
@@ -22,6 +28,8 @@ impl Default for CoreGraphConfig {
         Self {
             gmem: GmemFlowConfig::default(),
             smem: SmemFlowConfig::default(),
+            lsu: LsuFlowConfig::default(),
+            icache: IcacheFlowConfig::default(),
         }
     }
 }

@@ -1,0 +1,14 @@
+[icache.hit]
+base_latency = 0
+bytes_per_cycle = 1
+queue_capacity = 16
+
+[icache.miss]
+base_latency = 40
+bytes_per_cycle = 1
+queue_capacity = 8
+
+[icache.policy]
+hit_rate = 0.98
+line_bytes = 32
+seed = 0

@@ -9,10 +9,12 @@ use crate::info;
 use crate::muon::scheduler::Scheduler;
 use crate::sim::log::Logger;
 use crate::timeflow::{
-    ClusterGmemGraph, CoreGraph, CoreGraphConfig, GmemIssue, GmemPolicyConfig, GmemReject,
-    GmemRejectReason, GmemRequest, GmemRequestKind, GmemStats, SmemIssue, SmemReject,
-    SmemRejectReason, SmemRequest, SmemStats,
+    ClusterGmemGraph, CoreGraph, CoreGraphConfig, GmemPolicyConfig, GmemReject, GmemRequest,
+    GmemRequestKind, GmemStats, IcacheIssue, IcacheReject, IcacheRequest, IcacheSubgraph, LsuIssue,
+    LsuReject, LsuRejectReason, LsuSubgraph, SmemFlowConfig, SmemIssue, SmemReject, SmemRequest,
+    SmemStats,
 };
+use crate::timeflow::lsu::LsuPayload;
 use crate::timeq::{Cycle, Ticket};
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -23,18 +25,36 @@ pub struct CoreStats {
 
 pub struct CoreTimingModel {
     graph: CoreGraph,
+    lsu: LsuSubgraph,
+    icache: IcacheSubgraph,
+    icache_inflight: Vec<Option<IcacheInflight>>,
+    pending_cluster_gmem: VecDeque<PendingClusterIssue<GmemRequest>>,
+    pending_cluster_smem: VecDeque<PendingClusterIssue<SmemRequest>>,
     pending_gmem: Vec<VecDeque<(u64, Cycle)>>,
     pending_smem: Vec<VecDeque<(u64, Cycle)>>,
     cluster_gmem: Arc<std::sync::RwLock<ClusterGmemGraph>>,
     core_id: usize,
     cluster_id: usize,
     gmem_policy: GmemPolicyConfig,
+    smem_config: SmemFlowConfig,
     next_gmem_id: u64,
+    next_smem_id: u64,
+    next_icache_id: u64,
     logger: Arc<Logger>,
     trace: Option<TraceSink>,
     log_stats: bool,
     last_logged_gmem_completed: u64,
     last_logged_smem_completed: u64,
+}
+
+struct PendingClusterIssue<T> {
+    request: T,
+    retry_at: Cycle,
+}
+
+#[derive(Clone, Copy)]
+struct IcacheInflight {
+    ready_at: Cycle,
 }
 
 impl CoreTimingModel {
@@ -76,7 +96,10 @@ impl CoreTimingModel {
         trace_path: Option<PathBuf>,
         log_stats: bool,
     ) -> Self {
+        let lsu = LsuSubgraph::new(config.lsu.clone(), num_warps);
         let gmem_policy = config.gmem.policy;
+        let smem_config = config.smem.clone();
+        let icache = IcacheSubgraph::new(config.icache.clone());
         let trace = trace_path.and_then(|path| match TraceSink::new(path) {
             Ok(sink) => Some(sink),
             Err(err) => {
@@ -87,13 +110,21 @@ impl CoreTimingModel {
 
         Self {
             graph: CoreGraph::new(config),
+            lsu,
+            icache,
+            icache_inflight: vec![None; num_warps],
+            pending_cluster_gmem: VecDeque::new(),
+            pending_cluster_smem: VecDeque::new(),
             pending_gmem: vec![VecDeque::new(); num_warps],
             pending_smem: vec![VecDeque::new(); num_warps],
             cluster_gmem,
             core_id,
             cluster_id,
             gmem_policy,
+            smem_config,
             next_gmem_id: 0,
+            next_smem_id: 0,
+            next_icache_id: 0,
             logger,
             trace,
             log_stats,
@@ -117,25 +148,47 @@ impl CoreTimingModel {
         request.core_id = self.core_id;
         request.cluster_id = self.cluster_id;
         if request.id == 0 {
-            request.id = self.next_gmem_id;
+            request.id = if self.next_gmem_id == 0 {
+                1
+            } else {
+                self.next_gmem_id
+            };
         }
         self.maybe_convert_mmio_flush(&mut request);
-        let issue_bytes = request.bytes;
-        let issue_result = {
-            let mut cluster = self.cluster_gmem.write().unwrap();
-            cluster.issue(self.core_id, now, request)
-        };
-        match issue_result {
-            Ok(GmemIssue { request_id, ticket }) => {
-                if request_id >= self.next_gmem_id {
-                    self.next_gmem_id = request_id.saturating_add(1);
+        if request.kind.is_mem() {
+            if let Some(lane_addrs) = request.lane_addrs.as_ref() {
+                let line_bytes = self.gmem_policy.l1_line_bytes.max(1) as u64;
+                let mut lines: Vec<u64> = lane_addrs
+                    .iter()
+                    .map(|addr| (addr / line_bytes) * line_bytes)
+                    .collect();
+                lines.sort_unstable();
+                lines.dedup();
+                if !lines.is_empty() {
+                    request.coalesced_lines = Some(lines);
                 }
+            }
+        }
+        request.lane_addrs = None;
+        let issue_bytes = request.bytes;
+        let request_id = request.id;
+        if request_id >= self.next_gmem_id {
+            self.next_gmem_id = request_id.saturating_add(1);
+        }
+        let split_count = request
+            .coalesced_lines
+            .as_ref()
+            .map(|lines| lines.len().max(1))
+            .unwrap_or(1);
+        let issue_result = self.lsu.issue_gmem(now, request);
+        match issue_result {
+            Ok(LsuIssue { ticket }) => {
                 let ready_at = ticket.ready_at();
-                self.add_gmem_pending(warp, request_id, ready_at, scheduler);
+                self.add_gmem_pending(warp, request_id, ready_at, scheduler, split_count);
                 self.trace_event(now, "gmem_issue", warp, Some(request_id), issue_bytes, None);
                 info!(
                     self.logger,
-                    "[gmem] warp {} issued request {} ready@{} bytes={}",
+                    "[lsu] warp {} accepted gmem request {} ready@{} bytes={}",
                     warp,
                     request_id,
                     ready_at,
@@ -143,7 +196,7 @@ impl CoreTimingModel {
                 );
                 Ok(ticket)
             }
-            Err(GmemReject {
+            Err(LsuReject {
                 request,
                 retry_at,
                 reason,
@@ -152,24 +205,28 @@ impl CoreTimingModel {
                 scheduler.set_resource_wait_until(warp, Some(wait_until));
                 scheduler.replay_instruction(warp);
                 let reason_str = match reason {
-                    GmemRejectReason::Busy => "busy",
-                    GmemRejectReason::QueueFull => "queue_full",
+                    LsuRejectReason::Busy => "busy",
+                    LsuRejectReason::QueueFull => "queue_full",
+                };
+                let (request_id, request_bytes) = match request {
+                    LsuPayload::Gmem(req) => (req.id, req.bytes),
+                    LsuPayload::Smem(req) => (req.id, req.bytes),
                 };
                 self.trace_event(
                     now,
                     "gmem_reject",
                     warp,
-                    Some(request.id),
-                    request.bytes,
+                    Some(request_id),
+                    request_bytes,
                     Some(reason_str),
                 );
                 info!(
                     self.logger,
-                    "[gmem] warp {} stalled ({:?}) retry@{} bytes={}",
+                    "[lsu] warp {} stalled ({:?}) retry@{} bytes={}",
                     warp,
                     reason,
                     wait_until,
-                    request.bytes
+                    request_bytes
                 );
                 Err(wait_until)
             }
@@ -188,23 +245,31 @@ impl CoreTimingModel {
         }
 
         request.warp = warp;
-        match self.graph.issue_smem(now, request) {
-            Ok(SmemIssue { request_id, ticket }) => {
+        if request.id == 0 {
+            request.id = self.next_smem_id;
+            self.next_smem_id = self.next_smem_id.saturating_add(1);
+        } else if request.id >= self.next_smem_id {
+            self.next_smem_id = request.id.saturating_add(1);
+        }
+        let request_id = request.id;
+        let split_count = self.split_smem_request(&request).len().max(1);
+        let issue_bytes = request.bytes;
+        let issue_result = self.lsu.issue_smem(now, request);
+        match issue_result {
+            Ok(LsuIssue { ticket }) => {
                 let ready_at = ticket.ready_at();
-                let size_bytes = ticket.size_bytes();
-                self.add_smem_pending(warp, request_id, ready_at, scheduler);
-                self.trace_event(now, "smem_issue", warp, Some(request_id), size_bytes, None);
+                self.add_smem_pending(warp, request_id, ready_at, scheduler, split_count);
+                self.trace_event(now, "smem_issue", warp, None, issue_bytes, None);
                 info!(
                     self.logger,
-                    "[smem] warp {} issued request {} ready@{} bytes={}",
+                    "[lsu] warp {} accepted smem request ready@{} bytes={}",
                     warp,
-                    request_id,
                     ready_at,
-                    size_bytes
+                    issue_bytes
                 );
                 Ok(ticket)
             }
-            Err(SmemReject {
+            Err(LsuReject {
                 request,
                 retry_at,
                 reason,
@@ -213,26 +278,91 @@ impl CoreTimingModel {
                 scheduler.set_resource_wait_until(warp, Some(wait_until));
                 scheduler.replay_instruction(warp);
                 let reason_str = match reason {
-                    SmemRejectReason::Busy => "busy",
-                    SmemRejectReason::QueueFull => "queue_full",
+                    LsuRejectReason::Busy => "busy",
+                    LsuRejectReason::QueueFull => "queue_full",
+                };
+                let (request_id, request_bytes) = match request {
+                    LsuPayload::Smem(req) => (req.id, req.bytes),
+                    LsuPayload::Gmem(req) => (req.id, req.bytes),
                 };
                 self.trace_event(
                     now,
                     "smem_reject",
                     warp,
-                    Some(request.id),
-                    request.bytes,
+                    Some(request_id),
+                    request_bytes,
                     Some(reason_str),
                 );
                 info!(
                     self.logger,
-                    "[smem] warp {} stalled ({:?}) retry@{} bytes={}",
+                    "[lsu] warp {} stalled ({:?}) retry@{} bytes={}",
                     warp,
                     reason,
                     wait_until,
-                    request.bytes
+                    request_bytes
                 );
                 Err(wait_until)
+            }
+        }
+    }
+
+    pub fn allow_fetch(
+        &mut self,
+        now: Cycle,
+        warp: usize,
+        pc: u32,
+        scheduler: &mut Scheduler,
+    ) -> bool {
+        if warp >= self.icache_inflight.len() {
+            return true;
+        }
+
+        if let Some(entry) = self.icache_inflight[warp].as_ref() {
+            if now >= entry.ready_at {
+                self.icache_inflight[warp] = None;
+                return true;
+            }
+            scheduler.set_resource_wait_until(warp, Some(entry.ready_at));
+            scheduler.replay_instruction(warp);
+            return false;
+        }
+
+        let mut request = IcacheRequest::new(warp, pc, 8);
+        request.core_id = self.core_id;
+        if request.id == 0 {
+            request.id = if self.next_icache_id == 0 {
+                1
+            } else {
+                self.next_icache_id
+            };
+        }
+        if request.id >= self.next_icache_id {
+            self.next_icache_id = request.id.saturating_add(1);
+        }
+
+        match self.icache.issue(now, request) {
+            Ok(IcacheIssue { ticket }) => {
+                let ready_at = ticket.ready_at();
+                if ready_at <= now {
+                    true
+                } else {
+                    self.icache_inflight[warp] = Some(IcacheInflight {
+                        ready_at,
+                    });
+                    scheduler.set_resource_wait_until(warp, Some(ready_at));
+                    scheduler.replay_instruction(warp);
+                    false
+                }
+            }
+            Err(IcacheReject {
+                retry_at,
+                reason: _,
+                ..
+            }) => {
+                let wait_until = retry_at.max(now.saturating_add(1));
+                scheduler.set_resource_wait_until(warp, Some(wait_until));
+                scheduler.replay_instruction(warp);
+                false
             }
         }
     }
@@ -257,6 +387,12 @@ impl CoreTimingModel {
     }
 
     pub fn tick(&mut self, now: Cycle, scheduler: &mut Scheduler) {
+        self.icache.tick(now);
+        self.lsu.tick(now);
+        self.drive_lsu_issues(now);
+        self.issue_pending_cluster_gmem(now);
+        self.issue_pending_cluster_smem(now);
+
         let prev_gmem = self
             .cluster_gmem
             .read()
@@ -285,6 +421,8 @@ impl CoreTimingModel {
             if !self.remove_gmem_pending(warp, completed_id, scheduler) {
                 continue;
             }
+            self.lsu
+                .release_load_data(&LsuPayload::Gmem(completion.request.clone()));
             self.trace_event(
                 now,
                 "gmem_complete",
@@ -310,6 +448,8 @@ impl CoreTimingModel {
             if !self.remove_smem_pending(warp, completed_id, scheduler) {
                 continue;
             }
+            self.lsu
+                .release_load_data(&LsuPayload::Smem(completion.request.clone()));
             self.trace_event(
                 now,
                 "smem_complete",
@@ -424,15 +564,219 @@ impl CoreTimingModel {
         }
     }
 
+    fn drive_lsu_issues(&mut self, now: Cycle) {
+        loop {
+            let payload = match self.lsu.peek_ready(now) {
+                Some(payload) => payload,
+                None => break,
+            };
+
+            match &payload {
+                LsuPayload::Gmem(req) => {
+                    let split = self.split_gmem_request(req);
+                    for child in split {
+                        self.pending_cluster_gmem.push_back(PendingClusterIssue {
+                            request: child,
+                            retry_at: now,
+                        });
+                    }
+                }
+                LsuPayload::Smem(req) => {
+                    let split = self.split_smem_request(req);
+                    for child in split {
+                        self.pending_cluster_smem.push_back(PendingClusterIssue {
+                            request: child,
+                            retry_at: now,
+                        });
+                    }
+                }
+            }
+
+            if let Some(completion) = self.lsu.take_ready(now) {
+                self.lsu.release_issue_resources(&completion.request);
+            }
+        }
+    }
+
+    fn split_gmem_request(&self, request: &GmemRequest) -> Vec<GmemRequest> {
+        if !request.kind.is_mem() {
+            return vec![request.clone()];
+        }
+        let line_bytes = self.gmem_policy.l1_line_bytes.max(1) as u64;
+        let lines = request
+            .coalesced_lines
+            .clone()
+            .unwrap_or_else(|| vec![(request.addr / line_bytes) * line_bytes]);
+        if lines.is_empty() {
+            return vec![request.clone()];
+        }
+        lines
+            .into_iter()
+            .map(|line| {
+                let mut child = request.clone();
+                child.addr = line;
+                child.line_addr = line;
+                child.bytes = line_bytes as u32;
+                child.coalesced_lines = None;
+                child.lane_addrs = None;
+                child
+            })
+            .collect()
+    }
+
+    fn split_smem_request(&self, request: &SmemRequest) -> Vec<SmemRequest> {
+        let num_banks = self.smem_config.num_banks.max(1) as u64;
+        let num_subbanks = self.smem_config.num_subbanks.max(1) as u64;
+        let word_bytes = self.smem_config.word_bytes.max(1) as u64;
+        let active = request.active_lanes.max(1);
+        let bytes_per_lane = request.bytes.saturating_div(active).max(1);
+
+        if let Some(lane_addrs) = request.lane_addrs.as_ref() {
+            let mut groups: std::collections::HashMap<(usize, usize), (u32, u64)> =
+                std::collections::HashMap::new();
+            for &addr in lane_addrs {
+                let word = addr / word_bytes;
+                let bank = (word % num_banks) as usize;
+                let subbank = ((word / num_banks) % num_subbanks) as usize;
+                let entry = groups.entry((bank, subbank)).or_insert((0, addr));
+                entry.0 = entry.0.saturating_add(1);
+            }
+            if groups.is_empty() {
+                return vec![request.clone()];
+            }
+            return groups
+                .into_iter()
+                .map(|((bank, subbank), (lanes, addr))| {
+                    let mut child = request.clone();
+                    child.bank = bank;
+                    child.subbank = subbank;
+                    child.addr = addr;
+                    child.active_lanes = lanes;
+                    child.bytes = bytes_per_lane.saturating_mul(lanes).max(1);
+                    child.lane_addrs = None;
+                    child
+                })
+                .collect();
+        }
+
+        let word = request.addr / word_bytes;
+        let bank = (word % num_banks) as usize;
+        let subbank = ((word / num_banks) % num_subbanks) as usize;
+        let mut child = request.clone();
+        child.bank = bank;
+        child.subbank = subbank;
+        child.lane_addrs = None;
+        vec![child]
+    }
+
+    fn issue_pending_cluster_gmem(&mut self, now: Cycle) {
+        if self.pending_cluster_gmem.is_empty() {
+            return;
+        }
+
+        let mut pending = VecDeque::with_capacity(self.pending_cluster_gmem.len());
+        let mut remaining = self.pending_cluster_gmem.len();
+        while remaining > 0 {
+            remaining -= 1;
+            let entry = match self.pending_cluster_gmem.pop_front() {
+                Some(entry) => entry,
+                None => break,
+            };
+            if entry.retry_at > now {
+                pending.push_back(entry);
+                continue;
+            }
+
+            if !self.lsu.can_reserve_load_data(&LsuPayload::Gmem(entry.request.clone())) {
+                pending.push_back(PendingClusterIssue {
+                    request: entry.request,
+                    retry_at: now.saturating_add(1),
+                });
+                continue;
+            }
+
+            let issue = {
+                let mut cluster = self.cluster_gmem.write().unwrap();
+                cluster.issue(self.core_id, now, entry.request.clone())
+            };
+            match issue {
+                Ok(_) => {
+                    let _ = self
+                        .lsu
+                        .reserve_load_data(&LsuPayload::Gmem(entry.request));
+                }
+                Err(GmemReject { request, retry_at, .. }) => {
+                    pending.push_back(PendingClusterIssue {
+                        request,
+                        retry_at: retry_at.max(now.saturating_add(1)),
+                    });
+                }
+            }
+        }
+
+        self.pending_cluster_gmem = pending;
+    }
+
+    fn issue_pending_cluster_smem(&mut self, now: Cycle) {
+        if self.pending_cluster_smem.is_empty() {
+            return;
+        }
+
+        let mut pending = VecDeque::with_capacity(self.pending_cluster_smem.len());
+        let mut remaining = self.pending_cluster_smem.len();
+        while remaining > 0 {
+            remaining -= 1;
+            let entry = match self.pending_cluster_smem.pop_front() {
+                Some(entry) => entry,
+                None => break,
+            };
+            if entry.retry_at > now {
+                pending.push_back(entry);
+                continue;
+            }
+
+            if !self
+                .lsu
+                .can_reserve_load_data(&LsuPayload::Smem(entry.request.clone()))
+            {
+                pending.push_back(PendingClusterIssue {
+                    request: entry.request,
+                    retry_at: now.saturating_add(1),
+                });
+                continue;
+            }
+
+            match self.graph.issue_smem(now, entry.request.clone()) {
+                Ok(SmemIssue { .. }) => {
+                    let _ = self
+                        .lsu
+                        .reserve_load_data(&LsuPayload::Smem(entry.request));
+                }
+                Err(SmemReject { request, retry_at, .. }) => {
+                    pending.push_back(PendingClusterIssue {
+                        request,
+                        retry_at: retry_at.max(now.saturating_add(1)),
+                    });
+                }
+            }
+        }
+
+        self.pending_cluster_smem = pending;
+    }
+
     fn add_gmem_pending(
         &mut self,
         warp: usize,
         request_id: u64,
         ready_at: Cycle,
         scheduler: &mut Scheduler,
+        count: usize,
     ) {
         if let Some(slot) = self.pending_gmem.get_mut(warp) {
-            slot.push_back((request_id, ready_at));
+            let repeats = count.max(1);
+            for _ in 0..repeats {
+                slot.push_back((request_id, ready_at));
+            }
         }
         self.update_scheduler_state(warp, scheduler);
     }
@@ -459,9 +803,13 @@ impl CoreTimingModel {
         request_id: u64,
         ready_at: Cycle,
         scheduler: &mut Scheduler,
+        count: usize,
     ) {
         if let Some(slot) = self.pending_smem.get_mut(warp) {
-            slot.push_back((request_id, ready_at));
+            let repeats = count.max(1);
+            for _ in 0..repeats {
+                slot.push_back((request_id, ready_at));
+            }
         }
         self.update_scheduler_state(warp, scheduler);
     }
@@ -493,7 +841,12 @@ impl CoreTimingModel {
             .get(warp)
             .map(|queue| !queue.is_empty())
             .unwrap_or(false);
-        if !gmem_pending && !smem_pending {
+        let icache_pending = self
+            .icache_inflight
+            .get(warp)
+            .map(|entry| entry.is_some())
+            .unwrap_or(false);
+        if !gmem_pending && !smem_pending && !icache_pending {
             scheduler.clear_resource_wait(warp);
         }
     }
@@ -562,7 +915,7 @@ mod tests {
         Scheduler::new(Arc::new(config), 0)
     }
 
-    fn make_model(num_warps: usize) -> CoreTimingModel {
+    fn make_model_with_lsu(num_warps: usize, lsu_depth: usize) -> CoreTimingModel {
         let mut gmem = GmemFlowConfig::default();
         gmem.nodes.coalescer.queue_capacity = 1;
         gmem.nodes.l0d_tag.queue_capacity = 1;
@@ -573,7 +926,15 @@ mod tests {
                 queue_capacity: 1,
                 ..ServerConfig::default()
             },
+            serial: ServerConfig {
+                queue_capacity: 1,
+                ..ServerConfig::default()
+            },
             crossbar: ServerConfig {
+                queue_capacity: 1,
+                ..ServerConfig::default()
+            },
+            subbank: ServerConfig {
                 queue_capacity: 1,
                 ..ServerConfig::default()
             },
@@ -583,9 +944,20 @@ mod tests {
             },
             num_banks: 1,
             num_lanes: 1,
+            num_subbanks: 1,
+            word_bytes: 4,
+            serialize_cores: false,
             link_capacity: 1,
         };
-        let cfg = CoreGraphConfig { gmem, smem };
+        let mut cfg = CoreGraphConfig {
+            gmem,
+            smem,
+            ..CoreGraphConfig::default()
+        };
+        cfg.lsu.queues.global_ldq.queue_capacity = lsu_depth.max(1);
+        cfg.lsu.queues.global_stq.queue_capacity = lsu_depth.max(1);
+        cfg.lsu.queues.shared_ldq.queue_capacity = lsu_depth.max(1);
+        cfg.lsu.queues.shared_stq.queue_capacity = lsu_depth.max(1);
         let logger = Arc::new(Logger::silent());
         let cluster_gmem = Arc::new(std::sync::RwLock::new(ClusterGmemGraph::new(
             cfg.gmem.clone(),
@@ -593,6 +965,10 @@ mod tests {
             1,
         )));
         CoreTimingModel::new(cfg, num_warps, 0, 0, cluster_gmem, logger)
+    }
+
+    fn make_model(num_warps: usize) -> CoreTimingModel {
+        make_model_with_lsu(num_warps, 8)
     }
 
     #[test]
@@ -606,26 +982,23 @@ mod tests {
         let ticket = model
             .issue_gmem_request(now, 0, request, &mut scheduler)
             .expect("request should accept");
-        assert!(model.has_pending_gmem(0));
-        let stats = model.stats();
-        assert_eq!(stats.gmem.issued, 1);
 
         // Advance time until the request matures.
         let ready_at = ticket.ready_at();
         let mut cycle = now;
-        let mut released = false;
+        let mut completed = false;
         let max_cycles = 500;
         for _ in 0..max_cycles {
             model.tick(cycle, &mut scheduler);
-            if !model.has_pending_gmem(0) {
-                released = true;
+            if model.stats().gmem.completed >= 1 {
+                completed = true;
                 break;
             }
             cycle = cycle.saturating_add(1);
         }
 
         assert!(
-            released,
+            completed,
             "GMEM request did not complete within {} cycles (ready_at={}, outstanding={})",
             max_cycles,
             ready_at,
@@ -633,30 +1006,63 @@ mod tests {
         );
         assert!(!model.has_pending_gmem(0));
         assert_eq!(model.stats().gmem.completed, 1);
+        assert!(model.stats().gmem.issued >= 1);
+    }
+
+    #[test]
+    fn gmem_coalescing_adds_multiple_pending_entries() {
+        let mut scheduler = make_scheduler(1);
+        scheduler.spawn_single_warp();
+
+        let mut model = make_model(1);
+        let now = module_now(&scheduler);
+        let mut request = GmemRequest::new(0, 16, 0x3, true);
+        request.lane_addrs = Some(vec![0, 32]);
+        model
+            .issue_gmem_request(now, 0, request, &mut scheduler)
+            .expect("coalesced request should accept");
+
+        assert_eq!(model.outstanding_gmem(), 2);
+
+        let max_cycles = 1000;
+        let mut cycle = now;
+        let mut completed = false;
+        for _ in 0..max_cycles {
+            model.tick(cycle, &mut scheduler);
+            if model.outstanding_gmem() == 0 {
+                completed = true;
+                break;
+            }
+            cycle = cycle.saturating_add(1);
+        }
+
+        assert!(
+            completed,
+            "coalesced GMEM request did not complete within {} cycles (outstanding={})",
+            max_cycles,
+            model.outstanding_gmem()
+        );
     }
 
     #[test]
     fn queue_full_schedules_retry_and_replay() {
-        let mut scheduler = make_scheduler(2);
-        let threads = vec![vec![(0, 0, 0)], vec![(0, 0, 1)]];
-        scheduler.spawn_n_warps(0x8000_0000, &threads);
+        let mut scheduler = make_scheduler(1);
+        scheduler.spawn_single_warp();
 
-        let mut model = make_model(2);
+        let mut model = make_model_with_lsu(1, 1);
         let now = module_now(&scheduler);
         let request0 = GmemRequest::new(0, 16, 0xF, true);
         model
             .issue_gmem_request(now, 0, request0, &mut scheduler)
             .expect("first request should accept");
 
-        let mut request1 = GmemRequest::new(1, 16, 0xF, true);
+        let mut request1 = GmemRequest::new(0, 16, 0xF, true);
         request1.addr = 128;
         let retry_at = model
-            .issue_gmem_request(now, 1, request1, &mut scheduler)
-            .expect_err("second request should stall");
+            .issue_gmem_request(now, 0, request1, &mut scheduler)
+            .expect_err("second request should stall on LSU queue");
         assert!(retry_at > now);
-        assert!(scheduler.get_schedule(1).is_none());
-        let stats = model.stats();
-        assert_eq!(stats.gmem.queue_full_rejects + stats.gmem.busy_rejects, 1);
+        assert!(scheduler.get_schedule(0).is_none());
     }
 
     #[test]
@@ -670,22 +1076,21 @@ mod tests {
         let ticket = model
             .issue_smem_request(now, 0, request, &mut scheduler)
             .expect("smem request should accept");
-        assert!(model.has_pending_smem(0));
 
         let ready_at = ticket.ready_at();
         let mut cycle = now;
-        let mut released = false;
+        let mut completed = false;
         for _ in 0..200 {
             model.tick(cycle, &mut scheduler);
-            if !model.has_pending_smem(0) {
-                released = true;
+            if model.stats().smem.completed >= 1 {
+                completed = true;
                 break;
             }
             cycle = cycle.saturating_add(1);
         }
 
         assert!(
-            released,
+            completed,
             "SMEM request did not complete within 200 cycles (ready_at={}, outstanding={})",
             ready_at,
             model.outstanding_smem()
@@ -706,7 +1111,15 @@ mod tests {
                 queue_capacity: 1,
                 ..ServerConfig::default()
             },
+            serial: ServerConfig {
+                queue_capacity: 1,
+                ..ServerConfig::default()
+            },
             crossbar: ServerConfig {
+                queue_capacity: 1,
+                ..ServerConfig::default()
+            },
+            subbank: ServerConfig {
                 queue_capacity: 1,
                 ..ServerConfig::default()
             },
@@ -716,9 +1129,16 @@ mod tests {
             },
             num_banks: 2,
             num_lanes: 1,
+            num_subbanks: 1,
+            word_bytes: 4,
+            serialize_cores: false,
             link_capacity: 1,
         };
-        let cfg = CoreGraphConfig { gmem, smem };
+        let cfg = CoreGraphConfig {
+            gmem,
+            smem,
+            ..CoreGraphConfig::default()
+        };
         let logger = Arc::new(Logger::silent());
         let cluster_gmem = Arc::new(std::sync::RwLock::new(ClusterGmemGraph::new(
             cfg.gmem.clone(),
@@ -734,15 +1154,13 @@ mod tests {
             .expect("first SMEM request should be accepted");
 
         let req1 = SmemRequest::new(1, 32, 0xF, false, 1);
-        let retry_at = model
+        model
             .issue_smem_request(now, 1, req1, &mut scheduler)
-            .expect_err("second SMEM request should backpressure on crossbar");
-        assert!(
-            retry_at > now,
-            "retry cycle should be strictly in the future (now={}, retry_at={})",
-            now,
-            retry_at
-        );
+            .expect("second SMEM request should be accepted into LSU");
+
+        for cycle in now..now + 50 {
+            model.tick(cycle, &mut scheduler);
+        }
 
         let stats = model.stats().smem;
         assert!(

@@ -111,13 +111,27 @@ impl MuonCore {
     }
 
     pub fn frontend(&mut self, schedules: &[Option<Schedule>]) -> InstBuf {
-        let warps = self.warps.iter_mut();
-        let schedules = schedules.iter().copied();
+        let now = module_now(&self.scheduler);
+        let warps = &mut self.warps;
+        let scheduler = &mut self.scheduler;
+        let timing_model = &mut self.timing_model;
+        let mut ibuf_entries = Vec::with_capacity(warps.len());
 
-        let ibuf_entries =
-            zip(warps, schedules).map(|(warp, sched)| sched.map(|s| warp.frontend(s)));
+        for (wid, sched_opt) in schedules.iter().enumerate() {
+            let entry = match sched_opt {
+                Some(sched) => {
+                    if timing_model.allow_fetch(now, wid, sched.pc, scheduler) {
+                        Some(warps[wid].frontend(*sched))
+                    } else {
+                        None
+                    }
+                }
+                None => None,
+            };
+            ibuf_entries.push(entry);
+        }
 
-        InstBuf(ibuf_entries.collect())
+        InstBuf(ibuf_entries)
     }
 
     /// Execute decoded instructions from all active warps, i.o.w. heads of the instruction buffer,

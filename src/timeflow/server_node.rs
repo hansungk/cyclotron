@@ -15,7 +15,7 @@ impl<T> ServerNode<T> {
     }
 }
 
-impl<T: Send + Sync> TimedNode<T> for ServerNode<T> {
+impl<T: Send + Sync + 'static> TimedNode<T> for ServerNode<T> {
     fn name(&self) -> &str {
         &self.name
     }

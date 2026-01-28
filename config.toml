@@ -20,6 +20,8 @@ include = [
   "config/timing/gmem_nodes.toml",
   "config/timing/gmem_links.toml",
   "config/timing/gmem_policy.toml",
+  "config/timing/icache.toml",
+  "config/timing/lsu.toml",
   "config/timing/smem_nodes.toml",
   "config/timing/smem_topology.toml",
 ]

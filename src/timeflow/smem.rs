@@ -24,10 +24,13 @@ pub struct SmemStats {
 pub struct SmemRequest {
     pub id: u64,
     pub warp: usize,
+    pub addr: u64,
+    pub lane_addrs: Option<Vec<u64>>,
     pub bytes: u32,
     pub active_lanes: u32,
     pub is_store: bool,
     pub bank: usize,
+    pub subbank: usize,
 }
 
 impl SmemRequest {
@@ -35,10 +38,13 @@ impl SmemRequest {
         Self {
             id: 0,
             warp,
+            addr: 0,
+            lane_addrs: None,
             bytes,
             active_lanes,
             is_store,
             bank,
+            subbank: 0,
         }
     }
 }
@@ -74,13 +80,23 @@ pub struct SmemFlowConfig {
     #[serde(default)]
     pub lane: ServerConfig,
     #[serde(default)]
+    pub serial: ServerConfig,
+    #[serde(default)]
     pub crossbar: ServerConfig,
+    #[serde(default)]
+    pub subbank: ServerConfig,
     #[serde(default)]
     pub bank: ServerConfig,
     #[serde(default)]
     pub num_banks: usize,
     #[serde(default)]
     pub num_lanes: usize,
+    #[serde(default)]
+    pub num_subbanks: usize,
+    #[serde(default)]
+    pub word_bytes: u32,
+    #[serde(default)]
+    pub serialize_cores: bool,
     #[serde(default)]
     pub link_capacity: usize,
 }
@@ -94,10 +110,22 @@ impl Default for SmemFlowConfig {
                 queue_capacity: 8,
                 ..ServerConfig::default()
             },
+            serial: ServerConfig {
+                base_latency: 0,
+                bytes_per_cycle: 64,
+                queue_capacity: 1,
+                ..ServerConfig::default()
+            },
             crossbar: ServerConfig {
                 base_latency: 1,
                 bytes_per_cycle: 32,
                 queue_capacity: 32,
+                ..ServerConfig::default()
+            },
+            subbank: ServerConfig {
+                base_latency: 1,
+                bytes_per_cycle: 32,
+                queue_capacity: 16,
                 ..ServerConfig::default()
             },
             bank: ServerConfig {
@@ -108,14 +136,19 @@ impl Default for SmemFlowConfig {
             },
             num_banks: 1,
             num_lanes: 1,
+            num_subbanks: 1,
+            word_bytes: 4,
+            serialize_cores: false,
             link_capacity: 32,
         }
     }
 }
 
 pub(crate) struct SmemSubgraph {
+    serial_node: Option<NodeId>,
     lane_nodes: Vec<NodeId>,
     bank_nodes: Vec<NodeId>,
+    subbank_nodes: Vec<Vec<NodeId>>,
     pub(crate) completions: VecDeque<SmemCompletion>,
     next_id: u64,
     pub(crate) stats: SmemStats,
@@ -135,6 +168,31 @@ impl SmemSubgraph {
             lane_nodes.push(node);
         }
 
+        let serial_node = if config.serialize_cores {
+            Some(graph.add_node(ServerNode::new(
+                "smem_serial",
+                TimedServer::new(config.serial),
+            )))
+        } else {
+            None
+        };
+        if let Some(serial) = serial_node {
+            let num_lanes = config.num_lanes.max(1);
+            for (lane_idx, &lane_node) in lane_nodes.iter().enumerate() {
+                let lane_mod = lane_idx;
+                graph.connect_filtered(
+                    serial,
+                    lane_node,
+                    format!("smem_serial->lane_{lane_idx}"),
+                    Link::new(config.link_capacity),
+                    move |payload| match payload {
+                        CoreFlowPayload::Smem(req) => (req.warp % num_lanes) == lane_mod,
+                        _ => false,
+                    },
+                );
+            }
+        }
+
         let mut crossbar_nodes = Vec::with_capacity(config.num_banks);
         for bank_idx in 0..config.num_banks {
             let node = graph.add_node(ServerNode::new(
@@ -145,6 +203,7 @@ impl SmemSubgraph {
         }
 
         let mut bank_nodes = Vec::with_capacity(config.num_banks);
+        let mut subbank_nodes = Vec::with_capacity(config.num_banks);
         for bank_idx in 0..config.num_banks {
             let bank_mod = bank_idx;
             let num_banks = config.num_banks;
@@ -161,22 +220,48 @@ impl SmemSubgraph {
                 );
             }
 
+            let mut bank_subbanks = Vec::with_capacity(config.num_subbanks.max(1));
+            for subbank_idx in 0..config.num_subbanks.max(1) {
+                let subbank_mod = subbank_idx;
+                let num_subbanks = config.num_subbanks.max(1);
+                let subbank_node = graph.add_node(ServerNode::new(
+                    format!("smem_subbank_{bank_idx}_{subbank_idx}"),
+                    TimedServer::new(config.subbank),
+                ));
+                graph.connect_filtered(
+                    crossbar_nodes[bank_idx],
+                    subbank_node,
+                    format!("smem_xbar_{bank_idx}->subbank_{subbank_idx}"),
+                    Link::new(config.link_capacity),
+                    move |payload| match payload {
+                        CoreFlowPayload::Smem(req) => (req.subbank % num_subbanks) == subbank_mod,
+                        _ => false,
+                    },
+                );
+                bank_subbanks.push(subbank_node);
+            }
+
             let node = graph.add_node(ServerNode::new(
                 format!("smem_bank_{bank_idx}"),
                 TimedServer::new(config.bank),
             ));
-            graph.connect(
-                crossbar_nodes[bank_idx],
-                node,
-                format!("smem_xbar_{bank_idx}->bank_{bank_idx}"),
-                Link::new(config.link_capacity),
-            );
+            for &subbank_node in &bank_subbanks {
+                graph.connect(
+                    subbank_node,
+                    node,
+                    format!("smem_subbank->bank_{bank_idx}"),
+                    Link::new(config.link_capacity),
+                );
+            }
             bank_nodes.push(node);
+            subbank_nodes.push(bank_subbanks);
         }
 
         Self {
+            serial_node,
             lane_nodes,
             bank_nodes,
+            subbank_nodes,
             completions: VecDeque::new(),
             next_id: 0,
             stats: SmemStats::default(),
@@ -203,7 +288,12 @@ impl SmemSubgraph {
         let bytes = request.bytes;
         let payload = CoreFlowPayload::Smem(request);
         let service_req = ServiceRequest::new(payload, bytes);
-        match graph.try_put(self.lane_nodes[lane_idx], now, service_req) {
+        let ingress_node = if let Some(serial) = self.serial_node {
+            serial
+        } else {
+            self.lane_nodes[lane_idx]
+        };
+        match graph.try_put(ingress_node, now, service_req) {
             Ok(ticket) => {
                 self.stats.issued = self.stats.issued.saturating_add(1);
                 self.stats.bytes_issued = self.stats.bytes_issued.saturating_add(bytes as u64);
@@ -337,5 +427,65 @@ mod tests {
         assert_eq!(1, stats.completed);
         assert_eq!(32, stats.bytes_issued);
         assert_eq!(32, stats.bytes_completed);
+    }
+
+    #[test]
+    fn smem_serialization_backpressures_second_request() {
+        let mut cfg = SmemFlowConfig::default();
+        cfg.serialize_cores = true;
+        cfg.serial.queue_capacity = 1;
+        cfg.num_lanes = 1;
+        cfg.num_banks = 1;
+        cfg.num_subbanks = 1;
+        cfg.lane.queue_capacity = 4;
+        cfg.crossbar.queue_capacity = 4;
+        cfg.bank.queue_capacity = 4;
+        cfg.subbank.queue_capacity = 4;
+
+        let mut graph: FlowGraph<CoreFlowPayload> = FlowGraph::new();
+        let mut subgraph = SmemSubgraph::attach(&mut graph, &cfg);
+        let req0 = SmemRequest::new(0, 16, 0x1, false, 0);
+        subgraph.issue(&mut graph, 0, req0).unwrap();
+        let req1 = SmemRequest::new(1, 16, 0x1, false, 0);
+        let err = subgraph.issue(&mut graph, 0, req1).unwrap_err();
+        assert_eq!(SmemRejectReason::QueueFull, err.reason);
+    }
+
+    #[test]
+    fn smem_subbank_conflict_serializes() {
+        let mut cfg = SmemFlowConfig::default();
+        cfg.serialize_cores = false;
+        cfg.num_lanes = 1;
+        cfg.num_banks = 1;
+        cfg.num_subbanks = 2;
+        cfg.lane.queue_capacity = 4;
+        cfg.crossbar.queue_capacity = 4;
+        cfg.subbank.queue_capacity = 1;
+        cfg.subbank.base_latency = 1;
+        cfg.bank.queue_capacity = 4;
+        cfg.bank.base_latency = 0;
+
+        let mut graph: FlowGraph<CoreFlowPayload> = FlowGraph::new();
+        let mut subgraph = SmemSubgraph::attach(&mut graph, &cfg);
+
+        let mut req0 = SmemRequest::new(0, 16, 0x1, false, 0);
+        req0.subbank = 0;
+        let mut req1 = SmemRequest::new(1, 16, 0x1, false, 0);
+        req1.subbank = 0;
+
+        subgraph.issue(&mut graph, 0, req0).unwrap();
+        subgraph.issue(&mut graph, 0, req1).unwrap();
+
+        let mut completions = Vec::new();
+        for cycle in 0..20 {
+            graph.tick(cycle);
+            subgraph.collect_completions(&mut graph, cycle);
+            while let Some(done) = subgraph.completions.pop_front() {
+                completions.push(done);
+            }
+        }
+
+        assert_eq!(completions.len(), 2);
+        assert!(completions[1].completed_at > completions[0].completed_at);
     }
 }

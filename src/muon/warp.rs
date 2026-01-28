@@ -176,6 +176,8 @@ impl Warp {
                         decoded.opcode,
                         decoded.f3,
                         decoded.opcode == Opcode::LOAD,
+                        decoded.rs1_addr,
+                        decoded.imm32,
                         tmask,
                         scheduler,
                         timing_model,
@@ -338,14 +340,17 @@ impl Warp {
             return Ok(());
         }
 
+        let lane_addrs = self.collect_lane_addrs(rs1_addr, imm32, tmask);
         let bytes_per_lane = 1u32 << (f3 & 3);
         let total_bytes = bytes_per_lane.saturating_mul(active_lanes);
         let mut request =
             GmemRequest::new(self.wid, total_bytes.max(1), tmask, opcode == Opcode::LOAD);
-        request.addr = self
-            .effective_addr_min(rs1_addr, imm32, tmask)
-            .map(|addr| addr as u64)
+        request.addr = lane_addrs
+            .iter()
+            .copied()
+            .min()
             .unwrap_or(0);
+        request.lane_addrs = Some(lane_addrs);
 
         timing_model
             .issue_gmem_request(now, self.wid, request, scheduler)
@@ -353,19 +358,16 @@ impl Warp {
             .map_err(|_| ())
     }
 
-    fn effective_addr_min(&self, rs1_addr: u8, imm32: u32, tmask: u32) -> Option<u32> {
-        let mut addr_min: Option<u32> = None;
+    fn collect_lane_addrs(&self, rs1_addr: u8, imm32: u32, tmask: u32) -> Vec<u64> {
+        let mut addrs = Vec::new();
         for (lane, lrf) in self.base.state.reg_file.iter().enumerate() {
             if !tmask.bit(lane) {
                 continue;
             }
-            let addr = lrf.read_gpr(rs1_addr).wrapping_add(imm32);
-            addr_min = Some(match addr_min {
-                Some(current) => current.min(addr),
-                None => addr,
-            });
+            let addr = lrf.read_gpr(rs1_addr).wrapping_add(imm32) as u64;
+            addrs.push(addr);
         }
-        addr_min
+        addrs
     }
 
     fn issue_smem_request(
@@ -373,6 +375,8 @@ impl Warp {
         opcode: u8,
         f3: u8,
         is_load: bool,
+        rs1_addr: u8,
+        imm32: u32,
         tmask: u32,
         scheduler: &mut Scheduler,
         timing_model: &mut CoreTimingModel,
@@ -387,10 +391,13 @@ impl Warp {
             return Ok(());
         }
 
+        let lane_addrs = self.collect_lane_addrs(rs1_addr, imm32, tmask);
         let bytes_per_lane = 1u32 << (f3 & 3);
         let total_bytes = bytes_per_lane.saturating_mul(active_lanes);
         let bank = self.wid;
-        let request = SmemRequest::new(self.wid, total_bytes.max(1), tmask, !is_load, bank);
+        let mut request = SmemRequest::new(self.wid, total_bytes.max(1), tmask, !is_load, bank);
+        request.addr = lane_addrs.iter().copied().min().unwrap_or(0);
+        request.lane_addrs = Some(lane_addrs);
 
         timing_model
             .issue_smem_request(now, self.wid, request, scheduler)
