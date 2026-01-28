@@ -10,8 +10,8 @@ use crate::muon::scheduler::Scheduler;
 use crate::sim::log::Logger;
 use crate::timeflow::{
     ClusterGmemGraph, CoreGraph, CoreGraphConfig, GmemIssue, GmemPolicyConfig, GmemReject,
-    GmemRejectReason, GmemRequest, GmemStats, SmemIssue, SmemReject, SmemRejectReason, SmemRequest,
-    SmemStats,
+    GmemRejectReason, GmemRequest, GmemRequestKind, GmemStats, SmemIssue, SmemReject,
+    SmemRejectReason, SmemRequest, SmemStats,
 };
 use crate::timeq::{Cycle, Ticket};
 
@@ -119,7 +119,7 @@ impl CoreTimingModel {
         if request.id == 0 {
             request.id = self.next_gmem_id;
         }
-        self.decorate_gmem_request(&mut request);
+        self.maybe_convert_mmio_flush(&mut request);
         let issue_bytes = request.bytes;
         let issue_result = {
             let mut cluster = self.cluster_gmem.write().unwrap();
@@ -237,71 +237,23 @@ impl CoreTimingModel {
         }
     }
 
-    fn decorate_gmem_request(&self, request: &mut GmemRequest) {
-        let policy = self.gmem_policy;
-        if request.kind.is_mem() {
-            let key = request
-                .id
-                .wrapping_mul(0x9e37_79b9_7f4a_7c15)
-                ^ (request.warp as u64).wrapping_shl(32)
-                ^ policy.seed;
-            request.l0_hit = Self::decide(policy.l0_hit_rate, key ^ 0xA1A1_A1A1_A1A1_A1A1);
-            request.l1_hit = if request.l0_hit {
-                false
-            } else {
-                Self::decide(policy.l1_hit_rate, key ^ 0xB2B2_B2B2_B2B2_B2B2)
-            };
-            request.l2_hit = if request.l0_hit || request.l1_hit {
-                false
-            } else {
-                Self::decide(policy.l2_hit_rate, key ^ 0xC3C3_C3C3_C3C3_C3C3)
-            };
-            request.l1_writeback = !request.l1_hit
-                && Self::decide(policy.l1_writeback_rate, key ^ 0xD4D4_D4D4_D4D4_D4D4);
-            request.l2_writeback = !request.l2_hit
-                && Self::decide(policy.l2_writeback_rate, key ^ 0xE5E5_E5E5_E5E5_E5E5);
-
-            let l1_banks = policy.l1_banks.max(1) as u64;
-            let l2_banks = policy.l2_banks.max(1) as u64;
-            request.l1_bank = (Self::hash_u64(key ^ 0x1111_2222_3333_4444) % l1_banks) as usize;
-            request.l2_bank = (Self::hash_u64(key ^ 0x5555_6666_7777_8888) % l2_banks) as usize;
-        } else {
-            request.bytes = policy.flush_bytes.max(1);
-            request.l0_hit = false;
-            request.l1_hit = false;
-            request.l2_hit = false;
-            request.l1_writeback = false;
-            request.l2_writeback = false;
-            request.l1_bank = 0;
-            request.l2_bank = 0;
+    fn maybe_convert_mmio_flush(&self, request: &mut GmemRequest) {
+        if !request.kind.is_mem() || request.is_load {
+            return;
         }
-    }
-
-    fn decide(rate: f64, key: u64) -> bool {
-        let clamped = if rate < 0.0 {
-            0.0
-        } else if rate > 1.0 {
-            1.0
-        } else {
-            rate
-        };
-        if clamped <= 0.0 {
-            return false;
+        let size = self.gmem_policy.l0_flush_mmio_size;
+        if size == 0 {
+            return;
         }
-        if clamped >= 1.0 {
-            return true;
+        let base = self.gmem_policy.l0_flush_mmio_base;
+        let stride = self.gmem_policy.l0_flush_mmio_stride;
+        let core = self.core_id as u64;
+        let start = base.saturating_add(stride.saturating_mul(core));
+        let end = start.saturating_add(size);
+        if request.addr >= start && request.addr < end {
+            request.kind = GmemRequestKind::FlushL0;
+            request.stall_on_completion = true;
         }
-        let threshold = (clamped * (u64::MAX as f64)) as u64;
-        Self::hash_u64(key) <= threshold
-    }
-
-    fn hash_u64(mut x: u64) -> u64 {
-        x ^= x >> 33;
-        x = x.wrapping_mul(0xff51afd7ed558ccd);
-        x ^= x >> 33;
-        x = x.wrapping_mul(0xc4ceb9fe1a85ec53);
-        x ^= x >> 33;
-        x
     }
 
     pub fn tick(&mut self, now: Cycle, scheduler: &mut Scheduler) {
@@ -662,7 +614,8 @@ mod tests {
         let ready_at = ticket.ready_at();
         let mut cycle = now;
         let mut released = false;
-        for _ in 0..200 {
+        let max_cycles = 500;
+        for _ in 0..max_cycles {
             model.tick(cycle, &mut scheduler);
             if !model.has_pending_gmem(0) {
                 released = true;
@@ -673,7 +626,8 @@ mod tests {
 
         assert!(
             released,
-            "GMEM request did not complete within 200 cycles (ready_at={}, outstanding={})",
+            "GMEM request did not complete within {} cycles (ready_at={}, outstanding={})",
+            max_cycles,
             ready_at,
             model.outstanding_gmem()
         );
@@ -694,7 +648,8 @@ mod tests {
             .issue_gmem_request(now, 0, request0, &mut scheduler)
             .expect("first request should accept");
 
-        let request1 = GmemRequest::new(1, 16, 0xF, true);
+        let mut request1 = GmemRequest::new(1, 16, 0xF, true);
+        request1.addr = 128;
         let retry_at = model
             .issue_gmem_request(now, 1, request1, &mut scheduler)
             .expect_err("second request should stall");

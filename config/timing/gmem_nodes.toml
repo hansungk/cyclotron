@@ -1,0 +1,90 @@
+[gmem.nodes.coalescer]
+base_latency = 1
+bytes_per_cycle = 64
+queue_capacity = 16
+
+[gmem.nodes.l0_flush_gate]
+base_latency = 0
+bytes_per_cycle = 64
+queue_capacity = 4
+
+[gmem.nodes.l0d_tag]
+base_latency = 1
+bytes_per_cycle = 64
+queue_capacity = 8
+
+[gmem.nodes.l0d_data]
+base_latency = 2
+bytes_per_cycle = 64
+queue_capacity = 8
+
+[gmem.nodes.l0d_mshr]
+base_latency = 1
+bytes_per_cycle = 64
+queue_capacity = 8
+
+[gmem.nodes.l1_flush_gate]
+base_latency = 0
+bytes_per_cycle = 64
+queue_capacity = 4
+
+[gmem.nodes.l1_tag]
+base_latency = 2
+bytes_per_cycle = 64
+queue_capacity = 16
+
+[gmem.nodes.l1_data]
+base_latency = 6
+bytes_per_cycle = 64
+queue_capacity = 16
+
+[gmem.nodes.l1_mshr]
+base_latency = 1
+bytes_per_cycle = 64
+queue_capacity = 8
+
+[gmem.nodes.l1_refill]
+base_latency = 4
+bytes_per_cycle = 32
+queue_capacity = 16
+
+[gmem.nodes.l1_writeback]
+base_latency = 2
+bytes_per_cycle = 32
+queue_capacity = 8
+
+[gmem.nodes.l2_tag]
+base_latency = 4
+bytes_per_cycle = 64
+queue_capacity = 16
+
+[gmem.nodes.l2_data]
+base_latency = 6
+bytes_per_cycle = 64
+queue_capacity = 16
+
+[gmem.nodes.l2_mshr]
+base_latency = 1
+bytes_per_cycle = 64
+queue_capacity = 8
+
+[gmem.nodes.l2_refill]
+base_latency = 8
+bytes_per_cycle = 32
+queue_capacity = 16
+
+[gmem.nodes.l2_writeback]
+base_latency = 4
+bytes_per_cycle = 32
+queue_capacity = 8
+
+[gmem.nodes.dram]
+# Adjustable default values per request
+base_latency = 200
+bytes_per_cycle = 32
+queue_capacity = 64
+
+[gmem.nodes.return_path]
+base_latency = 0
+bytes_per_cycle = 1024
+queue_capacity = 128

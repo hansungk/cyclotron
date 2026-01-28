@@ -1,0 +1,38 @@
+[gmem.policy]
+# Hit/miss approximations (unused with tag-accurate modeling)
+l0_hit_rate = 0.4
+l1_hit_rate = 0.7
+l2_hit_rate = 0.9
+
+# Dirty eviction probabilities (used to route through writeback queues)
+l1_writeback_rate = 0.1
+l2_writeback_rate = 0.1
+
+# Banking (parametrizable)
+l1_banks = 2
+l2_banks = 4
+
+# Cache line sizes used for address-based hit/miss + banking
+# L0d: 64B, L1/L2: 32B per RadianceConfigs.scala
+l0_line_bytes = 64
+l1_line_bytes = 32
+l2_line_bytes = 32
+
+# Cache geometry (sets/ways). Defaults are placeholders; adjust to match RTL configs.
+l0_sets = 512
+l0_ways = 1
+l1_sets = 512
+l1_ways = 4
+l2_sets = 2048
+l2_ways = 8
+
+# L0d flush MMIO (per-core). Set size=0 to disable.
+l0_flush_mmio_base = 0x00080200
+l0_flush_mmio_stride = 0x100
+l0_flush_mmio_size = 0x100
+
+# Flush size used at flush-gate nodes (bytes)
+flush_bytes = 4096
+
+# Deterministic seed for hit/miss + bank hashing
+seed = 1

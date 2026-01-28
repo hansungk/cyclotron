@@ -13,6 +13,7 @@ use crate::sim::flat_mem::FlatMemory;
 use crate::sim::log::Logger;
 use crate::timeflow::{GmemRequest, SmemRequest};
 use crate::timeq::{module_now, Cycle};
+use crate::utils::BitSlice;
 use std::fmt::Debug;
 use std::fmt::{Display, Formatter};
 use std::iter::zip;
@@ -189,6 +190,8 @@ impl Warp {
                     decoded.opcode,
                     decoded.opext,
                     decoded.f3,
+                    decoded.rs1_addr,
+                    decoded.imm32,
                     tmask,
                     scheduler,
                     timing_model,
@@ -197,6 +200,23 @@ impl Warp {
                 .is_err()
             {
                 return Ok(None);
+            }
+        }
+
+        if decoded.opcode == Opcode::MISC_MEM {
+            let active_lanes = tmask.count_ones();
+            if active_lanes > 0 {
+                let mut flush_req = if decoded.f3 == 1 {
+                    GmemRequest::new_flush_l0(self.wid, 1)
+                } else {
+                    GmemRequest::new_flush_l1(self.wid, 1)
+                };
+                if timing_model
+                    .issue_gmem_request(now, self.wid, flush_req, scheduler)
+                    .is_err()
+                {
+                    return Ok(None);
+                }
             }
         }
 
@@ -299,6 +319,8 @@ impl Warp {
         opcode: u8,
         opext: u8,
         f3: u8,
+        rs1_addr: u8,
+        imm32: u32,
         tmask: u32,
         scheduler: &mut Scheduler,
         timing_model: &mut CoreTimingModel,
@@ -318,12 +340,32 @@ impl Warp {
 
         let bytes_per_lane = 1u32 << (f3 & 3);
         let total_bytes = bytes_per_lane.saturating_mul(active_lanes);
-        let request = GmemRequest::new(self.wid, total_bytes.max(1), tmask, opcode == Opcode::LOAD);
+        let mut request =
+            GmemRequest::new(self.wid, total_bytes.max(1), tmask, opcode == Opcode::LOAD);
+        request.addr = self
+            .effective_addr_min(rs1_addr, imm32, tmask)
+            .map(|addr| addr as u64)
+            .unwrap_or(0);
 
         timing_model
             .issue_gmem_request(now, self.wid, request, scheduler)
             .map(|_| ())
             .map_err(|_| ())
+    }
+
+    fn effective_addr_min(&self, rs1_addr: u8, imm32: u32, tmask: u32) -> Option<u32> {
+        let mut addr_min: Option<u32> = None;
+        for (lane, lrf) in self.base.state.reg_file.iter().enumerate() {
+            if !tmask.bit(lane) {
+                continue;
+            }
+            let addr = lrf.read_gpr(rs1_addr).wrapping_add(imm32);
+            addr_min = Some(match addr_min {
+                Some(current) => current.min(addr),
+                None => addr,
+            });
+        }
+        addr_min
     }
 
     fn issue_smem_request(

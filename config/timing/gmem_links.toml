@@ -1,0 +1,77 @@
+[gmem.links.default]
+entries = 16
+
+[gmem.links.coalescer_to_l0_flush]
+entries = 8
+
+[gmem.links.l0_flush_to_l0_tag]
+entries = 8
+
+[gmem.links.l0_flush_to_return]
+entries = 4
+
+[gmem.links.l0_flush_to_l1_flush]
+entries = 4
+
+[gmem.links.l0_tag_to_l0_hit]
+entries = 8
+
+[gmem.links.l0_tag_to_l0_mshr]
+entries = 8
+
+[gmem.links.l0_hit_to_return]
+entries = 8
+
+[gmem.links.l0_mshr_to_l1_flush]
+entries = 8
+
+[gmem.links.l1_flush_to_l1_tag]
+entries = 8
+
+[gmem.links.l1_flush_to_return]
+entries = 4
+
+[gmem.links.l1_tag_to_l1_hit]
+entries = 8
+
+[gmem.links.l1_tag_to_l1_mshr]
+entries = 8
+
+[gmem.links.l1_hit_to_return]
+entries = 8
+
+[gmem.links.l1_mshr_to_l1_writeback]
+entries = 4
+
+[gmem.links.l1_mshr_to_l2_tag]
+entries = 8
+
+[gmem.links.l1_writeback_to_l2_tag]
+entries = 4
+
+[gmem.links.l2_tag_to_l2_hit]
+entries = 8
+
+[gmem.links.l2_tag_to_l2_mshr]
+entries = 8
+
+[gmem.links.l2_hit_to_l1_refill]
+entries = 8
+
+[gmem.links.l2_mshr_to_l2_writeback]
+entries = 4
+
+[gmem.links.l2_mshr_to_dram]
+entries = 8
+
+[gmem.links.l2_writeback_to_dram]
+entries = 4
+
+[gmem.links.dram_to_l2_refill]
+entries = 8
+
+[gmem.links.l2_refill_to_l1_refill]
+entries = 8
+
+[gmem.links.l1_refill_to_return]
+entries = 8

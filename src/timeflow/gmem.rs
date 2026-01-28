@@ -1,9 +1,20 @@
 use std::collections::VecDeque;
 
+#[path = "gmem_cache.rs"]
+mod gmem_cache;
+#[path = "gmem_mshr.rs"]
+mod gmem_mshr;
+#[path = "gmem_policy.rs"]
+mod gmem_policy;
+
 use crate::timeflow::graph::{FlowGraph, Link};
 use crate::timeflow::server_node::ServerNode;
 use crate::timeflow::types::{CoreFlowPayload, NodeId};
 use crate::timeq::{Backpressure, Cycle, ServerConfig, ServiceRequest, Ticket, TimedServer};
+use gmem_cache::CacheTagArray;
+use gmem_mshr::{MissLevel, MissMetadata, MshrAdmission, MshrTable};
+pub use gmem_policy::GmemPolicyConfig;
+use gmem_policy::{bank_for, decide, line_addr};
 use serde::Deserialize;
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -48,6 +59,8 @@ pub struct GmemRequest {
     pub core_id: usize,
     pub cluster_id: usize,
     pub warp: usize,
+    pub addr: u64,
+    pub line_addr: u64,
     pub bytes: u32,
     pub active_lanes: u32,
     pub is_load: bool,
@@ -74,6 +87,8 @@ impl GmemRequest {
             core_id: 0,
             cluster_id: 0,
             warp,
+            addr: 0,
+            line_addr: 0,
             bytes,
             active_lanes,
             is_load,
@@ -95,6 +110,8 @@ impl GmemRequest {
             core_id: 0,
             cluster_id: 0,
             warp,
+            addr: 0,
+            line_addr: 0,
             bytes,
             active_lanes: 0,
             is_load: false,
@@ -116,6 +133,8 @@ impl GmemRequest {
             core_id: 0,
             cluster_id: 0,
             warp,
+            addr: 0,
+            line_addr: 0,
             bytes,
             active_lanes: 0,
             is_load: false,
@@ -424,80 +443,6 @@ impl Default for GmemLinkConfig {
             dram_to_l2_refill: None,
             l2_refill_to_l1_refill: None,
             l1_refill_to_return: None,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, Deserialize)]
-pub struct GmemPolicyConfig {
-    #[serde(default = "default_l0_hit_rate")]
-    pub l0_hit_rate: f64,
-    #[serde(default = "default_l1_hit_rate")]
-    pub l1_hit_rate: f64,
-    #[serde(default = "default_l2_hit_rate")]
-    pub l2_hit_rate: f64,
-    #[serde(default = "default_l1_writeback_rate")]
-    pub l1_writeback_rate: f64,
-    #[serde(default = "default_l2_writeback_rate")]
-    pub l2_writeback_rate: f64,
-    #[serde(default = "default_l1_banks")]
-    pub l1_banks: usize,
-    #[serde(default = "default_l2_banks")]
-    pub l2_banks: usize,
-    #[serde(default = "default_flush_bytes")]
-    pub flush_bytes: u32,
-    #[serde(default = "default_policy_seed")]
-    pub seed: u64,
-}
-
-fn default_l0_hit_rate() -> f64 {
-    0.4
-}
-
-fn default_l1_hit_rate() -> f64 {
-    0.7
-}
-
-fn default_l2_hit_rate() -> f64 {
-    0.9
-}
-
-fn default_l1_writeback_rate() -> f64 {
-    0.1
-}
-
-fn default_l2_writeback_rate() -> f64 {
-    0.1
-}
-
-fn default_l1_banks() -> usize {
-    2
-}
-
-fn default_l2_banks() -> usize {
-    4
-}
-
-fn default_flush_bytes() -> u32 {
-    4096
-}
-
-fn default_policy_seed() -> u64 {
-    0
-}
-
-impl Default for GmemPolicyConfig {
-    fn default() -> Self {
-        Self {
-            l0_hit_rate: 0.4,
-            l1_hit_rate: 0.7,
-            l2_hit_rate: 0.9,
-            l1_writeback_rate: 0.1,
-            l2_writeback_rate: 0.1,
-            l1_banks: 2,
-            l2_banks: 4,
-            flush_bytes: 4096,
-            seed: 0,
         }
     }
 }
@@ -946,6 +891,18 @@ impl GmemSubgraph {
 pub struct ClusterGmemGraph {
     graph: FlowGraph<CoreFlowPayload>,
     cores: Vec<ClusterCoreState>,
+    policy: GmemPolicyConfig,
+    l0_tags: Vec<CacheTagArray>,
+    l1_tags: Vec<CacheTagArray>,
+    l2_tags: CacheTagArray,
+    l0_mshrs: Vec<MshrTable>,
+    l1_mshrs: Vec<Vec<MshrTable>>,
+    l2_mshrs: Vec<MshrTable>,
+    l0_mshr_admit: Vec<MshrAdmission>,
+    l1_mshr_admit: Vec<Vec<MshrAdmission>>,
+    l2_mshr_admit: Vec<MshrAdmission>,
+    l1_banks: usize,
+    l2_banks: usize,
     last_tick: Cycle,
 }
 
@@ -1347,9 +1304,83 @@ impl ClusterGmemGraph {
             }
         }
 
+        let policy = config.policy;
+        let l0_sets = policy.l0_sets.max(1);
+        let l0_ways = policy.l0_ways.max(1);
+        let l1_sets = policy.l1_sets.max(1);
+        let l1_ways = policy.l1_ways.max(1);
+        let l2_sets = policy.l2_sets.max(1);
+        let l2_ways = policy.l2_ways.max(1);
+
+        let mut l0_tags = Vec::with_capacity(total_cores);
+        for _ in 0..total_cores {
+            l0_tags.push(CacheTagArray::new(l0_sets, l0_ways));
+        }
+
+        let mut l1_tags = Vec::with_capacity(num_clusters);
+        for _ in 0..num_clusters {
+            l1_tags.push(CacheTagArray::new(l1_sets, l1_ways));
+        }
+
+        let l2_tags = CacheTagArray::new(l2_sets, l2_ways);
+
+        let l0_mshr_capacity = nodes.l0d_mshr.queue_capacity;
+        let l1_mshr_capacity = nodes.l1_mshr.queue_capacity;
+        let l2_mshr_capacity = nodes.l2_mshr.queue_capacity;
+
+        let mut l0_mshrs = Vec::with_capacity(total_cores);
+        for _ in 0..total_cores {
+            l0_mshrs.push(MshrTable::new(l0_mshr_capacity));
+        }
+
+        let mut l1_mshrs = Vec::with_capacity(num_clusters);
+        for _ in 0..num_clusters {
+            let mut banks = Vec::with_capacity(l1_banks);
+            for _ in 0..l1_banks {
+                banks.push(MshrTable::new(l1_mshr_capacity));
+            }
+            l1_mshrs.push(banks);
+        }
+
+        let mut l2_mshrs = Vec::with_capacity(l2_banks);
+        for _ in 0..l2_banks {
+            l2_mshrs.push(MshrTable::new(l2_mshr_capacity));
+        }
+
+        let mut l0_mshr_admit = Vec::with_capacity(total_cores);
+        for _ in 0..total_cores {
+            l0_mshr_admit.push(MshrAdmission::new(nodes.l0d_mshr));
+        }
+
+        let mut l1_mshr_admit = Vec::with_capacity(num_clusters);
+        for _ in 0..num_clusters {
+            let mut banks = Vec::with_capacity(l1_banks);
+            for _ in 0..l1_banks {
+                banks.push(MshrAdmission::new(nodes.l1_mshr));
+            }
+            l1_mshr_admit.push(banks);
+        }
+
+        let mut l2_mshr_admit = Vec::with_capacity(l2_banks);
+        for _ in 0..l2_banks {
+            l2_mshr_admit.push(MshrAdmission::new(nodes.l2_mshr));
+        }
+
         Self {
             graph,
             cores,
+            policy,
+            l0_tags,
+            l1_tags,
+            l2_tags,
+            l0_mshrs,
+            l1_mshrs,
+            l2_mshrs,
+            l0_mshr_admit,
+            l1_mshr_admit,
+            l2_mshr_admit,
+            l1_banks,
+            l2_banks,
             last_tick: u64::MAX,
         }
     }
@@ -1375,25 +1406,376 @@ impl ClusterGmemGraph {
         };
         request.id = assigned_id;
 
+        if !request.kind.is_mem() {
+            request.bytes = self.policy.flush_bytes.max(1);
+            request.l0_hit = false;
+            request.l1_hit = false;
+            request.l2_hit = false;
+            request.l1_writeback = false;
+            request.l2_writeback = false;
+            request.l1_bank = 0;
+            request.l2_bank = 0;
+            request.line_addr = 0;
+            return self.issue_to_graph(core_id, now, request);
+        }
+
+        let cluster_id = request.cluster_id;
+        if cluster_id >= self.l1_tags.len() {
+            let retry_at = now.saturating_add(1);
+            return Err(GmemReject {
+                request,
+                retry_at,
+                reason: GmemRejectReason::QueueFull,
+            });
+        }
+
+        let policy = self.policy;
+        let l0_line = line_addr(request.addr, policy.l0_line_bytes);
+        let l1_line = line_addr(request.addr, policy.l1_line_bytes);
+        let l2_line = line_addr(request.addr, policy.l2_line_bytes);
+
+        request.line_addr = l2_line;
+        let l1_banks = self.l1_banks.max(1) as u64;
+        let l2_banks = self.l2_banks.max(1) as u64;
+        request.l1_bank = bank_for(l1_line, l1_banks, 0x1111_2222_3333_4444);
+        request.l2_bank = bank_for(l2_line, l2_banks, 0x5555_6666_7777_8888);
+
+        let l0_hit = { self.l0_tags[core_id].probe(l0_line) };
+        request.l0_hit = l0_hit;
+        if l0_hit {
+            request.l1_hit = false;
+            request.l2_hit = false;
+            request.l1_writeback = false;
+            request.l2_writeback = false;
+        } else {
+            let l1_hit = { self.l1_tags[cluster_id].probe(l1_line) };
+            request.l1_hit = l1_hit;
+            if l1_hit {
+                request.l2_hit = false;
+            } else {
+                request.l2_hit = self.l2_tags.probe(l2_line);
+            }
+
+            if !request.l1_hit {
+                let l1_key = l1_line
+                    ^ (cluster_id as u64).wrapping_mul(0xc2b2_ae3d_27d4_eb4f)
+                    ^ policy.seed;
+                request.l1_writeback =
+                    decide(policy.l1_writeback_rate, l1_key ^ 0xD4D4_D4D4_D4D4_D4D4);
+            } else {
+                request.l1_writeback = false;
+            }
+
+            if !request.l1_hit && !request.l2_hit {
+                let l2_key = l2_line ^ policy.seed;
+                request.l2_writeback =
+                    decide(policy.l2_writeback_rate, l2_key ^ 0xE5E5_E5E5_E5E5_E5E5);
+            } else {
+                request.l2_writeback = false;
+            }
+        }
+
+        let miss_level = if request.l0_hit {
+            MissLevel::None
+        } else if request.l1_hit {
+            MissLevel::L0
+        } else if request.l2_hit {
+            MissLevel::L1
+        } else {
+            MissLevel::L2
+        };
+
+        let meta = MissMetadata::from_request(&request);
+        let l1_bank = request.l1_bank;
+        let l2_bank = request.l2_bank;
+        let mut l0_new = false;
+        let mut l1_new = false;
+        let mut l2_new = false;
+
+        match miss_level {
+            MissLevel::None => {}
+            MissLevel::L0 => {
+                if self.l0_mshrs[core_id].has_entry(l0_line) {
+                    let bytes = request.bytes;
+                    let ready_at = self
+                        .l0_mshrs[core_id]
+                        .merge_request(l0_line, request)
+                        .unwrap_or(now.saturating_add(1));
+                    return Ok(self.issue_merge(
+                        core_id,
+                        assigned_id,
+                        now,
+                        ready_at,
+                        bytes,
+                    ));
+                }
+                if !self.l0_mshrs[core_id].can_allocate(l0_line) {
+                    self.cores[core_id].stats.queue_full_rejects += 1;
+                    return Err(GmemReject {
+                        request,
+                        retry_at: now.saturating_add(1),
+                        reason: GmemRejectReason::QueueFull,
+                    });
+                }
+                if let Err(bp) = self.l0_mshr_admit[core_id].try_admit(now) {
+                    return Err(self.reject_for_admission(core_id, now, &request, bp));
+                }
+                l0_new = match self.l0_mshrs[core_id].ensure_entry(l0_line, meta) {
+                    Ok(new_entry) => new_entry,
+                    Err(_) => {
+                        self.cores[core_id].stats.queue_full_rejects += 1;
+                        return Err(GmemReject {
+                            request,
+                            retry_at: now.saturating_add(1),
+                            reason: GmemRejectReason::QueueFull,
+                        });
+                    }
+                };
+            }
+            MissLevel::L1 => {
+                if !self.l0_mshrs[core_id].has_entry(l0_line) {
+                    l0_new = match self.l0_mshrs[core_id].ensure_entry(l0_line, meta) {
+                        Ok(new_entry) => new_entry,
+                        Err(_) => {
+                            self.cores[core_id].stats.queue_full_rejects += 1;
+                            return Err(GmemReject {
+                                request,
+                                retry_at: now.saturating_add(1),
+                                reason: GmemRejectReason::QueueFull,
+                            });
+                        }
+                    };
+                }
+
+                if self.l1_mshrs[cluster_id][l1_bank].has_entry(l1_line) {
+                    let bytes = request.bytes;
+                    let ready_at = self
+                        .l1_mshrs[cluster_id][l1_bank]
+                        .merge_request(l1_line, request)
+                        .unwrap_or(now.saturating_add(1));
+                    self.l0_mshrs[core_id].set_ready_at(l0_line, ready_at);
+                    return Ok(self.issue_merge(
+                        core_id,
+                        assigned_id,
+                        now,
+                        ready_at,
+                        bytes,
+                    ));
+                }
+
+                if !self.l1_mshrs[cluster_id][l1_bank].can_allocate(l1_line) {
+                    self.rollback_mshrs(
+                        core_id, cluster_id, l1_bank, l2_bank, l0_line, l1_line, l2_line,
+                        l0_new, l1_new, l2_new,
+                    );
+                    self.cores[core_id].stats.queue_full_rejects += 1;
+                    return Err(GmemReject {
+                        request,
+                        retry_at: now.saturating_add(1),
+                        reason: GmemRejectReason::QueueFull,
+                    });
+                }
+                if let Err(bp) = self.l1_mshr_admit[cluster_id][l1_bank].try_admit(now) {
+                    self.rollback_mshrs(
+                        core_id, cluster_id, l1_bank, l2_bank, l0_line, l1_line, l2_line,
+                        l0_new, l1_new, l2_new,
+                    );
+                    return Err(self.reject_for_admission(core_id, now, &request, bp));
+                }
+                l1_new = match self.l1_mshrs[cluster_id][l1_bank].ensure_entry(l1_line, meta) {
+                    Ok(new_entry) => new_entry,
+                    Err(_) => {
+                        self.rollback_mshrs(
+                            core_id, cluster_id, l1_bank, l2_bank, l0_line, l1_line, l2_line,
+                            l0_new, l1_new, l2_new,
+                        );
+                        self.cores[core_id].stats.queue_full_rejects += 1;
+                        return Err(GmemReject {
+                            request,
+                            retry_at: now.saturating_add(1),
+                            reason: GmemRejectReason::QueueFull,
+                        });
+                    }
+                };
+            }
+            MissLevel::L2 => {
+                if !self.l0_mshrs[core_id].has_entry(l0_line) {
+                    l0_new = match self.l0_mshrs[core_id].ensure_entry(l0_line, meta) {
+                        Ok(new_entry) => new_entry,
+                        Err(_) => {
+                            self.cores[core_id].stats.queue_full_rejects += 1;
+                            return Err(GmemReject {
+                                request,
+                                retry_at: now.saturating_add(1),
+                                reason: GmemRejectReason::QueueFull,
+                            });
+                        }
+                    };
+                }
+
+                if !self.l1_mshrs[cluster_id][l1_bank].has_entry(l1_line) {
+                    l1_new = match self.l1_mshrs[cluster_id][l1_bank].ensure_entry(l1_line, meta) {
+                        Ok(new_entry) => new_entry,
+                        Err(_) => {
+                            self.rollback_mshrs(
+                                core_id, cluster_id, l1_bank, l2_bank, l0_line, l1_line,
+                                l2_line, l0_new, l1_new, l2_new,
+                            );
+                            self.cores[core_id].stats.queue_full_rejects += 1;
+                            return Err(GmemReject {
+                                request,
+                                retry_at: now.saturating_add(1),
+                                reason: GmemRejectReason::QueueFull,
+                            });
+                        }
+                    };
+                }
+
+                if self.l2_mshrs[l2_bank].has_entry(l2_line) {
+                    let bytes = request.bytes;
+                    let ready_at = self
+                        .l2_mshrs[l2_bank]
+                        .merge_request(l2_line, request)
+                        .unwrap_or(now.saturating_add(1));
+                    self.l1_mshrs[cluster_id][l1_bank].set_ready_at(l1_line, ready_at);
+                    self.l0_mshrs[core_id].set_ready_at(l0_line, ready_at);
+                    return Ok(self.issue_merge(
+                        core_id,
+                        assigned_id,
+                        now,
+                        ready_at,
+                        bytes,
+                    ));
+                }
+
+                if !self.l2_mshrs[l2_bank].can_allocate(l2_line) {
+                    self.rollback_mshrs(
+                        core_id, cluster_id, l1_bank, l2_bank, l0_line, l1_line, l2_line,
+                        l0_new, l1_new, l2_new,
+                    );
+                    self.cores[core_id].stats.queue_full_rejects += 1;
+                    return Err(GmemReject {
+                        request,
+                        retry_at: now.saturating_add(1),
+                        reason: GmemRejectReason::QueueFull,
+                    });
+                }
+                if let Err(bp) = self.l2_mshr_admit[l2_bank].try_admit(now) {
+                    self.rollback_mshrs(
+                        core_id, cluster_id, l1_bank, l2_bank, l0_line, l1_line, l2_line,
+                        l0_new, l1_new, l2_new,
+                    );
+                    return Err(self.reject_for_admission(core_id, now, &request, bp));
+                }
+                l2_new = match self.l2_mshrs[l2_bank].ensure_entry(l2_line, meta) {
+                    Ok(new_entry) => new_entry,
+                    Err(_) => {
+                        self.rollback_mshrs(
+                            core_id, cluster_id, l1_bank, l2_bank, l0_line, l1_line, l2_line,
+                            l0_new, l1_new, l2_new,
+                        );
+                        self.cores[core_id].stats.queue_full_rejects += 1;
+                        return Err(GmemReject {
+                            request,
+                            retry_at: now.saturating_add(1),
+                            reason: GmemRejectReason::QueueFull,
+                        });
+                    }
+                };
+            }
+        }
+
+        let issue = match self.issue_to_graph(core_id, now, request) {
+            Ok(issue) => issue,
+            Err(err) => {
+                self.rollback_mshrs(
+                    core_id, cluster_id, l1_bank, l2_bank, l0_line, l1_line, l2_line, l0_new,
+                    l1_new, l2_new,
+                );
+                return Err(err);
+            }
+        };
+
+        let ready_at = issue.ticket.ready_at();
+        match miss_level {
+            MissLevel::None => {}
+            MissLevel::L0 => {
+                self.l0_mshrs[core_id].set_ready_at(l0_line, ready_at);
+            }
+            MissLevel::L1 => {
+                self.l0_mshrs[core_id].set_ready_at(l0_line, ready_at);
+                self.l1_mshrs[cluster_id][l1_bank].set_ready_at(l1_line, ready_at);
+            }
+            MissLevel::L2 => {
+                self.l0_mshrs[core_id].set_ready_at(l0_line, ready_at);
+                self.l1_mshrs[cluster_id][l1_bank].set_ready_at(l1_line, ready_at);
+                self.l2_mshrs[l2_bank].set_ready_at(l2_line, ready_at);
+            }
+        }
+
+        Ok(issue)
+    }
+
+    pub fn tick(&mut self, now: Cycle) {
+        if now == self.last_tick {
+            return;
+        }
+        self.last_tick = now;
+
+        for admit in &mut self.l0_mshr_admit {
+            admit.tick(now);
+        }
+        for cluster in &mut self.l1_mshr_admit {
+            for admit in cluster {
+                admit.tick(now);
+            }
+        }
+        for admit in &mut self.l2_mshr_admit {
+            admit.tick(now);
+        }
+
+        self.graph.tick(now);
+
+        for core_id in 0..self.cores.len() {
+            let return_node = self.cores[core_id].return_node;
+            let mut drained = Vec::new();
+            self.graph.with_node_mut(return_node, |node| {
+                while let Some(result) = node.take_ready(now) {
+                    if let CoreFlowPayload::Gmem(request) = result.payload {
+                        drained.push((request, result.ticket));
+                    }
+                }
+            });
+
+            for (request, ticket) in drained {
+                let ticket_ready_at = ticket.ready_at();
+                self.push_completion(request.clone(), ticket_ready_at, now);
+                self.apply_completion_effects(&request);
+
+                let merged = self.drain_mshr_merges(&request);
+                for merged_req in merged {
+                    self.push_completion(merged_req.clone(), ticket_ready_at, now);
+                    self.apply_completion_effects(&merged_req);
+                }
+            }
+        }
+    }
+
+    fn issue_to_graph(
+        &mut self,
+        core_id: usize,
+        now: Cycle,
+        request: GmemRequest,
+    ) -> Result<GmemIssue, GmemReject> {
+        let request_id = request.id;
         let bytes = request.bytes;
         let payload = CoreFlowPayload::Gmem(request);
         let service_req = ServiceRequest::new(payload, bytes);
 
         match self.graph.try_put(self.cores[core_id].ingress_node, now, service_req) {
             Ok(ticket) => {
-                let core_state = &mut self.cores[core_id];
-                if assigned_id >= core_state.next_id {
-                    core_state.next_id = assigned_id.saturating_add(1);
-                }
-                let stats = &mut core_state.stats;
-                stats.issued = stats.issued.saturating_add(1);
-                stats.bytes_issued = stats.bytes_issued.saturating_add(bytes as u64);
-                stats.inflight = stats.inflight.saturating_add(1);
-                stats.max_inflight = stats.max_inflight.max(stats.inflight);
-                Ok(GmemIssue {
-                    request_id: assigned_id,
-                    ticket,
-                })
+                self.record_issue_stats(core_id, request_id, bytes);
+                Ok(GmemIssue { request_id, ticket })
             }
             Err(bp) => match bp {
                 Backpressure::Busy {
@@ -1428,47 +1810,233 @@ impl ClusterGmemGraph {
         }
     }
 
-    pub fn tick(&mut self, now: Cycle) {
-        if now == self.last_tick {
-            return;
-        }
-        self.last_tick = now;
-        self.graph.tick(now);
-
-        for core_id in 0..self.cores.len() {
-            let return_node = self.cores[core_id].return_node;
-            let mut drained = Vec::new();
-            self.graph.with_node_mut(return_node, |node| {
-                while let Some(result) = node.take_ready(now) {
-                    if let CoreFlowPayload::Gmem(request) = result.payload {
-                        drained.push((request, result.ticket));
-                    }
+    fn reject_for_admission(
+        &mut self,
+        core_id: usize,
+        now: Cycle,
+        request: &GmemRequest,
+        bp: Backpressure<()>,
+    ) -> GmemReject {
+        let stats = &mut self.cores[core_id].stats;
+        match bp {
+            Backpressure::Busy { available_at, .. } => {
+                stats.busy_rejects += 1;
+                let mut retry_at = available_at;
+                if retry_at <= now {
+                    retry_at = now.saturating_add(1);
                 }
+                GmemReject {
+                    request: request.clone(),
+                    retry_at,
+                    reason: GmemRejectReason::Busy,
+                }
+            }
+            Backpressure::QueueFull { .. } => {
+                stats.queue_full_rejects += 1;
+                let retry_at = now.saturating_add(1);
+                GmemReject {
+                    request: request.clone(),
+                    retry_at,
+                    reason: GmemRejectReason::QueueFull,
+                }
+            }
+        }
+    }
+
+    fn issue_merge(
+        &mut self,
+        core_id: usize,
+        request_id: u64,
+        issued_at: Cycle,
+        ready_at: Cycle,
+        bytes: u32,
+    ) -> GmemIssue {
+        self.record_issue_stats(core_id, request_id, bytes);
+        let ticket = Ticket::synthetic(issued_at, ready_at, bytes);
+        GmemIssue { request_id, ticket }
+    }
+
+    fn record_issue_stats(&mut self, core_id: usize, request_id: u64, bytes: u32) {
+        if let Some(core_state) = self.cores.get_mut(core_id) {
+            if request_id >= core_state.next_id {
+                core_state.next_id = request_id.saturating_add(1);
+            }
+            let stats = &mut core_state.stats;
+            stats.issued = stats.issued.saturating_add(1);
+            stats.bytes_issued = stats.bytes_issued.saturating_add(bytes as u64);
+            stats.inflight = stats.inflight.saturating_add(1);
+            stats.max_inflight = stats.max_inflight.max(stats.inflight);
+        }
+    }
+
+    fn push_completion(&mut self, request: GmemRequest, ticket_ready_at: Cycle, now: Cycle) {
+        let core_id = request.core_id;
+        if let Some(core_state) = self.cores.get_mut(core_id) {
+            core_state.stats.completed = core_state.stats.completed.saturating_add(1);
+            core_state.stats.bytes_completed = core_state
+                .stats
+                .bytes_completed
+                .saturating_add(request.bytes as u64);
+            core_state.stats.inflight = core_state.stats.inflight.saturating_sub(1);
+            core_state.stats.last_completion_cycle = Some(now);
+            core_state.completions.push_back(GmemCompletion {
+                ticket_ready_at,
+                completed_at: now,
+                request,
             });
-
-            if drained.is_empty() {
-                continue;
-            }
-
-            let core_state = &mut self.cores[core_id];
-            for (request, ticket) in drained {
-                core_state.stats.completed = core_state.stats.completed.saturating_add(1);
-                core_state.stats.bytes_completed = core_state
-                    .stats
-                    .bytes_completed
-                    .saturating_add(request.bytes as u64);
-                core_state.stats.inflight = core_state.stats.inflight.saturating_sub(1);
-                core_state.stats.last_completion_cycle = Some(now);
-                core_state.completions.push_back(GmemCompletion {
-                    ticket_ready_at: ticket.ready_at(),
-                    completed_at: now,
-                    request,
-                });
-            }
             core_state.stats.max_completion_queue = core_state
                 .stats
                 .max_completion_queue
                 .max(core_state.completions.len() as u64);
+        }
+    }
+
+    fn apply_completion_effects(&mut self, request: &GmemRequest) {
+        if request.kind.is_flush_l0() {
+            if request.core_id < self.l0_tags.len() {
+                self.l0_tags[request.core_id].invalidate_all();
+            }
+            return;
+        }
+        if request.kind.is_flush_l1() {
+            if request.cluster_id < self.l1_tags.len() {
+                self.l1_tags[request.cluster_id].invalidate_all();
+            }
+            return;
+        }
+        if !request.kind.is_mem() {
+            return;
+        }
+
+        let policy = self.policy;
+        let l0_line = line_addr(request.addr, policy.l0_line_bytes);
+        let l1_line = line_addr(request.addr, policy.l1_line_bytes);
+        let l2_line = line_addr(request.addr, policy.l2_line_bytes);
+
+        if !request.l0_hit && request.core_id < self.l0_tags.len() {
+            self.l0_tags[request.core_id].fill(l0_line);
+        }
+        if !request.l1_hit && request.cluster_id < self.l1_tags.len() {
+            self.l1_tags[request.cluster_id].fill(l1_line);
+        }
+        if !request.l2_hit {
+            self.l2_tags.fill(l2_line);
+        }
+    }
+
+    fn drain_mshr_merges(&mut self, request: &GmemRequest) -> Vec<GmemRequest> {
+        if !request.kind.is_mem() {
+            return Vec::new();
+        }
+
+        let miss_level = if request.l0_hit {
+            MissLevel::None
+        } else if request.l1_hit {
+            MissLevel::L0
+        } else if request.l2_hit {
+            MissLevel::L1
+        } else {
+            MissLevel::L2
+        };
+
+        if miss_level == MissLevel::None {
+            return Vec::new();
+        }
+
+        let policy = self.policy;
+        let l0_line = line_addr(request.addr, policy.l0_line_bytes);
+        let l1_line = line_addr(request.addr, policy.l1_line_bytes);
+        let l2_line = line_addr(request.addr, policy.l2_line_bytes);
+
+        match miss_level {
+            MissLevel::L0 => self.l0_mshrs[request.core_id]
+                .remove_entry(l0_line)
+                .map(|entry| entry.merged)
+                .unwrap_or_default(),
+            MissLevel::L1 => {
+                let cluster_id = request.cluster_id;
+                let l1_bank = request.l1_bank;
+                let merged = if cluster_id < self.l1_mshrs.len()
+                    && l1_bank < self.l1_mshrs[cluster_id].len()
+                {
+                    self.l1_mshrs[cluster_id][l1_bank]
+                        .remove_entry(l1_line)
+                        .map(|entry| entry.merged)
+                        .unwrap_or_default()
+                } else {
+                    Vec::new()
+                };
+
+                let mut all = Vec::with_capacity(merged.len() + 1);
+                all.push(request.clone());
+                all.extend(merged.iter().cloned());
+                for req in &all {
+                    if req.core_id < self.l0_mshrs.len() {
+                        let l0_line_req = line_addr(req.addr, policy.l0_line_bytes);
+                        self.l0_mshrs[req.core_id].remove_entry(l0_line_req);
+                    }
+                }
+                merged
+            }
+            MissLevel::L2 => {
+                let l2_bank = request.l2_bank;
+                let merged = if l2_bank < self.l2_mshrs.len() {
+                    self.l2_mshrs[l2_bank]
+                        .remove_entry(l2_line)
+                        .map(|entry| entry.merged)
+                        .unwrap_or_default()
+                } else {
+                    Vec::new()
+                };
+
+                let mut all = Vec::with_capacity(merged.len() + 1);
+                all.push(request.clone());
+                all.extend(merged.iter().cloned());
+                for req in &all {
+                    if req.core_id < self.l0_mshrs.len() {
+                        let l0_line_req = line_addr(req.addr, policy.l0_line_bytes);
+                        self.l0_mshrs[req.core_id].remove_entry(l0_line_req);
+                    }
+                    let cluster_id = req.cluster_id;
+                    if cluster_id < self.l1_mshrs.len() {
+                        let l1_line_req = line_addr(req.addr, policy.l1_line_bytes);
+                        let l1_bank_req = req.l1_bank.min(self.l1_banks.saturating_sub(1));
+                        if l1_bank_req < self.l1_mshrs[cluster_id].len() {
+                            self.l1_mshrs[cluster_id][l1_bank_req]
+                                .remove_entry(l1_line_req);
+                        }
+                    }
+                }
+                merged
+            }
+            MissLevel::None => Vec::new(),
+        }
+    }
+
+    fn rollback_mshrs(
+        &mut self,
+        core_id: usize,
+        cluster_id: usize,
+        l1_bank: usize,
+        l2_bank: usize,
+        l0_line: u64,
+        l1_line: u64,
+        l2_line: u64,
+        l0_new: bool,
+        l1_new: bool,
+        l2_new: bool,
+    ) {
+        if l0_new && core_id < self.l0_mshrs.len() {
+            self.l0_mshrs[core_id].remove_entry(l0_line);
+        }
+        if l1_new
+            && cluster_id < self.l1_mshrs.len()
+            && l1_bank < self.l1_mshrs[cluster_id].len()
+        {
+            self.l1_mshrs[cluster_id][l1_bank].remove_entry(l1_line);
+        }
+        if l2_new && l2_bank < self.l2_mshrs.len() {
+            self.l2_mshrs[l2_bank].remove_entry(l2_line);
         }
     }
 
@@ -1509,6 +2077,59 @@ mod tests {
     use super::*;
     use crate::timeflow::graph::FlowGraph;
     use crate::timeflow::types::CoreFlowPayload;
+
+    fn fast_config() -> GmemFlowConfig {
+        let mut cfg = GmemFlowConfig::default();
+        let mut tune = |node: &mut ServerConfig| {
+            node.base_latency = 0;
+            node.bytes_per_cycle = 1024;
+            node.queue_capacity = 8;
+        };
+        tune(&mut cfg.nodes.coalescer);
+        tune(&mut cfg.nodes.l0_flush_gate);
+        tune(&mut cfg.nodes.l0d_tag);
+        tune(&mut cfg.nodes.l0d_data);
+        tune(&mut cfg.nodes.l0d_mshr);
+        tune(&mut cfg.nodes.l1_flush_gate);
+        tune(&mut cfg.nodes.l1_tag);
+        tune(&mut cfg.nodes.l1_data);
+        tune(&mut cfg.nodes.l1_mshr);
+        tune(&mut cfg.nodes.l1_refill);
+        tune(&mut cfg.nodes.l1_writeback);
+        tune(&mut cfg.nodes.l2_tag);
+        tune(&mut cfg.nodes.l2_data);
+        tune(&mut cfg.nodes.l2_mshr);
+        tune(&mut cfg.nodes.l2_refill);
+        tune(&mut cfg.nodes.l2_writeback);
+        tune(&mut cfg.nodes.dram);
+        tune(&mut cfg.nodes.return_path);
+        cfg.links.default.entries = 8;
+        cfg
+    }
+
+    fn make_load(addr: u64, cluster_id: usize) -> GmemRequest {
+        let mut req = GmemRequest::new(0, 16, 0xF, true);
+        req.addr = addr;
+        req.cluster_id = cluster_id;
+        req
+    }
+
+    fn complete_one(
+        cluster: &mut ClusterGmemGraph,
+        core_id: usize,
+        start: Cycle,
+        max_cycles: u64,
+    ) -> GmemCompletion {
+        let mut cycle = start;
+        for _ in 0..max_cycles {
+            cluster.tick(cycle);
+            if let Some(completion) = cluster.pop_completion(core_id) {
+                return completion;
+            }
+            cycle = cycle.saturating_add(1);
+        }
+        panic!("completion did not arrive within {} cycles", max_cycles);
+    }
 
     #[test]
     fn gmem_subgraph_accepts_and_completes() {
@@ -1575,4 +2196,156 @@ mod tests {
                 < GmemFlowConfig::default().nodes.coalescer.base_latency + 50
         );
     }
+
+    #[test]
+    fn cross_core_l2_merge_accepts_second_request() {
+        let mut cfg = fast_config();
+        cfg.nodes.l2_mshr.queue_capacity = 1;
+        let mut cluster = ClusterGmemGraph::new(cfg, 2, 1);
+        let now = 0;
+
+        let req0 = make_load(0x1000, 0);
+        let req1 = make_load(0x1000, 1);
+        let issue0 = cluster.issue(0, now, req0).expect("first request accepts");
+        let issue1 = cluster.issue(1, now, req1).expect("second request merges at L2");
+        assert_eq!(issue0.ticket.ready_at(), issue1.ticket.ready_at());
+
+        let comp0 = complete_one(&mut cluster, 0, now, 200);
+        let comp1 = complete_one(&mut cluster, 1, now, 200);
+        assert_eq!(comp0.completed_at, comp1.completed_at);
+    }
+
+    #[test]
+    fn cross_core_l1_merge_accepts_second_request() {
+        let mut cfg = fast_config();
+        cfg.nodes.l1_mshr.queue_capacity = 1;
+        let mut cluster = ClusterGmemGraph::new(cfg, 1, 2);
+        let mut cycle = 0;
+
+        let req0 = make_load(0x2000, 0);
+        cluster
+            .issue(0, cycle, req0)
+            .expect("warmup request should accept");
+        complete_one(&mut cluster, 0, cycle, 200);
+
+        let mut flush_l0 = GmemRequest::new_flush_l0(0, 1);
+        flush_l0.cluster_id = 0;
+        cluster
+            .issue(0, cycle, flush_l0)
+            .expect("flush l0 should accept");
+        let mut flush_l1 = GmemRequest::new_flush_l1(0, 1);
+        flush_l1.cluster_id = 0;
+        cluster
+            .issue(0, cycle, flush_l1)
+            .expect("flush l1 should accept");
+
+        let mut got_l0 = false;
+        let mut got_l1 = false;
+        for _ in 0..200 {
+            cluster.tick(cycle);
+            while let Some(comp) = cluster.pop_completion(0) {
+                if comp.request.kind.is_flush_l0() {
+                    got_l0 = true;
+                }
+                if comp.request.kind.is_flush_l1() {
+                    got_l1 = true;
+                }
+            }
+            if got_l0 && got_l1 {
+                break;
+            }
+            cycle = cycle.saturating_add(1);
+        }
+        assert!(got_l0 && got_l1, "expected both flush completions");
+
+        let req0 = make_load(0x2000, 0);
+        let req1 = make_load(0x2000, 0);
+        let issue0 = cluster.issue(0, cycle, req0).expect("first post-flush load");
+        let issue1 = cluster.issue(1, cycle, req1).expect("second load merges at L1");
+        assert_eq!(issue0.ticket.ready_at(), issue1.ticket.ready_at());
+
+        let comp0 = complete_one(&mut cluster, 0, cycle, 200);
+        let comp1 = complete_one(&mut cluster, 1, cycle, 200);
+        assert_eq!(comp0.completed_at, comp1.completed_at);
+    }
+
+    #[test]
+    fn l0_flush_invalidates_only_l0() {
+        let cfg = fast_config();
+        let mut cluster = ClusterGmemGraph::new(cfg, 1, 1);
+        let mut cycle = 0;
+
+        let req0 = make_load(0x3000, 0);
+        cluster.issue(0, cycle, req0).unwrap();
+        complete_one(&mut cluster, 0, cycle, 200);
+
+        let mut flush_l0 = GmemRequest::new_flush_l0(0, 1);
+        flush_l0.cluster_id = 0;
+        cluster.issue(0, cycle, flush_l0).unwrap();
+        complete_one(&mut cluster, 0, cycle, 200);
+
+        let req1 = make_load(0x3000, 0);
+        cluster.issue(0, cycle, req1).unwrap();
+        let comp = complete_one(&mut cluster, 0, cycle, 200);
+        assert!(!comp.request.l0_hit, "expected L0 miss after flush");
+        assert!(comp.request.l1_hit, "expected L1 hit after L0 flush");
+    }
+
+    #[test]
+    fn l1_flush_invalidates_cluster_l1() {
+        let cfg = fast_config();
+        let mut cluster = ClusterGmemGraph::new(cfg, 1, 2);
+        let mut cycle = 0;
+
+        let req0 = make_load(0x4000, 0);
+        cluster.issue(0, cycle, req0).unwrap();
+        complete_one(&mut cluster, 0, cycle, 200);
+
+        let mut flush_l1 = GmemRequest::new_flush_l1(0, 1);
+        flush_l1.cluster_id = 0;
+        cluster.issue(0, cycle, flush_l1).unwrap();
+        complete_one(&mut cluster, 0, cycle, 200);
+
+        let req1 = make_load(0x4000, 0);
+        cluster.issue(1, cycle, req1).unwrap();
+        let comp = complete_one(&mut cluster, 1, cycle, 200);
+        assert!(!comp.request.l1_hit, "expected L1 miss after flush");
+        assert!(comp.request.l2_hit, "expected L2 hit after L1 flush");
+    }
+
+    #[test]
+    fn merge_completion_fanout_same_core() {
+        let mut cfg = fast_config();
+        cfg.nodes.l2_mshr.queue_capacity = 1;
+        let mut cluster = ClusterGmemGraph::new(cfg, 1, 1);
+        let now = 0;
+
+        let req0 = make_load(0x5000, 0);
+        let req1 = make_load(0x5000, 0);
+        let issue0 = cluster.issue(0, now, req0).unwrap();
+        let issue1 = cluster.issue(0, now, req1).unwrap();
+        assert_eq!(issue0.ticket.ready_at(), issue1.ticket.ready_at());
+
+        let comp0 = complete_one(&mut cluster, 0, now, 200);
+        let comp1 = complete_one(&mut cluster, 0, now, 200);
+        assert_eq!(comp0.completed_at, comp1.completed_at);
+    }
+
+    #[test]
+    fn mshr_full_rejects_with_retry_cycle() {
+        let mut cfg = fast_config();
+        cfg.nodes.l2_mshr.queue_capacity = 1;
+        cfg.nodes.l1_mshr.queue_capacity = 2;
+        cfg.nodes.l0d_mshr.queue_capacity = 2;
+        let mut cluster = ClusterGmemGraph::new(cfg, 1, 1);
+        let now = 0;
+
+        let req0 = make_load(0x6000, 0);
+        cluster.issue(0, now, req0).unwrap();
+        let req1 = make_load(0x8000, 0);
+        let err = cluster.issue(0, now, req1).expect_err("MSHR should be full");
+        assert_eq!(GmemRejectReason::QueueFull, err.reason);
+        assert!(err.retry_at > now);
+    }
+
 }

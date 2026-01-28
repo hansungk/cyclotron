@@ -26,6 +26,14 @@ impl Ticket {
         }
     }
 
+    pub(crate) fn synthetic(issued_at: Cycle, ready_at: Cycle, size_bytes: u32) -> Self {
+        Self {
+            issued_at,
+            ready_at,
+            size_bytes,
+        }
+    }
+
     // Cycle at which the request is issued at
     pub fn issued_at(&self) -> Cycle {
         self.issued_at

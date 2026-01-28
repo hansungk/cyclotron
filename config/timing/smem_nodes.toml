@@ -1,0 +1,14 @@
+[smem.lane]
+base_latency = 0
+bytes_per_cycle = 64
+queue_capacity = 8
+
+[smem.crossbar]
+base_latency = 1
+bytes_per_cycle = 32
+queue_capacity = 32
+
+[smem.bank]
+base_latency = 2
+bytes_per_cycle = 64
+queue_capacity = 32
