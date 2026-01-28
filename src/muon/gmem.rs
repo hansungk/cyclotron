@@ -9,10 +9,11 @@ use crate::info;
 use crate::muon::scheduler::Scheduler;
 use crate::sim::log::Logger;
 use crate::timeflow::{
-    ClusterGmemGraph, CoreGraph, CoreGraphConfig, GmemPolicyConfig, GmemReject, GmemRequest,
-    GmemRequestKind, GmemStats, IcacheIssue, IcacheReject, IcacheRequest, IcacheSubgraph, LsuIssue,
-    LsuReject, LsuRejectReason, LsuSubgraph, SmemFlowConfig, SmemIssue, SmemReject, SmemRequest,
-    SmemStats,
+    BarrierManager, ClusterGmemGraph, CoreGraph, CoreGraphConfig, DmaQueue, FenceQueue, FenceRequest,
+    GmemPolicyConfig, GmemReject, GmemRequest, GmemRequestKind, GmemStats, IcacheIssue,
+    IcacheReject, IcacheRequest, IcacheSubgraph, LsuIssue, LsuReject, LsuRejectReason, LsuSubgraph,
+    OperandFetchQueue, SmemFlowConfig, SmemIssue, SmemReject, SmemRequest, SmemStats, TensorQueue,
+    WritebackPayload, WritebackQueue,
 };
 use crate::timeflow::lsu::LsuPayload;
 use crate::timeq::{Cycle, Ticket};
@@ -27,6 +28,15 @@ pub struct CoreTimingModel {
     graph: CoreGraph,
     lsu: LsuSubgraph,
     icache: IcacheSubgraph,
+    operand_fetch: OperandFetchQueue,
+    writeback: WritebackQueue,
+    pending_writeback: VecDeque<WritebackPayload>,
+    barrier: BarrierManager,
+    fence: FenceQueue,
+    pending_fence: VecDeque<FenceRequest>,
+    fence_inflight: Vec<Option<u64>>,
+    dma: DmaQueue,
+    tensor: TensorQueue,
     icache_inflight: Vec<Option<IcacheInflight>>,
     pending_cluster_gmem: VecDeque<PendingClusterIssue<GmemRequest>>,
     pending_cluster_smem: VecDeque<PendingClusterIssue<SmemRequest>>,
@@ -100,6 +110,12 @@ impl CoreTimingModel {
         let gmem_policy = config.gmem.policy;
         let smem_config = config.smem.clone();
         let icache = IcacheSubgraph::new(config.icache.clone());
+        let operand_fetch = OperandFetchQueue::new(config.operand_fetch.clone());
+        let writeback = WritebackQueue::new(config.writeback.clone());
+        let barrier = BarrierManager::new(config.barrier.clone(), num_warps);
+        let fence = FenceQueue::new(config.fence.clone());
+        let dma = DmaQueue::new(config.dma.clone());
+        let tensor = TensorQueue::new(config.tensor.clone());
         let trace = trace_path.and_then(|path| match TraceSink::new(path) {
             Ok(sink) => Some(sink),
             Err(err) => {
@@ -112,6 +128,15 @@ impl CoreTimingModel {
             graph: CoreGraph::new(config),
             lsu,
             icache,
+            operand_fetch,
+            writeback,
+            pending_writeback: VecDeque::new(),
+            barrier,
+            fence,
+            pending_fence: VecDeque::new(),
+            fence_inflight: vec![None; num_warps],
+            dma,
+            tensor,
             icache_inflight: vec![None; num_warps],
             pending_cluster_gmem: VecDeque::new(),
             pending_cluster_smem: VecDeque::new(),
@@ -180,11 +205,21 @@ impl CoreTimingModel {
             .as_ref()
             .map(|lines| lines.len().max(1))
             .unwrap_or(1);
+        let is_flush = request.kind.is_flush_l0() || request.kind.is_flush_l1();
+        if let Err(reject) = self.operand_fetch.try_issue(now, request.bytes) {
+            let wait_until = reject.retry_at.max(now.saturating_add(1));
+            scheduler.set_resource_wait_until(warp, Some(wait_until));
+            scheduler.replay_instruction(warp);
+            return Err(wait_until);
+        }
         let issue_result = self.lsu.issue_gmem(now, request);
         match issue_result {
             Ok(LsuIssue { ticket }) => {
                 let ready_at = ticket.ready_at();
                 self.add_gmem_pending(warp, request_id, ready_at, scheduler, split_count);
+                if is_flush {
+                    self.register_fence(warp, request_id, scheduler);
+                }
                 self.trace_event(now, "gmem_issue", warp, Some(request_id), issue_bytes, None);
                 info!(
                     self.logger,
@@ -254,6 +289,12 @@ impl CoreTimingModel {
         let request_id = request.id;
         let split_count = self.split_smem_request(&request).len().max(1);
         let issue_bytes = request.bytes;
+        if let Err(reject) = self.operand_fetch.try_issue(now, request.bytes) {
+            let wait_until = reject.retry_at.max(now.saturating_add(1));
+            scheduler.set_resource_wait_until(warp, Some(wait_until));
+            scheduler.replay_instruction(warp);
+            return Err(wait_until);
+        }
         let issue_result = self.lsu.issue_smem(now, request);
         match issue_result {
             Ok(LsuIssue { ticket }) => {
@@ -303,6 +344,20 @@ impl CoreTimingModel {
                 );
                 Err(wait_until)
             }
+        }
+    }
+
+    pub fn issue_dma(&mut self, now: Cycle, bytes: u32) -> Result<Ticket, Cycle> {
+        match self.dma.try_issue(now, bytes) {
+            Ok(issue) => Ok(issue.ticket),
+            Err(reject) => Err(reject.retry_at),
+        }
+    }
+
+    pub fn issue_tensor(&mut self, now: Cycle, bytes: u32) -> Result<Ticket, Cycle> {
+        match self.tensor.try_issue(now, bytes) {
+            Ok(issue) => Ok(issue.ticket),
+            Err(reject) => Err(reject.retry_at),
         }
     }
 
@@ -389,6 +444,14 @@ impl CoreTimingModel {
     pub fn tick(&mut self, now: Cycle, scheduler: &mut Scheduler) {
         self.icache.tick(now);
         self.lsu.tick(now);
+        self.operand_fetch.tick(now);
+        self.dma.tick(now);
+        self.tensor.tick(now);
+        if let Some(released) = self.barrier.tick(now) {
+            for warp in released {
+                scheduler.clear_resource_wait(warp);
+            }
+        }
         self.drive_lsu_issues(now);
         self.issue_pending_cluster_gmem(now);
         self.issue_pending_cluster_smem(now);
@@ -415,53 +478,57 @@ impl CoreTimingModel {
             }
         }
 
-        for completion in gmem_completions {
-            let warp = completion.request.warp;
-            let completed_id = completion.request.id;
-            if !self.remove_gmem_pending(warp, completed_id, scheduler) {
-                continue;
-            }
-            self.lsu
-                .release_load_data(&LsuPayload::Gmem(completion.request.clone()));
-            self.trace_event(
-                now,
-                "gmem_complete",
-                warp,
-                Some(completed_id),
-                completion.request.bytes,
-                None,
-            );
-            info!(
-                self.logger,
-                "[gmem] warp {} completed request {} done@{}",
-                warp,
-                completed_id,
-                now
-            );
+        self.graph.tick(now);
+        let mut smem_completions = Vec::new();
+        while let Some(completion) = self.graph.pop_smem_completion() {
+            smem_completions.push(completion);
         }
 
-        self.graph.tick(now);
+        self.drain_pending_writeback(now);
+        self.drain_pending_fence(now);
 
-        while let Some(completion) = self.graph.pop_smem_completion() {
-            let warp = completion.request.warp;
-            let completed_id = completion.request.id;
-            if !self.remove_smem_pending(warp, completed_id, scheduler) {
+        for completion in gmem_completions {
+            let is_flush = completion.request.kind.is_flush_l0()
+                || completion.request.kind.is_flush_l1();
+            if is_flush {
+                self.handle_gmem_completion(now, completion.clone(), scheduler);
+                self.enqueue_fence(
+                    now,
+                    FenceRequest {
+                        warp: completion.request.warp,
+                        request_id: completion.request.id,
+                    },
+                );
                 continue;
             }
-            self.lsu
-                .release_load_data(&LsuPayload::Smem(completion.request.clone()));
-            self.trace_event(
-                now,
-                "smem_complete",
-                warp,
-                Some(completed_id),
-                completion.request.bytes,
-                None,
-            );
-            info!(
-                self.logger,
-                "[smem] warp {} completed request {} done@{}", warp, completed_id, now
-            );
+            self.enqueue_writeback(now, WritebackPayload::Gmem(completion));
+        }
+
+        for completion in smem_completions {
+            self.enqueue_writeback(now, WritebackPayload::Smem(completion));
+        }
+
+        self.writeback.tick(now);
+        self.fence.tick(now);
+
+        while let Some(payload) = self.writeback.pop_ready() {
+            match payload {
+                WritebackPayload::Gmem(completion) => {
+                    self.handle_gmem_completion(now, completion, scheduler);
+                }
+                WritebackPayload::Smem(completion) => {
+                    self.handle_smem_completion(now, completion, scheduler);
+                }
+            }
+        }
+
+        while let Some(fence_req) = self.fence.pop_ready() {
+            if let Some(slot) = self.fence_inflight.get_mut(fence_req.warp) {
+                if slot.map(|id| id == fence_req.request_id).unwrap_or(false) {
+                    *slot = None;
+                }
+            }
+            scheduler.clear_resource_wait(fence_req.warp);
         }
 
         if self.log_stats {
@@ -764,6 +831,42 @@ impl CoreTimingModel {
         self.pending_cluster_smem = pending;
     }
 
+    fn drain_pending_writeback(&mut self, now: Cycle) {
+        let mut remaining = VecDeque::new();
+        while let Some(payload) = self.pending_writeback.pop_front() {
+            if self.writeback.try_issue(now, payload.clone()).is_err() {
+                remaining.push_back(payload);
+                remaining.extend(self.pending_writeback.drain(..));
+                break;
+            }
+        }
+        self.pending_writeback = remaining;
+    }
+
+    fn enqueue_writeback(&mut self, now: Cycle, payload: WritebackPayload) {
+        if self.writeback.try_issue(now, payload.clone()).is_err() {
+            self.pending_writeback.push_back(payload);
+        }
+    }
+
+    fn drain_pending_fence(&mut self, now: Cycle) {
+        let mut remaining = VecDeque::new();
+        while let Some(request) = self.pending_fence.pop_front() {
+            if self.fence.try_issue(now, request.clone()).is_err() {
+                remaining.push_back(request);
+                remaining.extend(self.pending_fence.drain(..));
+                break;
+            }
+        }
+        self.pending_fence = remaining;
+    }
+
+    fn enqueue_fence(&mut self, now: Cycle, request: FenceRequest) {
+        if self.fence.try_issue(now, request.clone()).is_err() {
+            self.pending_fence.push_back(request);
+        }
+    }
+
     fn add_gmem_pending(
         &mut self,
         warp: usize,
@@ -779,6 +882,76 @@ impl CoreTimingModel {
             }
         }
         self.update_scheduler_state(warp, scheduler);
+    }
+
+    fn register_fence(&mut self, warp: usize, request_id: u64, scheduler: &mut Scheduler) {
+        if !self.fence.is_enabled() {
+            return;
+        }
+        if let Some(slot) = self.fence_inflight.get_mut(warp) {
+            *slot = Some(request_id);
+        }
+        scheduler.set_resource_wait_until(warp, Some(Cycle::MAX));
+    }
+
+    fn handle_gmem_completion(
+        &mut self,
+        now: Cycle,
+        completion: crate::timeflow::GmemCompletion,
+        scheduler: &mut Scheduler,
+    ) {
+        let warp = completion.request.warp;
+        let completed_id = completion.request.id;
+        if !self.remove_gmem_pending(warp, completed_id, scheduler) {
+            return;
+        }
+        self.lsu
+            .release_load_data(&LsuPayload::Gmem(completion.request.clone()));
+        self.trace_event(
+            now,
+            "gmem_complete",
+            warp,
+            Some(completed_id),
+            completion.request.bytes,
+            None,
+        );
+        info!(
+            self.logger,
+            "[gmem] warp {} completed request {} done@{}",
+            warp,
+            completed_id,
+            now
+        );
+    }
+
+    fn handle_smem_completion(
+        &mut self,
+        now: Cycle,
+        completion: crate::timeflow::SmemCompletion,
+        scheduler: &mut Scheduler,
+    ) {
+        let warp = completion.request.warp;
+        let completed_id = completion.request.id;
+        if !self.remove_smem_pending(warp, completed_id, scheduler) {
+            return;
+        }
+        self.lsu
+            .release_load_data(&LsuPayload::Smem(completion.request.clone()));
+        self.trace_event(
+            now,
+            "smem_complete",
+            warp,
+            Some(completed_id),
+            completion.request.bytes,
+            None,
+        );
+        info!(
+            self.logger,
+            "[smem] warp {} completed request {} done@{}",
+            warp,
+            completed_id,
+            now
+        );
     }
 
     fn remove_gmem_pending(
@@ -846,7 +1019,12 @@ impl CoreTimingModel {
             .get(warp)
             .map(|entry| entry.is_some())
             .unwrap_or(false);
-        if !gmem_pending && !smem_pending && !icache_pending {
+        let fence_pending = self
+            .fence_inflight
+            .get(warp)
+            .map(|entry| entry.is_some())
+            .unwrap_or(false);
+        if !gmem_pending && !smem_pending && !icache_pending && !fence_pending {
             scheduler.clear_resource_wait(warp);
         }
     }

@@ -1,0 +1,6 @@
+[operand_fetch]
+enabled = true
+base_latency = 0
+bytes_per_cycle = 1024
+queue_capacity = 16
+completions_per_cycle = 1

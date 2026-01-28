@@ -1,0 +1,6 @@
+[fence]
+enabled = true
+base_latency = 1
+bytes_per_cycle = 1
+queue_capacity = 4
+completions_per_cycle = 1

@@ -1,13 +1,22 @@
 pub mod core_graph;
+pub mod barrier;
+pub mod dma;
+pub mod fence;
 pub mod gmem;
 pub mod graph;
 pub mod icache;
 pub mod lsu;
+pub mod operand_fetch;
 pub mod server_node;
 pub mod smem;
+pub mod tensor;
 pub mod types;
+pub mod writeback;
 
 pub use core_graph::{CoreGraph, CoreGraphConfig};
+pub use barrier::{BarrierConfig, BarrierManager};
+pub use dma::{DmaConfig, DmaIssue, DmaQueue, DmaReject, DmaRejectReason};
+pub use fence::{FenceConfig, FenceIssue, FenceQueue, FenceReject, FenceRejectReason, FenceRequest};
 pub use gmem::{
     ClusterGmemGraph, GmemCompletion, GmemFlowConfig, GmemIssue, GmemPolicyConfig, GmemReject,
     GmemRejectReason, GmemRequest, GmemRequestKind, GmemStats,
@@ -15,8 +24,17 @@ pub use gmem::{
 pub use graph::{EdgeStats, FlowGraph, Link, LinkBackpressure, TimedNode};
 pub use icache::{IcacheFlowConfig, IcacheIssue, IcacheReject, IcacheRejectReason, IcacheRequest, IcacheStats, IcacheSubgraph};
 pub use lsu::{LsuCompletion, LsuFlowConfig, LsuIssue, LsuReject, LsuRejectReason, LsuStats, LsuSubgraph};
+pub use operand_fetch::{
+    OperandFetchConfig, OperandFetchIssue, OperandFetchQueue, OperandFetchReject,
+    OperandFetchRejectReason,
+};
 pub use server_node::ServerNode;
 pub use smem::{
     SmemCompletion, SmemFlowConfig, SmemIssue, SmemReject, SmemRejectReason, SmemRequest, SmemStats,
 };
+pub use tensor::{TensorConfig, TensorIssue, TensorQueue, TensorReject, TensorRejectReason};
 pub use types::{CoreFlowPayload, LinkId, NodeId};
+pub use writeback::{
+    WritebackConfig, WritebackIssue, WritebackPayload, WritebackQueue, WritebackReject,
+    WritebackRejectReason,
+};

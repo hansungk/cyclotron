@@ -126,6 +126,40 @@ num_banks = 4
 num_lanes = 16
 link_capacity = 1024
 
+[lsu.queues.global_ldq]
+base_latency = 0
+bytes_per_cycle = 4096
+queue_capacity = 1024
+
+[lsu.queues.global_stq]
+base_latency = 0
+bytes_per_cycle = 4096
+queue_capacity = 1024
+
+[lsu.queues.shared_ldq]
+base_latency = 0
+bytes_per_cycle = 4096
+queue_capacity = 1024
+
+[lsu.queues.shared_stq]
+base_latency = 0
+bytes_per_cycle = 4096
+queue_capacity = 1024
+
+[lsu.resources]
+address_entries = 1024
+store_data_entries = 1024
+load_data_entries = 1024
+
+[lsu.issue]
+base_latency = 0
+bytes_per_cycle = 4096
+queue_capacity = 1024
+completions_per_cycle = 1024
+
+[lsu]
+link_capacity = 1024
+
 [icache.hit]
 base_latency = 0
 bytes_per_cycle = 1
@@ -140,3 +174,46 @@ queue_capacity = 1024
 hit_rate = 1.0
 line_bytes = 32
 seed = 0
+
+[operand_fetch]
+enabled = false
+base_latency = 0
+bytes_per_cycle = 4096
+queue_capacity = 1024
+completions_per_cycle = 1024
+
+[writeback]
+enabled = false
+base_latency = 0
+bytes_per_cycle = 4096
+queue_capacity = 1024
+completions_per_cycle = 1024
+
+[barrier]
+enabled = false
+expected_warps = 0
+base_latency = 0
+bytes_per_cycle = 1
+queue_capacity = 1024
+completions_per_cycle = 1024
+
+[fence]
+enabled = false
+base_latency = 0
+bytes_per_cycle = 1
+queue_capacity = 1024
+completions_per_cycle = 1024
+
+[dma]
+enabled = false
+base_latency = 0
+bytes_per_cycle = 4096
+queue_capacity = 1024
+completions_per_cycle = 1024
+
+[tensor]
+enabled = false
+base_latency = 0
+bytes_per_cycle = 4096
+queue_capacity = 1024
+completions_per_cycle = 1024

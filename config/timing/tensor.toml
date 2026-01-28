@@ -1,0 +1,6 @@
+[tensor]
+enabled = false
+base_latency = 50
+bytes_per_cycle = 256
+queue_capacity = 8
+completions_per_cycle = 1

@@ -2,11 +2,17 @@ use crate::timeflow::gmem::{
     GmemCompletion, GmemFlowConfig, GmemIssue, GmemReject, GmemRequest, GmemStats, GmemSubgraph,
 };
 use crate::timeflow::graph::FlowGraph;
+use crate::timeflow::barrier::BarrierConfig;
+use crate::timeflow::dma::DmaConfig;
+use crate::timeflow::fence::FenceConfig;
 use crate::timeflow::icache::IcacheFlowConfig;
 use crate::timeflow::lsu::LsuFlowConfig;
+use crate::timeflow::operand_fetch::OperandFetchConfig;
 use crate::timeflow::smem::{
     SmemCompletion, SmemFlowConfig, SmemIssue, SmemReject, SmemRequest, SmemStats, SmemSubgraph,
 };
+use crate::timeflow::tensor::TensorConfig;
+use crate::timeflow::writeback::WritebackConfig;
 use crate::timeflow::types::CoreFlowPayload;
 use crate::timeq::Cycle;
 use serde::Deserialize;
@@ -21,6 +27,18 @@ pub struct CoreGraphConfig {
     pub lsu: LsuFlowConfig,
     #[serde(default)]
     pub icache: IcacheFlowConfig,
+    #[serde(default)]
+    pub writeback: WritebackConfig,
+    #[serde(default)]
+    pub operand_fetch: OperandFetchConfig,
+    #[serde(default)]
+    pub barrier: BarrierConfig,
+    #[serde(default)]
+    pub fence: FenceConfig,
+    #[serde(default)]
+    pub dma: DmaConfig,
+    #[serde(default)]
+    pub tensor: TensorConfig,
 }
 
 impl Default for CoreGraphConfig {
@@ -30,6 +48,12 @@ impl Default for CoreGraphConfig {
             smem: SmemFlowConfig::default(),
             lsu: LsuFlowConfig::default(),
             icache: IcacheFlowConfig::default(),
+            writeback: WritebackConfig::default(),
+            operand_fetch: OperandFetchConfig::default(),
+            barrier: BarrierConfig::default(),
+            fence: FenceConfig::default(),
+            dma: DmaConfig::default(),
+            tensor: TensorConfig::default(),
         }
     }
 }
