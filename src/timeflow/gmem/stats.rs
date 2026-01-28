@@ -1,6 +1,7 @@
 use crate::timeq::Cycle;
+use serde::Serialize;
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, Serialize)]
 pub struct GmemStats {
     pub issued: u64,
     pub completed: u64,

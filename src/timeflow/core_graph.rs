@@ -10,6 +10,7 @@ use crate::timeflow::lsu::LsuFlowConfig;
 use crate::timeflow::operand_fetch::OperandFetchConfig;
 use crate::timeflow::smem::{
     SmemCompletion, SmemFlowConfig, SmemIssue, SmemReject, SmemRequest, SmemStats, SmemSubgraph,
+    SmemUtilSample,
 };
 use crate::timeflow::tensor::TensorConfig;
 use crate::timeflow::warp_scheduler::WarpSchedulerConfig;
@@ -128,6 +129,10 @@ impl CoreGraph {
 
     pub fn clear_smem_stats(&mut self) {
         self.smem.stats = SmemStats::default();
+    }
+
+    pub fn sample_smem_utilization(&mut self) -> SmemUtilSample {
+        self.smem.sample_utilization(&mut self.graph)
     }
 }
 

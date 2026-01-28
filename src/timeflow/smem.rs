@@ -4,9 +4,9 @@ use crate::timeflow::graph::{FlowGraph, Link};
 use crate::timeflow::server_node::ServerNode;
 use crate::timeflow::types::{CoreFlowPayload, NodeId};
 use crate::timeq::{Backpressure, Cycle, ServerConfig, ServiceRequest, Ticket, TimedServer};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, Serialize)]
 pub struct SmemStats {
     pub issued: u64,
     pub completed: u64,
@@ -18,6 +18,14 @@ pub struct SmemStats {
     pub max_inflight: u64,
     pub max_completion_queue: u64,
     pub last_completion_cycle: Option<Cycle>,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SmemUtilSample {
+    pub lane_busy: usize,
+    pub lane_total: usize,
+    pub bank_busy: usize,
+    pub bank_total: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -265,6 +273,34 @@ impl SmemSubgraph {
             completions: VecDeque::new(),
             next_id: 0,
             stats: SmemStats::default(),
+        }
+    }
+
+    pub fn sample_utilization(
+        &self,
+        graph: &mut FlowGraph<CoreFlowPayload>,
+    ) -> SmemUtilSample {
+        let mut lane_busy = 0usize;
+        for &node in &self.lane_nodes {
+            let busy = graph.with_node_mut(node, |n| n.outstanding() > 0);
+            if busy {
+                lane_busy += 1;
+            }
+        }
+
+        let mut bank_busy = 0usize;
+        for &node in &self.bank_nodes {
+            let busy = graph.with_node_mut(node, |n| n.outstanding() > 0);
+            if busy {
+                bank_busy += 1;
+            }
+        }
+
+        SmemUtilSample {
+            lane_busy,
+            lane_total: self.lane_nodes.len(),
+            bank_busy,
+            bank_total: self.bank_nodes.len(),
         }
     }
 

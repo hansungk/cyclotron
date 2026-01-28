@@ -56,6 +56,13 @@ impl Sim {
         for cycle in 0..self.top.timeout {
             if self.top.finished() {
                 println!("simulation finished after {} cycles", cycle + 1);
+                let summaries = self
+                    .top
+                    .clusters
+                    .iter()
+                    .flat_map(|cluster| cluster.cores.iter().map(|core| core.timing_summary()))
+                    .collect::<Vec<_>>();
+                crate::sim::perf_log::write_summary(summaries);
                 if let Some(mut tohost) = self.top.clusters[0].cores[0].scheduler.state_mut().tohost
                 {
                     if tohost > 0 {
@@ -70,6 +77,13 @@ impl Sim {
             }
             self.top.tick_one();
         }
+        let summaries = self
+            .top
+            .clusters
+            .iter()
+            .flat_map(|cluster| cluster.cores.iter().map(|core| core.timing_summary()))
+            .collect::<Vec<_>>();
+        crate::sim::perf_log::write_summary(summaries);
         Err(0)
     }
 

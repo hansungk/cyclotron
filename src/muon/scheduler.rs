@@ -350,6 +350,14 @@ impl Scheduler {
         self.base.state.pc[wid] = self.base.state.pc[wid].wrapping_sub(8);
     }
 
+    pub fn active_warp_mask(&self) -> u32 {
+        self.base.state.active_warps
+    }
+
+    pub fn stalled_warp_mask(&self) -> u32 {
+        self.base.state.stalled_warps
+    }
+
     fn resource_wait_mask(&self) -> u32 {
         self.base
             .state

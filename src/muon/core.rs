@@ -10,6 +10,7 @@ use crate::sim::flat_mem::FlatMemory;
 use crate::sim::log::Logger;
 use crate::sim::trace::Tracer;
 use crate::timeflow::CoreGraphConfig;
+use crate::muon::gmem::CorePerfSummary;
 use crate::timeq::module_now;
 use std::iter::zip;
 use std::sync::{Arc, RwLock};
@@ -146,6 +147,11 @@ impl MuonCore {
             .map(|entry| entry.is_some())
             .collect::<Vec<_>>();
         let issue_mask = self.timing_model.select_issue_mask(now, &eligible);
+        let active_warps = self.scheduler.active_warp_mask().count_ones();
+        let eligible_warps = eligible.iter().filter(|v| **v).count() as u32;
+        let issued_warps = issue_mask.iter().filter(|v| **v).count() as u32;
+        self.timing_model
+            .record_issue_stats(now, active_warps, eligible_warps, issued_warps);
 
         let mut writebacks: Vec<Option<Writeback>> = Vec::with_capacity(self.warps.len());
 
@@ -242,6 +248,10 @@ impl MuonCore {
             &mut self.shared_mem,
             &mut self.timing_model,
         )
+    }
+
+    pub fn timing_summary(&self) -> CorePerfSummary {
+        self.timing_model.perf_summary()
     }
 }
 

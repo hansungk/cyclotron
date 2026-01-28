@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::env;
 use std::fs::File;
 use std::io::{BufWriter, Write};
@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use crate::info;
 use crate::muon::scheduler::Scheduler;
+use crate::sim::perf_log;
 use crate::sim::log::Logger;
 use crate::timeflow::{
     BarrierManager, ClusterGmemGraph, CoreGraph, CoreGraphConfig, DmaQueue, FenceQueue, FenceRequest,
@@ -17,11 +18,72 @@ use crate::timeflow::{
 };
 use crate::timeflow::lsu::LsuPayload;
 use crate::timeq::{Cycle, Ticket};
+use serde::Serialize;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct CoreStats {
     pub gmem: GmemStats,
     pub smem: SmemStats,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize)]
+pub struct SchedulerSummary {
+    pub cycles: u64,
+    pub active_warps_sum: u64,
+    pub eligible_warps_sum: u64,
+    pub issued_warps_sum: u64,
+    pub issue_width: u64,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize)]
+pub struct SmemUtilSummary {
+    pub cycles: u64,
+    pub lane_busy_sum: u64,
+    pub lane_total: u64,
+    pub bank_busy_sum: u64,
+    pub bank_total: u64,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize)]
+pub struct SmemConflictSummary {
+    pub instructions: u64,
+    pub active_lanes: u64,
+    pub conflict_lanes: u64,
+    pub unique_banks: u64,
+    pub unique_subbanks: u64,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize)]
+pub struct GmemHitSummary {
+    pub l0_accesses: u64,
+    pub l0_hits: u64,
+    pub l1_accesses: u64,
+    pub l1_hits: u64,
+    pub l2_accesses: u64,
+    pub l2_hits: u64,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize)]
+pub struct LatencySummary {
+    pub gmem_count: u64,
+    pub gmem_sum: u64,
+    pub smem_count: u64,
+    pub smem_sum: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CorePerfSummary {
+    pub core_id: usize,
+    pub cluster_id: usize,
+    pub scheduler: SchedulerSummary,
+    pub smem_util: SmemUtilSummary,
+    pub smem_conflicts: SmemConflictSummary,
+    pub gmem_hits: GmemHitSummary,
+    pub latencies: LatencySummary,
+    pub gmem_stats: GmemStats,
+    pub smem_stats: SmemStats,
+    pub dma_completed: u64,
+    pub tensor_completed: u64,
 }
 
 pub struct CoreTimingModel {
@@ -46,6 +108,8 @@ pub struct CoreTimingModel {
     pending_cluster_smem: VecDeque<PendingClusterIssue<SmemRequest>>,
     pending_gmem: Vec<VecDeque<(u64, Cycle)>>,
     pending_smem: Vec<VecDeque<(u64, Cycle)>>,
+    gmem_issue_cycle: HashMap<u64, Cycle>,
+    smem_issue_cycle: HashMap<u64, Cycle>,
     cluster_gmem: Arc<std::sync::RwLock<ClusterGmemGraph>>,
     core_id: usize,
     cluster_id: usize,
@@ -56,9 +120,19 @@ pub struct CoreTimingModel {
     next_icache_id: u64,
     logger: Arc<Logger>,
     trace: Option<TraceSink>,
+    mem_latency: Option<LatencySink>,
+    smem_conflicts: Option<SmemConflictSink>,
+    scheduler_log: Option<SchedulerSink>,
     log_stats: bool,
     last_logged_gmem_completed: u64,
     last_logged_smem_completed: u64,
+    last_metrics_cycle: Option<Cycle>,
+    last_issue_stats_cycle: Option<Cycle>,
+    scheduler_stats: SchedulerSummary,
+    smem_util: SmemUtilSummary,
+    smem_conflicts_summary: SmemConflictSummary,
+    gmem_hits: GmemHitSummary,
+    latencies: LatencySummary,
 }
 
 struct PendingClusterIssue<T> {
@@ -71,6 +145,14 @@ struct IcacheInflight {
     ready_at: Cycle,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct SmemConflictSample {
+    active_lanes: u32,
+    unique_banks: u32,
+    unique_subbanks: u32,
+    conflict_lanes: u32,
+}
+
 impl CoreTimingModel {
     pub fn new(
         config: CoreGraphConfig,
@@ -80,7 +162,10 @@ impl CoreTimingModel {
         cluster_gmem: Arc<std::sync::RwLock<ClusterGmemGraph>>,
         logger: Arc<Logger>,
     ) -> Self {
-        let trace_path = env::var("CYCLOTRON_TIMING_TRACE").ok().map(PathBuf::from);
+        let trace_name = env::var("CYCLOTRON_TIMING_TRACE")
+            .ok()
+            .unwrap_or_else(|| "events.csv".to_string());
+        let trace_path = perf_log::per_core_path(&trace_name, core_id);
         let log_stats = env::var("CYCLOTRON_TIMING_LOG_STATS")
             .ok()
             .map(|val| {
@@ -121,6 +206,8 @@ impl CoreTimingModel {
         let dma = DmaQueue::new(config.dma.clone());
         let tensor = TensorQueue::new(config.tensor.clone());
         let issue_scheduler = WarpIssueScheduler::new(config.scheduler.clone());
+        let mut scheduler_stats = SchedulerSummary::default();
+        scheduler_stats.issue_width = config.scheduler.issue_width.max(1) as u64;
         let trace = trace_path.and_then(|path| match TraceSink::new(path) {
             Ok(sink) => Some(sink),
             Err(err) => {
@@ -128,6 +215,30 @@ impl CoreTimingModel {
                 None
             }
         });
+        let mem_latency = perf_log::per_core_path("mem_latency.csv", core_id)
+            .and_then(|path| match LatencySink::new(path) {
+                Ok(sink) => Some(sink),
+                Err(err) => {
+                    info!(logger, "failed to open mem latency file: {err}");
+                    None
+                }
+            });
+        let smem_conflicts = perf_log::per_core_path("smem_conflicts.csv", core_id)
+            .and_then(|path| match SmemConflictSink::new(path) {
+                Ok(sink) => Some(sink),
+                Err(err) => {
+                    info!(logger, "failed to open smem conflicts file: {err}");
+                    None
+                }
+            });
+        let scheduler_log = perf_log::per_core_path("scheduler.csv", core_id)
+            .and_then(|path| match SchedulerSink::new(path) {
+                Ok(sink) => Some(sink),
+                Err(err) => {
+                    info!(logger, "failed to open scheduler log file: {err}");
+                    None
+                }
+            });
 
         Self {
             graph: CoreGraph::new(config),
@@ -151,6 +262,8 @@ impl CoreTimingModel {
             pending_cluster_smem: VecDeque::new(),
             pending_gmem: vec![VecDeque::new(); num_warps],
             pending_smem: vec![VecDeque::new(); num_warps],
+            gmem_issue_cycle: HashMap::new(),
+            smem_issue_cycle: HashMap::new(),
             cluster_gmem,
             core_id,
             cluster_id,
@@ -161,9 +274,19 @@ impl CoreTimingModel {
             next_icache_id: 0,
             logger,
             trace,
+            mem_latency,
+            smem_conflicts,
+            scheduler_log,
             log_stats,
             last_logged_gmem_completed: 0,
             last_logged_smem_completed: 0,
+            last_metrics_cycle: None,
+            last_issue_stats_cycle: None,
+            scheduler_stats,
+            smem_util: SmemUtilSummary::default(),
+            smem_conflicts_summary: SmemConflictSummary::default(),
+            gmem_hits: GmemHitSummary::default(),
+            latencies: LatencySummary::default(),
         }
     }
 
@@ -227,6 +350,7 @@ impl CoreTimingModel {
         match issue_result {
             Ok(LsuIssue { ticket }) => {
                 let ready_at = ticket.ready_at();
+                self.gmem_issue_cycle.entry(request_id).or_insert(now);
                 self.add_gmem_pending(warp, request_id, ready_at, scheduler, split_count);
                 if is_flush {
                     self.register_fence(warp, request_id, scheduler);
@@ -305,6 +429,7 @@ impl CoreTimingModel {
         }
         let request_id = request.id;
         let split_count = self.split_smem_request(&request).len().max(1);
+        let conflict_sample = self.compute_smem_conflict(&request);
         let issue_bytes = request.bytes;
         if let Err(reject) = self.operand_fetch.try_issue(now, request.bytes) {
             let wait_until = reject.retry_at.max(now.saturating_add(1));
@@ -316,7 +441,11 @@ impl CoreTimingModel {
         match issue_result {
             Ok(LsuIssue { ticket }) => {
                 let ready_at = ticket.ready_at();
+                self.smem_issue_cycle.entry(request_id).or_insert(now);
                 self.add_smem_pending(warp, request_id, ready_at, scheduler, split_count);
+                if let Some(sample) = conflict_sample {
+                    self.record_smem_conflict(now, warp, request_id, sample);
+                }
                 self.trace_event(now, "smem_issue", warp, None, issue_bytes, None);
                 info!(
                     self.logger,
@@ -400,6 +529,44 @@ impl CoreTimingModel {
 
     pub fn select_issue_mask(&mut self, now: Cycle, eligible: &[bool]) -> Vec<bool> {
         self.issue_scheduler.select(now, eligible)
+    }
+
+    pub fn record_issue_stats(
+        &mut self,
+        now: Cycle,
+        active_warps: u32,
+        eligible_warps: u32,
+        issued_warps: u32,
+    ) {
+        if self.last_issue_stats_cycle == Some(now) {
+            return;
+        }
+        self.last_issue_stats_cycle = Some(now);
+        self.scheduler_stats.cycles = self.scheduler_stats.cycles.saturating_add(1);
+        self.scheduler_stats.active_warps_sum = self
+            .scheduler_stats
+            .active_warps_sum
+            .saturating_add(active_warps as u64);
+        self.scheduler_stats.eligible_warps_sum = self
+            .scheduler_stats
+            .eligible_warps_sum
+            .saturating_add(eligible_warps as u64);
+        self.scheduler_stats.issued_warps_sum = self
+            .scheduler_stats
+            .issued_warps_sum
+            .saturating_add(issued_warps as u64);
+        if self.scheduler_stats.issue_width == 0 {
+            self.scheduler_stats.issue_width = 1;
+        }
+        if let Some(log) = self.scheduler_log.as_mut() {
+            log.write_row(
+                now,
+                active_warps,
+                eligible_warps,
+                issued_warps,
+                self.scheduler_stats.issue_width as u32,
+            );
+        }
     }
 
     pub fn allow_fetch(
@@ -577,6 +744,8 @@ impl CoreTimingModel {
             scheduler.clear_resource_wait(fence_req.warp);
         }
 
+        self.sample_metrics(now);
+
         if self.log_stats {
             if let Some(gmem_stats) = gmem_stats_snapshot {
                 if gmem_stats.completed != prev_gmem {
@@ -653,6 +822,23 @@ impl CoreTimingModel {
         }
     }
 
+    pub fn perf_summary(&self) -> CorePerfSummary {
+        let stats = self.stats();
+        CorePerfSummary {
+            core_id: self.core_id,
+            cluster_id: self.cluster_id,
+            scheduler: self.scheduler_stats,
+            smem_util: self.smem_util,
+            smem_conflicts: self.smem_conflicts_summary,
+            gmem_hits: self.gmem_hits,
+            latencies: self.latencies,
+            gmem_stats: stats.gmem,
+            smem_stats: stats.smem,
+            dma_completed: self.dma.completed(),
+            tensor_completed: self.tensor.completed(),
+        }
+    }
+
     pub fn clear_stats(&mut self) {
         self.cluster_gmem
             .write()
@@ -661,6 +847,196 @@ impl CoreTimingModel {
         self.graph.clear_smem_stats();
         self.last_logged_gmem_completed = 0;
         self.last_logged_smem_completed = 0;
+    }
+
+    fn record_gmem_completion(
+        &mut self,
+        now: Cycle,
+        completion: &crate::timeflow::GmemCompletion,
+    ) {
+        if completion.request.kind.is_mem() {
+            self.gmem_hits.l0_accesses = self.gmem_hits.l0_accesses.saturating_add(1);
+            if completion.request.l0_hit {
+                self.gmem_hits.l0_hits = self.gmem_hits.l0_hits.saturating_add(1);
+            } else {
+                self.gmem_hits.l1_accesses = self.gmem_hits.l1_accesses.saturating_add(1);
+                if completion.request.l1_hit {
+                    self.gmem_hits.l1_hits = self.gmem_hits.l1_hits.saturating_add(1);
+                } else {
+                    self.gmem_hits.l2_accesses =
+                        self.gmem_hits.l2_accesses.saturating_add(1);
+                    if completion.request.l2_hit {
+                        self.gmem_hits.l2_hits = self.gmem_hits.l2_hits.saturating_add(1);
+                    }
+                }
+            }
+        }
+
+        if let Some(issue_at) = self.gmem_issue_cycle.get(&completion.request.id).copied() {
+            let latency = now.saturating_sub(issue_at);
+            self.latencies.gmem_count = self.latencies.gmem_count.saturating_add(1);
+            self.latencies.gmem_sum = self.latencies.gmem_sum.saturating_add(latency);
+            if let Some(log) = self.mem_latency.as_mut() {
+                log.write_gmem(
+                    now,
+                    self.core_id,
+                    completion.request.warp,
+                    completion.request.id,
+                    completion.request.bytes,
+                    issue_at,
+                    latency,
+                    completion.request.l0_hit,
+                    completion.request.l1_hit,
+                    completion.request.l2_hit,
+                );
+            }
+        }
+    }
+
+    fn record_smem_completion(
+        &mut self,
+        now: Cycle,
+        completion: &crate::timeflow::SmemCompletion,
+    ) {
+        if let Some(issue_at) = self.smem_issue_cycle.get(&completion.request.id).copied() {
+            let latency = now.saturating_sub(issue_at);
+            self.latencies.smem_count = self.latencies.smem_count.saturating_add(1);
+            self.latencies.smem_sum = self.latencies.smem_sum.saturating_add(latency);
+            if let Some(log) = self.mem_latency.as_mut() {
+                log.write_smem(
+                    now,
+                    self.core_id,
+                    completion.request.warp,
+                    completion.request.id,
+                    completion.request.bytes,
+                    issue_at,
+                    latency,
+                );
+            }
+        }
+    }
+
+    fn maybe_clear_gmem_issue_cycle(&mut self, request_id: u64) {
+        if self
+            .pending_gmem
+            .iter()
+            .any(|queue| queue.iter().any(|(id, _)| *id == request_id))
+        {
+            return;
+        }
+        self.gmem_issue_cycle.remove(&request_id);
+    }
+
+    fn maybe_clear_smem_issue_cycle(&mut self, request_id: u64) {
+        if self
+            .pending_smem
+            .iter()
+            .any(|queue| queue.iter().any(|(id, _)| *id == request_id))
+        {
+            return;
+        }
+        self.smem_issue_cycle.remove(&request_id);
+    }
+
+    fn compute_smem_conflict(&self, request: &SmemRequest) -> Option<SmemConflictSample> {
+        let active = request.active_lanes.max(1);
+        let num_banks = self.smem_config.num_banks.max(1) as u64;
+        let num_subbanks = self.smem_config.num_subbanks.max(1) as u64;
+        let word_bytes = self.smem_config.word_bytes.max(1) as u64;
+
+        if let Some(lane_addrs) = request.lane_addrs.as_ref() {
+            if lane_addrs.is_empty() {
+                return None;
+            }
+            let mut banks = std::collections::HashSet::new();
+            let mut subbanks = std::collections::HashSet::new();
+            for &addr in lane_addrs {
+                let word = addr / word_bytes;
+                let bank = (word % num_banks) as usize;
+                let subbank = ((word / num_banks) % num_subbanks) as usize;
+                banks.insert(bank);
+                subbanks.insert((bank, subbank));
+            }
+            let unique_banks = banks.len() as u32;
+            let unique_subbanks = subbanks.len() as u32;
+            let conflict_lanes = active.saturating_sub(unique_banks.max(1));
+            return Some(SmemConflictSample {
+                active_lanes: active,
+                unique_banks,
+                unique_subbanks,
+                conflict_lanes,
+            });
+        }
+
+        let unique_banks = 1;
+        let unique_subbanks = 1;
+        let conflict_lanes = active.saturating_sub(1);
+        Some(SmemConflictSample {
+            active_lanes: active,
+            unique_banks,
+            unique_subbanks,
+            conflict_lanes,
+        })
+    }
+
+    fn record_smem_conflict(
+        &mut self,
+        now: Cycle,
+        warp: usize,
+        request_id: u64,
+        sample: SmemConflictSample,
+    ) {
+        self.smem_conflicts_summary.instructions =
+            self.smem_conflicts_summary.instructions.saturating_add(1);
+        self.smem_conflicts_summary.active_lanes = self
+            .smem_conflicts_summary
+            .active_lanes
+            .saturating_add(sample.active_lanes as u64);
+        self.smem_conflicts_summary.conflict_lanes = self
+            .smem_conflicts_summary
+            .conflict_lanes
+            .saturating_add(sample.conflict_lanes as u64);
+        self.smem_conflicts_summary.unique_banks = self
+            .smem_conflicts_summary
+            .unique_banks
+            .saturating_add(sample.unique_banks as u64);
+        self.smem_conflicts_summary.unique_subbanks = self
+            .smem_conflicts_summary
+            .unique_subbanks
+            .saturating_add(sample.unique_subbanks as u64);
+
+        if let Some(log) = self.smem_conflicts.as_mut() {
+            log.write_row(
+                now,
+                self.core_id,
+                warp,
+                request_id,
+                sample.active_lanes,
+                sample.unique_banks,
+                sample.unique_subbanks,
+                sample.conflict_lanes,
+            );
+        }
+    }
+
+    fn sample_metrics(&mut self, now: Cycle) {
+        if self.last_metrics_cycle == Some(now) {
+            return;
+        }
+        self.last_metrics_cycle = Some(now);
+        self.smem_util.cycles = self.smem_util.cycles.saturating_add(1);
+
+        let sample = self.graph.sample_smem_utilization();
+        self.smem_util.lane_busy_sum = self
+            .smem_util
+            .lane_busy_sum
+            .saturating_add(sample.lane_busy as u64);
+        self.smem_util.bank_busy_sum = self
+            .smem_util
+            .bank_busy_sum
+            .saturating_add(sample.bank_busy as u64);
+        self.smem_util.lane_total = sample.lane_total as u64;
+        self.smem_util.bank_total = sample.bank_total as u64;
     }
 
     pub fn dma_completed(&self) -> u64 {
@@ -995,6 +1371,8 @@ impl CoreTimingModel {
         if !self.remove_gmem_pending(warp, completed_id, scheduler) {
             return;
         }
+        self.record_gmem_completion(now, &completion);
+        self.maybe_clear_gmem_issue_cycle(completed_id);
         self.lsu
             .release_load_data(&LsuPayload::Gmem(completion.request.clone()));
         self.trace_event(
@@ -1025,6 +1403,8 @@ impl CoreTimingModel {
         if !self.remove_smem_pending(warp, completed_id, scheduler) {
             return;
         }
+        self.record_smem_completion(now, &completion);
+        self.maybe_clear_smem_issue_cycle(completed_id);
         self.lsu
             .release_load_data(&LsuPayload::Smem(completion.request.clone()));
         self.trace_event(
@@ -1171,6 +1551,197 @@ impl TraceSink {
 }
 
 impl Drop for TraceSink {
+    fn drop(&mut self) {
+        let _ = self.writer.flush();
+    }
+}
+
+struct LatencySink {
+    writer: BufWriter<File>,
+    wrote_header: bool,
+}
+
+impl LatencySink {
+    fn new(path: PathBuf) -> std::io::Result<Self> {
+        let file = File::create(path)?;
+        Ok(Self {
+            writer: BufWriter::new(file),
+            wrote_header: false,
+        })
+    }
+
+    fn write_gmem(
+        &mut self,
+        cycle: Cycle,
+        core: usize,
+        warp: usize,
+        request_id: u64,
+        bytes: u32,
+        issue_at: Cycle,
+        latency: Cycle,
+        l0_hit: bool,
+        l1_hit: bool,
+        l2_hit: bool,
+    ) {
+        if !self.wrote_header {
+            let _ = writeln!(
+                self.writer,
+                "cycle,core,warp,mem_type,request_id,bytes,issue_at,latency,l0_hit,l1_hit,l2_hit"
+            );
+            self.wrote_header = true;
+        }
+        let _ = writeln!(
+            self.writer,
+            "{},{},{},{},{},{},{},{},{},{},{}",
+            cycle,
+            core,
+            warp,
+            "gmem",
+            request_id,
+            bytes,
+            issue_at,
+            latency,
+            l0_hit as u8,
+            l1_hit as u8,
+            l2_hit as u8
+        );
+    }
+
+    fn write_smem(
+        &mut self,
+        cycle: Cycle,
+        core: usize,
+        warp: usize,
+        request_id: u64,
+        bytes: u32,
+        issue_at: Cycle,
+        latency: Cycle,
+    ) {
+        if !self.wrote_header {
+            let _ = writeln!(
+                self.writer,
+                "cycle,core,warp,mem_type,request_id,bytes,issue_at,latency,l0_hit,l1_hit,l2_hit"
+            );
+            self.wrote_header = true;
+        }
+        let _ = writeln!(
+            self.writer,
+            "{},{},{},{},{},{},{},{},,,",
+            cycle,
+            core,
+            warp,
+            "smem",
+            request_id,
+            bytes,
+            issue_at,
+            latency
+        );
+    }
+}
+
+impl Drop for LatencySink {
+    fn drop(&mut self) {
+        let _ = self.writer.flush();
+    }
+}
+
+struct SmemConflictSink {
+    writer: BufWriter<File>,
+    wrote_header: bool,
+}
+
+impl SmemConflictSink {
+    fn new(path: PathBuf) -> std::io::Result<Self> {
+        let file = File::create(path)?;
+        Ok(Self {
+            writer: BufWriter::new(file),
+            wrote_header: false,
+        })
+    }
+
+    fn write_row(
+        &mut self,
+        cycle: Cycle,
+        core: usize,
+        warp: usize,
+        request_id: u64,
+        active_lanes: u32,
+        unique_banks: u32,
+        unique_subbanks: u32,
+        conflict_lanes: u32,
+    ) {
+        if !self.wrote_header {
+            let _ = writeln!(
+                self.writer,
+                "cycle,core,warp,request_id,active_lanes,unique_banks,unique_subbanks,conflict_lanes,conflict_rate"
+            );
+            self.wrote_header = true;
+        }
+        let rate = if active_lanes == 0 {
+            0.0
+        } else {
+            conflict_lanes as f64 / active_lanes as f64
+        };
+        let _ = writeln!(
+            self.writer,
+            "{},{},{},{},{},{},{},{},{:.6}",
+            cycle,
+            core,
+            warp,
+            request_id,
+            active_lanes,
+            unique_banks,
+            unique_subbanks,
+            conflict_lanes,
+            rate
+        );
+    }
+}
+
+impl Drop for SmemConflictSink {
+    fn drop(&mut self) {
+        let _ = self.writer.flush();
+    }
+}
+
+struct SchedulerSink {
+    writer: BufWriter<File>,
+    wrote_header: bool,
+}
+
+impl SchedulerSink {
+    fn new(path: PathBuf) -> std::io::Result<Self> {
+        let file = File::create(path)?;
+        Ok(Self {
+            writer: BufWriter::new(file),
+            wrote_header: false,
+        })
+    }
+
+    fn write_row(
+        &mut self,
+        cycle: Cycle,
+        active_warps: u32,
+        eligible_warps: u32,
+        issued_warps: u32,
+        issue_width: u32,
+    ) {
+        if !self.wrote_header {
+            let _ = writeln!(
+                self.writer,
+                "cycle,active_warps,eligible_warps,issued_warps,issue_width"
+            );
+            self.wrote_header = true;
+        }
+        let _ = writeln!(
+            self.writer,
+            "{},{},{},{},{}",
+            cycle, active_warps, eligible_warps, issued_warps, issue_width
+        );
+    }
+}
+
+impl Drop for SchedulerSink {
     fn drop(&mut self) {
         let _ = self.writer.flush();
     }

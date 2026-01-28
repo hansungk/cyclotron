@@ -1,3 +1,4 @@
 [scheduler]
 enabled = false
+# RTL warp scheduler is single-issue per cycle (RR arbiter selects one warp).
 issue_width = 1
