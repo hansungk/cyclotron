@@ -37,7 +37,7 @@ const FINISH_COUNTDOWN: usize = 100;
 
 #[derive(Clone)]
 struct IssueQueueLine {
-    line: trace::Line,
+    inst: trace::Line,
     checked: bool,
 }
 type IssueQueue = VecDeque<IssueQueueLine>;
@@ -252,18 +252,20 @@ pub unsafe extern "C" fn cyclotron_gmem_rs(
             println!(
                 "cyclotron_gmem_rs: lane {lane}: {}: addr {:x}, data: {:x}, size {}, mask {:b}",
                 if is_store { "store" } else { "load" },
-                req_bits_address[lane], req_bits_data[lane], req_bits_size[lane], req_bits_mask[lane]
+                req_bits_address[lane],
+                req_bits_data[lane],
+                req_bits_size[lane],
+                req_bits_mask[lane]
             );
         }
 
-        if !is_store { // load
+        if !is_store {
             let data = top.gmem_load(address_aligned);
-
             // 1-cycle latency
             resp_valid[lane] = 1;
             resp_bits_tag[lane] = req_bits_tag[lane];
             resp_bits_data[lane] = u32::from_le_bytes(data);
-        } else { // store
+        } else {
             let address = req_bits_address[lane];
             let size = req_bits_size[lane];
             let data = req_bits_data[lane];
@@ -271,7 +273,6 @@ pub unsafe extern "C" fn cyclotron_gmem_rs(
             let word_offset = address % beat_width_bytes;
             let data_unaligned = data >> (word_offset * 8);
             top.gmem_store(address, data_unaligned, size as u32);
-
             // 1-cycle latency
             resp_valid[lane] = 1;
             resp_bits_tag[lane] = req_bits_tag[lane];
@@ -293,7 +294,7 @@ fn push_issue_queue(c: &mut MuonCore, issue_queue: &mut Vec<IssueQueue>, per_war
         if o_line.is_some() && *pop {
             c.get_tracer_mut().consume(w);
             let iline = IssueQueueLine {
-                line: o_line.unwrap(),
+                inst: o_line.unwrap(),
                 checked: false,
             };
             issue_queue[w].push_back(iline);
@@ -577,9 +578,9 @@ pub unsafe fn cyclotron_backend_rs(
 pub unsafe extern "C" fn cyclotron_difftest_reg_rs(
     sim_tick: u8,
     valid: u8,
-    // TODO: tmask
     pc: u32,
     warp_id: u32,
+    tmask: u32,
     rs1_enable: u8,
     rs1_address: u8,
     rs1_data_raw: *const u32,
@@ -625,11 +626,22 @@ pub unsafe extern "C" fn cyclotron_difftest_reg_rs(
     // match RTL against the oldest same-PC model instruction
     let mut checked = false;
     for line in isq.iter_mut() {
-        if line.line.pc != pc {
+        if line.inst.pc != pc {
             continue;
         }
         if line.checked {
             continue;
+        }
+
+        // compare tmask
+        let num_lane_mask = !(!(0u32) << config.num_lanes);
+        let model_tmask = line.inst.tmask & num_lane_mask;
+        if model_tmask != tmask {
+            println!(
+                "DIFFTEST fail: tmask mismatch, pc:{:x}, warp:{}, rtl:{:x}, model:{:x}",
+                pc, warp_id, tmask, model_tmask
+            );
+            panic!("DIFFTEST fail");
         }
 
         let compare_reg_addr_and_exit = |_rtl: u8, _model: u8, _name: &str| {
@@ -653,22 +665,22 @@ pub unsafe extern "C" fn cyclotron_difftest_reg_rs(
         };
 
         if rs1_enable != 0 {
-            compare_reg_addr_and_exit(rs1_address, line.line.rs1_addr, "rs1");
+            compare_reg_addr_and_exit(rs1_address, line.inst.rs1_addr, "rs1");
             // sometimes the collector RTL drives bogus values on x0; ignore that.
             if rs1_address != 0 {
-                compare_reg_data_and_exit(rs1_data, &line.line.rs1_data, "rs1");
+                compare_reg_data_and_exit(rs1_data, &line.inst.rs1_data, "rs1");
             }
         }
         if rs2_enable != 0 {
-            compare_reg_addr_and_exit(rs2_address, line.line.rs2_addr, "rs2");
+            compare_reg_addr_and_exit(rs2_address, line.inst.rs2_addr, "rs2");
             if rs2_address != 0 {
-                compare_reg_data_and_exit(rs2_data, &line.line.rs2_data, "rs2");
+                compare_reg_data_and_exit(rs2_data, &line.inst.rs2_data, "rs2");
             }
         }
         if rs3_enable != 0 {
-            compare_reg_addr_and_exit(rs3_address, line.line.rs3_addr, "rs3");
+            compare_reg_addr_and_exit(rs3_address, line.inst.rs3_addr, "rs3");
             if rs3_address != 0 {
-                compare_reg_data_and_exit(rs3_data, &line.line.rs3_data, "rs3");
+                compare_reg_data_and_exit(rs3_data, &line.inst.rs3_data, "rs3");
             }
         }
 
@@ -734,6 +746,7 @@ fn compare_vector_reg_data(regs_rtl: &[u32], regs_model: &[Option<u32>]) -> Resu
 }
 
 #[no_mangle]
+#[rustfmt::skip]
 /// Gather performance monitoring counters from Muon and generate high-level performance metrics
 /// and pipeline bottleneck analysis.
 pub unsafe extern "C" fn profile_perf_counters_rs(
@@ -751,6 +764,10 @@ pub unsafe extern "C" fn profile_perf_counters_rs(
     per_warp_stalls_busy_ptr: *const u64,
     finished: u8,
 ) {
+    if finished != 1 {
+        return;
+    }
+
     let mut context_guard = CELL.write().unwrap();
     let context = context_guard.as_mut().expect("DPI context not initialized!");
     let sim = &mut context.sim_isa;
@@ -758,12 +775,9 @@ pub unsafe extern "C" fn profile_perf_counters_rs(
     let config = core.conf().clone();
 
     let global_core_id = cluster_id as usize * CORES_PER_CLUSTER + core_id as usize;
-    if finished != 1 {
-        return;
-    } else if context.rtl_finished[global_core_id] {
+    if context.rtl_finished[global_core_id] {
         return;
     }
-
     context.rtl_finished[global_core_id] = true;
 
     let per_warp_cycles_decoded = unsafe { std::slice::from_raw_parts(per_warp_cycles_decoded_ptr, config.num_warps) };

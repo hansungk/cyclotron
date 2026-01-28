@@ -179,21 +179,21 @@ impl Scheduler {
                 });
 
                 let diverges = (then_mask != 0) && (else_mask != 0);
-                let true_then_mask = if invert { else_mask } else { then_mask };
-                let true_else_mask = if invert { then_mask } else { else_mask };
+                let now_mask   = if invert { else_mask } else { then_mask };
+                let later_mask = if invert { then_mask } else { else_mask };
 
                 if diverges {
                     self.base.state.ipdom_stack[wid].push_back(IpdomEntry {
                         pc: decoded_inst.pc + 8,
-                        tmask: true_else_mask,
+                        tmask: later_mask,
                     });
-                    self.base.state.thread_masks[wid] = true_then_mask;
+                    self.base.state.thread_masks[wid] = now_mask;
                 }
                 SchedulerWriteback {
-                    tmask: diverges.then_some(true_then_mask),
+                    tmask: diverges.then_some(now_mask),
                     ipdom_push: Some(IpdomPush {
                         restored_mask: then_mask | else_mask,
-                        else_mask: true_else_mask,
+                        else_mask: later_mask,
                         else_pc: decoded_inst.pc + 8,
                     }),
                     ..SchedulerWriteback::default()
