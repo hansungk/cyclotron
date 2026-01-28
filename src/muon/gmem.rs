@@ -13,7 +13,7 @@ use crate::timeflow::{
     GmemPolicyConfig, GmemReject, GmemRequest, GmemRequestKind, GmemStats, IcacheIssue,
     IcacheReject, IcacheRequest, IcacheSubgraph, LsuIssue, LsuReject, LsuRejectReason, LsuSubgraph,
     OperandFetchQueue, SmemFlowConfig, SmemIssue, SmemReject, SmemRequest, SmemStats, TensorQueue,
-    WritebackPayload, WritebackQueue,
+    WarpIssueScheduler, WritebackPayload, WritebackQueue,
 };
 use crate::timeflow::lsu::LsuPayload;
 use crate::timeq::{Cycle, Ticket};
@@ -31,7 +31,11 @@ pub struct CoreTimingModel {
     operand_fetch: OperandFetchQueue,
     writeback: WritebackQueue,
     pending_writeback: VecDeque<WritebackPayload>,
+    pending_dma: VecDeque<u32>,
+    pending_tensor: VecDeque<u32>,
+    issue_scheduler: WarpIssueScheduler,
     barrier: BarrierManager,
+    barrier_inflight: Vec<bool>,
     fence: FenceQueue,
     pending_fence: VecDeque<FenceRequest>,
     fence_inflight: Vec<Option<u64>>,
@@ -116,6 +120,7 @@ impl CoreTimingModel {
         let fence = FenceQueue::new(config.fence.clone());
         let dma = DmaQueue::new(config.dma.clone());
         let tensor = TensorQueue::new(config.tensor.clone());
+        let issue_scheduler = WarpIssueScheduler::new(config.scheduler.clone());
         let trace = trace_path.and_then(|path| match TraceSink::new(path) {
             Ok(sink) => Some(sink),
             Err(err) => {
@@ -131,7 +136,11 @@ impl CoreTimingModel {
             operand_fetch,
             writeback,
             pending_writeback: VecDeque::new(),
+            pending_dma: VecDeque::new(),
+            pending_tensor: VecDeque::new(),
+            issue_scheduler,
             barrier,
+            barrier_inflight: vec![false; num_warps],
             fence,
             pending_fence: VecDeque::new(),
             fence_inflight: vec![None; num_warps],
@@ -197,6 +206,8 @@ impl CoreTimingModel {
         request.lane_addrs = None;
         let issue_bytes = request.bytes;
         let request_id = request.id;
+        let dma_trigger = !request.is_load && self.dma.matches_mmio(request.addr);
+        let tensor_trigger = !request.is_load && self.tensor.matches_mmio(request.addr);
         if request_id >= self.next_gmem_id {
             self.next_gmem_id = request_id.saturating_add(1);
         }
@@ -219,6 +230,12 @@ impl CoreTimingModel {
                 self.add_gmem_pending(warp, request_id, ready_at, scheduler, split_count);
                 if is_flush {
                     self.register_fence(warp, request_id, scheduler);
+                }
+                if dma_trigger {
+                    self.enqueue_dma(now, issue_bytes.max(1));
+                }
+                if tensor_trigger {
+                    self.enqueue_tensor(now, issue_bytes.max(1));
                 }
                 self.trace_event(now, "gmem_issue", warp, Some(request_id), issue_bytes, None);
                 info!(
@@ -361,6 +378,30 @@ impl CoreTimingModel {
         }
     }
 
+    pub fn notify_csr_write(&mut self, now: Cycle, csr_addr: u32) {
+        if self.dma.matches_csr(csr_addr) {
+            self.enqueue_dma(now, 4);
+        }
+        if self.tensor.matches_csr(csr_addr) {
+            self.enqueue_tensor(now, 4);
+        }
+    }
+
+    pub fn notify_barrier_arrive(&mut self, now: Cycle, warp: usize, scheduler: &mut Scheduler) {
+        if !self.barrier.is_enabled() {
+            return;
+        }
+        let _ = self.barrier.arrive(now, warp);
+        if let Some(slot) = self.barrier_inflight.get_mut(warp) {
+            *slot = true;
+        }
+        scheduler.set_resource_wait_until(warp, Some(Cycle::MAX));
+    }
+
+    pub fn select_issue_mask(&mut self, now: Cycle, eligible: &[bool]) -> Vec<bool> {
+        self.issue_scheduler.select(now, eligible)
+    }
+
     pub fn allow_fetch(
         &mut self,
         now: Cycle,
@@ -449,6 +490,9 @@ impl CoreTimingModel {
         self.tensor.tick(now);
         if let Some(released) = self.barrier.tick(now) {
             for warp in released {
+                if let Some(slot) = self.barrier_inflight.get_mut(warp) {
+                    *slot = false;
+                }
                 scheduler.clear_resource_wait(warp);
             }
         }
@@ -486,6 +530,8 @@ impl CoreTimingModel {
 
         self.drain_pending_writeback(now);
         self.drain_pending_fence(now);
+        self.drain_pending_dma(now);
+        self.drain_pending_tensor(now);
 
         for completion in gmem_completions {
             let is_flush = completion.request.kind.is_flush_l0()
@@ -615,6 +661,14 @@ impl CoreTimingModel {
         self.graph.clear_smem_stats();
         self.last_logged_gmem_completed = 0;
         self.last_logged_smem_completed = 0;
+    }
+
+    pub fn dma_completed(&self) -> u64 {
+        self.dma.completed()
+    }
+
+    pub fn tensor_completed(&self) -> u64 {
+        self.tensor.completed()
     }
 
     fn trace_event(
@@ -867,6 +921,42 @@ impl CoreTimingModel {
         }
     }
 
+    fn drain_pending_dma(&mut self, now: Cycle) {
+        let mut remaining = VecDeque::new();
+        while let Some(bytes) = self.pending_dma.pop_front() {
+            if self.dma.try_issue(now, bytes).is_err() {
+                remaining.push_back(bytes);
+                remaining.extend(self.pending_dma.drain(..));
+                break;
+            }
+        }
+        self.pending_dma = remaining;
+    }
+
+    fn enqueue_dma(&mut self, now: Cycle, bytes: u32) {
+        if self.dma.try_issue(now, bytes).is_err() {
+            self.pending_dma.push_back(bytes);
+        }
+    }
+
+    fn drain_pending_tensor(&mut self, now: Cycle) {
+        let mut remaining = VecDeque::new();
+        while let Some(bytes) = self.pending_tensor.pop_front() {
+            if self.tensor.try_issue(now, bytes).is_err() {
+                remaining.push_back(bytes);
+                remaining.extend(self.pending_tensor.drain(..));
+                break;
+            }
+        }
+        self.pending_tensor = remaining;
+    }
+
+    fn enqueue_tensor(&mut self, now: Cycle, bytes: u32) {
+        if self.tensor.try_issue(now, bytes).is_err() {
+            self.pending_tensor.push_back(bytes);
+        }
+    }
+
     fn add_gmem_pending(
         &mut self,
         warp: usize,
@@ -1024,7 +1114,17 @@ impl CoreTimingModel {
             .get(warp)
             .map(|entry| entry.is_some())
             .unwrap_or(false);
-        if !gmem_pending && !smem_pending && !icache_pending && !fence_pending {
+        let barrier_pending = self
+            .barrier_inflight
+            .get(warp)
+            .copied()
+            .unwrap_or(false);
+        if !gmem_pending
+            && !smem_pending
+            && !icache_pending
+            && !fence_pending
+            && !barrier_pending
+        {
             scheduler.clear_resource_wait(warp);
         }
     }
@@ -1347,5 +1447,65 @@ mod tests {
             stats.queue_full_rejects,
             stats.busy_rejects
         );
+    }
+
+    #[test]
+    fn mmio_store_triggers_dma_queue() {
+        let mut scheduler = make_scheduler(1);
+        scheduler.spawn_single_warp();
+
+        let mut cfg = CoreGraphConfig::default();
+        cfg.dma.enabled = true;
+        cfg.dma.mmio_base = 0x1000;
+        cfg.dma.mmio_size = 0x100;
+        cfg.dma.queue.base_latency = 1;
+        cfg.lsu.queues.global_ldq.queue_capacity = 8;
+        cfg.lsu.queues.global_stq.queue_capacity = 8;
+        let logger = Arc::new(Logger::silent());
+        let cluster_gmem = Arc::new(std::sync::RwLock::new(ClusterGmemGraph::new(
+            cfg.gmem.clone(),
+            1,
+            1,
+        )));
+        let mut model = CoreTimingModel::new(cfg, 1, 0, 0, cluster_gmem, logger);
+
+        let now = module_now(&scheduler);
+        let mut request = GmemRequest::new(0, 4, 0x1, false);
+        request.addr = 0x1000;
+        model
+            .issue_gmem_request(now, 0, request, &mut scheduler)
+            .expect("mmio store should accept");
+
+        for cycle in now..now + 5 {
+            model.tick(cycle, &mut scheduler);
+        }
+
+        assert!(model.dma_completed() >= 1);
+    }
+
+    #[test]
+    fn csr_write_triggers_tensor_queue() {
+        let mut scheduler = make_scheduler(1);
+        scheduler.spawn_single_warp();
+
+        let mut cfg = CoreGraphConfig::default();
+        cfg.tensor.enabled = true;
+        cfg.tensor.csr_addrs = vec![0x7c0];
+        cfg.tensor.queue.base_latency = 1;
+        let logger = Arc::new(Logger::silent());
+        let cluster_gmem = Arc::new(std::sync::RwLock::new(ClusterGmemGraph::new(
+            cfg.gmem.clone(),
+            1,
+            1,
+        )));
+        let mut model = CoreTimingModel::new(cfg, 1, 0, 0, cluster_gmem, logger);
+
+        let now = module_now(&scheduler);
+        model.notify_csr_write(now, 0x7c0);
+        for cycle in now..now + 5 {
+            model.tick(cycle, &mut scheduler);
+        }
+
+        assert!(model.tensor_completed() >= 1);
     }
 }

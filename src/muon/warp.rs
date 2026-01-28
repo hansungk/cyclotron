@@ -222,6 +222,22 @@ impl Warp {
             }
         }
 
+        if decoded.opcode == Opcode::SYSTEM && decoded.f3 != 0 {
+            let is_write = match decoded.f3 {
+                1 | 5 => true,              // csrrw / csrrwi
+                2 | 3 => decoded.rs1_addr != 0, // csrrs / csrrc
+                6 | 7 => decoded.csr_imm != 0,  // csrrsi / csrrci
+                _ => false,
+            };
+            if is_write {
+                timing_model.notify_csr_write(now, decoded.imm32);
+            }
+        }
+
+        if decoded.opcode == Opcode::CUSTOM2 && decoded.raw.bit(17) {
+            timing_model.notify_barrier_arrive(now, self.wid, scheduler);
+        }
+
         // operand collection
         let rf = self.base.state.reg_file.as_slice();
         let issued = ExecuteUnit::collect(&uop, rf);

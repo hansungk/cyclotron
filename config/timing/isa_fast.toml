@@ -206,6 +206,9 @@ completions_per_cycle = 1024
 
 [dma]
 enabled = false
+mmio_base = 0
+mmio_size = 0
+csr_addrs = []
 base_latency = 0
 bytes_per_cycle = 4096
 queue_capacity = 1024
@@ -213,6 +216,9 @@ completions_per_cycle = 1024
 
 [tensor]
 enabled = false
+mmio_base = 0
+mmio_size = 0
+csr_addrs = []
 base_latency = 0
 bytes_per_cycle = 4096
 queue_capacity = 1024

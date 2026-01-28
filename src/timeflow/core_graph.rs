@@ -12,6 +12,7 @@ use crate::timeflow::smem::{
     SmemCompletion, SmemFlowConfig, SmemIssue, SmemReject, SmemRequest, SmemStats, SmemSubgraph,
 };
 use crate::timeflow::tensor::TensorConfig;
+use crate::timeflow::warp_scheduler::WarpSchedulerConfig;
 use crate::timeflow::writeback::WritebackConfig;
 use crate::timeflow::types::CoreFlowPayload;
 use crate::timeq::Cycle;
@@ -39,6 +40,8 @@ pub struct CoreGraphConfig {
     pub dma: DmaConfig,
     #[serde(default)]
     pub tensor: TensorConfig,
+    #[serde(default)]
+    pub scheduler: WarpSchedulerConfig,
 }
 
 impl Default for CoreGraphConfig {
@@ -54,6 +57,7 @@ impl Default for CoreGraphConfig {
             fence: FenceConfig::default(),
             dma: DmaConfig::default(),
             tensor: TensorConfig::default(),
+            scheduler: WarpSchedulerConfig::default(),
         }
     }
 }

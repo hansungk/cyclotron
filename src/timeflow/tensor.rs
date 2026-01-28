@@ -23,6 +23,9 @@ pub struct TensorReject {
 #[serde(default)]
 pub struct TensorConfig {
     pub enabled: bool,
+    pub mmio_base: u64,
+    pub mmio_size: u64,
+    pub csr_addrs: Vec<u32>,
     #[serde(flatten)]
     pub queue: ServerConfig,
 }
@@ -31,6 +34,9 @@ impl Default for TensorConfig {
     fn default() -> Self {
         Self {
             enabled: false,
+            mmio_base: 0,
+            mmio_size: 0,
+            csr_addrs: Vec::new(),
             queue: ServerConfig {
                 base_latency: 20,
                 bytes_per_cycle: 256,
@@ -46,6 +52,9 @@ pub struct TensorQueue {
     enabled: bool,
     server: TimedServer<()>,
     completed: u64,
+    mmio_base: u64,
+    mmio_size: u64,
+    csr_addrs: Vec<u32>,
 }
 
 impl TensorQueue {
@@ -54,6 +63,9 @@ impl TensorQueue {
             enabled: config.enabled,
             server: TimedServer::new(config.queue),
             completed: 0,
+            mmio_base: config.mmio_base,
+            mmio_size: config.mmio_size,
+            csr_addrs: config.csr_addrs,
         }
     }
 
@@ -96,6 +108,21 @@ impl TensorQueue {
 
     pub fn completed(&self) -> u64 {
         self.completed
+    }
+
+    pub fn matches_mmio(&self, addr: u64) -> bool {
+        if !self.enabled || self.mmio_size == 0 {
+            return false;
+        }
+        let end = self.mmio_base.saturating_add(self.mmio_size);
+        addr >= self.mmio_base && addr < end
+    }
+
+    pub fn matches_csr(&self, addr: u32) -> bool {
+        if !self.enabled {
+            return false;
+        }
+        self.csr_addrs.iter().any(|&csr| csr == addr)
     }
 }
 

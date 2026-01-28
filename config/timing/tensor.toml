@@ -1,5 +1,16 @@
 [tensor]
 enabled = false
+# MxGemmini MMIO range from radiance/subsystem/Configs.scala:
+# mmioAddress = cluster_base + peripheralAddrOffset + 0x4000
+# WithRadianceCluster(clusterId): base = 0x4000_0000 + 0x10_0000 * clusterId
+# peripheralAddrOffset = 0x80000
+# -> cluster0 mxgemmini0 MMIO base = 0x4008_4000, size = 0x1000
+# For WithRadianceGemmini (non-Mx), use:
+#   mmioAddress = smem_base + smem_size + 0x3000 + 0x100 * gemmini_index
+mmio_base = 0x40084000
+mmio_size = 0x1000
+# Gemmini uses MMIO (not CSRs) by default; leave empty unless you add CSR hooks.
+csr_addrs = []
 base_latency = 50
 bytes_per_cycle = 256
 queue_capacity = 8

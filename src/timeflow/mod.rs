@@ -11,6 +11,7 @@ pub mod server_node;
 pub mod smem;
 pub mod tensor;
 pub mod types;
+pub mod warp_scheduler;
 pub mod writeback;
 
 pub use core_graph::{CoreGraph, CoreGraphConfig};
@@ -34,6 +35,7 @@ pub use smem::{
 };
 pub use tensor::{TensorConfig, TensorIssue, TensorQueue, TensorReject, TensorRejectReason};
 pub use types::{CoreFlowPayload, LinkId, NodeId};
+pub use warp_scheduler::{WarpIssueScheduler, WarpSchedulerConfig};
 pub use writeback::{
     WritebackConfig, WritebackIssue, WritebackPayload, WritebackQueue, WritebackReject,
     WritebackRejectReason,

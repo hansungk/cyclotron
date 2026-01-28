@@ -140,21 +140,37 @@ impl MuonCore {
         let now = module_now(&self.scheduler);
         self.timing_model.tick(now, &mut self.scheduler);
 
+        let eligible = ibuf
+            .0
+            .iter()
+            .map(|entry| entry.is_some())
+            .collect::<Vec<_>>();
+        let issue_mask = self.timing_model.select_issue_mask(now, &eligible);
+
         let mut writebacks: Vec<Option<Writeback>> = Vec::with_capacity(self.warps.len());
 
         let warps = self.warps.iter_mut();
         let ibuf_entries = ibuf.0.iter().copied();
 
-        for (warp, ibuf) in zip(warps, ibuf_entries) {
+        for (wid, (warp, ibuf)) in zip(warps, ibuf_entries).enumerate() {
             let wb_opt = match ibuf {
-                Some(ib) => warp.backend(
-                    ib,
-                    &mut self.scheduler,
-                    neutrino,
-                    &mut self.shared_mem,
-                    &mut self.timing_model,
-                    now,
-                )?,
+                Some(ib) => {
+                    if !issue_mask.get(wid).copied().unwrap_or(false) {
+                        self.scheduler
+                            .set_resource_wait_until(wid, Some(now.saturating_add(1)));
+                        self.scheduler.replay_instruction(wid);
+                        None
+                    } else {
+                        warp.backend(
+                            ib,
+                            &mut self.scheduler,
+                            neutrino,
+                            &mut self.shared_mem,
+                            &mut self.timing_model,
+                            now,
+                        )?
+                    }
+                }
                 None => None,
             };
             writebacks.push(wb_opt);

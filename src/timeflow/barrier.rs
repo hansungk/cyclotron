@@ -101,6 +101,10 @@ impl BarrierManager {
         });
         released
     }
+
+    pub fn is_enabled(&self) -> bool {
+        self.enabled
+    }
 }
 
 #[cfg(test)]
