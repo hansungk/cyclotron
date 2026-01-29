@@ -50,10 +50,7 @@ impl GmemSubgraph {
                 if assigned_id >= self.next_id {
                     self.next_id = assigned_id.saturating_add(1);
                 }
-                self.stats.issued = self.stats.issued.saturating_add(1);
-                self.stats.bytes_issued = self.stats.bytes_issued.saturating_add(bytes as u64);
-                self.stats.inflight = self.stats.inflight.saturating_add(1);
-                self.stats.max_inflight = self.stats.max_inflight.max(self.stats.inflight);
+                self.stats.record_issue(bytes);
                 Ok(GmemIssue {
                     request_id: assigned_id,
                     ticket,
@@ -64,7 +61,7 @@ impl GmemSubgraph {
                     request,
                     available_at,
                 } => {
-                    self.stats.busy_rejects += 1;
+                    self.stats.record_busy_reject();
                     let mut retry_at = available_at;
                     if retry_at <= now {
                         retry_at = now.saturating_add(1);
@@ -77,7 +74,7 @@ impl GmemSubgraph {
                     })
                 }
                 Backpressure::QueueFull { request, .. } => {
-                    self.stats.queue_full_rejects += 1;
+                    self.stats.record_queue_full_reject();
                     let retry_at = now.saturating_add(1);
                     let request = extract_gmem_request(request);
                     Err(GmemReject {
@@ -96,11 +93,7 @@ impl GmemSubgraph {
             while let Some(result) = node.take_ready(now) {
                 match result.payload {
                     CoreFlowPayload::Gmem(request) => {
-                        self.stats.completed = self.stats.completed.saturating_add(1);
-                        self.stats.bytes_completed =
-                            self.stats.bytes_completed.saturating_add(request.bytes as u64);
-                        self.stats.inflight = self.stats.inflight.saturating_sub(1);
-                        self.stats.last_completion_cycle = Some(now);
+                        self.stats.record_completion(request.bytes, now);
                         completions.push_back(GmemCompletion {
                             ticket_ready_at: result.ticket.ready_at(),
                             completed_at: now,
@@ -111,9 +104,6 @@ impl GmemSubgraph {
                 }
             }
         });
-        self.stats.max_completion_queue = self
-            .stats
-            .max_completion_queue
-            .max(self.completions.len() as u64);
+        self.stats.update_completion_queue(self.completions.len());
     }
 }

@@ -262,7 +262,7 @@ impl ClusterGmemGraph {
                     ));
                 }
                 if !self.l0_mshrs[core_id].can_allocate(l0_line) {
-                    self.cores[core_id].stats.queue_full_rejects += 1;
+                    self.cores[core_id].stats.record_queue_full_reject();
                     return Err(GmemReject {
                         request,
                         retry_at: now.saturating_add(1),
@@ -275,7 +275,7 @@ impl ClusterGmemGraph {
                 l0_new = match self.l0_mshrs[core_id].ensure_entry(l0_line, meta) {
                     Ok(new_entry) => new_entry,
                     Err(_) => {
-                        self.cores[core_id].stats.queue_full_rejects += 1;
+                        self.cores[core_id].stats.record_queue_full_reject();
                         return Err(GmemReject {
                             request,
                             retry_at: now.saturating_add(1),
@@ -289,7 +289,7 @@ impl ClusterGmemGraph {
                     l0_new = match self.l0_mshrs[core_id].ensure_entry(l0_line, meta) {
                         Ok(new_entry) => new_entry,
                         Err(_) => {
-                            self.cores[core_id].stats.queue_full_rejects += 1;
+                            self.cores[core_id].stats.record_queue_full_reject();
                             return Err(GmemReject {
                                 request,
                                 retry_at: now.saturating_add(1),
@@ -320,7 +320,7 @@ impl ClusterGmemGraph {
                         core_id, cluster_id, l1_bank, l2_bank, l0_line, l1_line, l2_line,
                         l0_new, l1_new, l2_new,
                     );
-                    self.cores[core_id].stats.queue_full_rejects += 1;
+                    self.cores[core_id].stats.record_queue_full_reject();
                     return Err(GmemReject {
                         request,
                         retry_at: now.saturating_add(1),
@@ -341,7 +341,7 @@ impl ClusterGmemGraph {
                             core_id, cluster_id, l1_bank, l2_bank, l0_line, l1_line, l2_line,
                             l0_new, l1_new, l2_new,
                         );
-                        self.cores[core_id].stats.queue_full_rejects += 1;
+                        self.cores[core_id].stats.record_queue_full_reject();
                         return Err(GmemReject {
                             request,
                             retry_at: now.saturating_add(1),
@@ -355,7 +355,7 @@ impl ClusterGmemGraph {
                     l0_new = match self.l0_mshrs[core_id].ensure_entry(l0_line, meta) {
                         Ok(new_entry) => new_entry,
                         Err(_) => {
-                            self.cores[core_id].stats.queue_full_rejects += 1;
+                            self.cores[core_id].stats.record_queue_full_reject();
                             return Err(GmemReject {
                                 request,
                                 retry_at: now.saturating_add(1),
@@ -373,7 +373,7 @@ impl ClusterGmemGraph {
                                 core_id, cluster_id, l1_bank, l2_bank, l0_line, l1_line,
                                 l2_line, l0_new, l1_new, l2_new,
                             );
-                            self.cores[core_id].stats.queue_full_rejects += 1;
+                            self.cores[core_id].stats.record_queue_full_reject();
                             return Err(GmemReject {
                                 request,
                                 retry_at: now.saturating_add(1),
@@ -405,7 +405,7 @@ impl ClusterGmemGraph {
                         core_id, cluster_id, l1_bank, l2_bank, l0_line, l1_line, l2_line,
                         l0_new, l1_new, l2_new,
                     );
-                    self.cores[core_id].stats.queue_full_rejects += 1;
+                    self.cores[core_id].stats.record_queue_full_reject();
                     return Err(GmemReject {
                         request,
                         retry_at: now.saturating_add(1),
@@ -426,7 +426,7 @@ impl ClusterGmemGraph {
                             core_id, cluster_id, l1_bank, l2_bank, l0_line, l1_line, l2_line,
                             l0_new, l1_new, l2_new,
                         );
-                        self.cores[core_id].stats.queue_full_rejects += 1;
+                        self.cores[core_id].stats.record_queue_full_reject();
                         return Err(GmemReject {
                             request,
                             retry_at: now.saturating_add(1),
@@ -535,7 +535,7 @@ impl ClusterGmemGraph {
                     available_at,
                 } => {
                     let stats = &mut self.cores[core_id].stats;
-                    stats.busy_rejects += 1;
+                    stats.record_busy_reject();
                     let mut retry_at = available_at;
                     if retry_at <= now {
                         retry_at = now.saturating_add(1);
@@ -549,7 +549,7 @@ impl ClusterGmemGraph {
                 }
                 Backpressure::QueueFull { request, .. } => {
                     let stats = &mut self.cores[core_id].stats;
-                    stats.queue_full_rejects += 1;
+                    stats.record_queue_full_reject();
                     let retry_at = now.saturating_add(1);
                     let request = extract_gmem_request(request);
                     Err(GmemReject {
@@ -572,7 +572,7 @@ impl ClusterGmemGraph {
         let stats = &mut self.cores[core_id].stats;
         match bp {
             AdmissionBackpressure::Busy { retry_at } => {
-                stats.busy_rejects += 1;
+                stats.record_busy_reject();
                 GmemReject {
                     request: request.clone(),
                     retry_at,
@@ -580,7 +580,7 @@ impl ClusterGmemGraph {
                 }
             }
             AdmissionBackpressure::QueueFull { retry_at } => {
-                stats.queue_full_rejects += 1;
+                stats.record_queue_full_reject();
                 GmemReject {
                     request: request.clone(),
                     retry_at,
@@ -608,33 +608,22 @@ impl ClusterGmemGraph {
             if request_id >= core_state.next_id {
                 core_state.next_id = request_id.saturating_add(1);
             }
-            let stats = &mut core_state.stats;
-            stats.issued = stats.issued.saturating_add(1);
-            stats.bytes_issued = stats.bytes_issued.saturating_add(bytes as u64);
-            stats.inflight = stats.inflight.saturating_add(1);
-            stats.max_inflight = stats.max_inflight.max(stats.inflight);
+            core_state.stats.record_issue(bytes);
         }
     }
 
     fn push_completion(&mut self, request: GmemRequest, ticket_ready_at: Cycle, now: Cycle) {
         let core_id = request.core_id;
         if let Some(core_state) = self.cores.get_mut(core_id) {
-            core_state.stats.completed = core_state.stats.completed.saturating_add(1);
-            core_state.stats.bytes_completed = core_state
-                .stats
-                .bytes_completed
-                .saturating_add(request.bytes as u64);
-            core_state.stats.inflight = core_state.stats.inflight.saturating_sub(1);
-            core_state.stats.last_completion_cycle = Some(now);
+            core_state.stats.record_completion(request.bytes, now);
             core_state.completions.push_back(GmemCompletion {
                 ticket_ready_at,
                 completed_at: now,
                 request,
             });
-            core_state.stats.max_completion_queue = core_state
+            core_state
                 .stats
-                .max_completion_queue
-                .max(core_state.completions.len() as u64);
+                .update_completion_queue(core_state.completions.len());
         }
     }
 

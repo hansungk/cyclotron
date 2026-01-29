@@ -3,132 +3,27 @@ use serde::Deserialize;
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(default)]
 pub struct GmemPolicyConfig {
-    #[serde(default = "default_l0_hit_rate")]
     pub l0_hit_rate: f64,
-    #[serde(default = "default_l1_hit_rate")]
     pub l1_hit_rate: f64,
-    #[serde(default = "default_l2_hit_rate")]
     pub l2_hit_rate: f64,
-    #[serde(default = "default_l1_writeback_rate")]
     pub l1_writeback_rate: f64,
-    #[serde(default = "default_l2_writeback_rate")]
     pub l2_writeback_rate: f64,
-    #[serde(default = "default_l0_line_bytes")]
     pub l0_line_bytes: u32,
-    #[serde(default = "default_l1_line_bytes")]
     pub l1_line_bytes: u32,
-    #[serde(default = "default_l2_line_bytes")]
     pub l2_line_bytes: u32,
-    #[serde(default = "default_l0_sets")]
     pub l0_sets: usize,
-    #[serde(default = "default_l0_ways")]
     pub l0_ways: usize,
-    #[serde(default = "default_l1_sets")]
     pub l1_sets: usize,
-    #[serde(default = "default_l1_ways")]
     pub l1_ways: usize,
-    #[serde(default = "default_l2_sets")]
     pub l2_sets: usize,
-    #[serde(default = "default_l2_ways")]
     pub l2_ways: usize,
-    #[serde(default = "default_l0_flush_mmio_base")]
     pub l0_flush_mmio_base: u64,
-    #[serde(default = "default_l0_flush_mmio_stride")]
     pub l0_flush_mmio_stride: u64,
-    #[serde(default = "default_l0_flush_mmio_size")]
     pub l0_flush_mmio_size: u64,
-    #[serde(default = "default_l1_banks")]
     pub l1_banks: usize,
-    #[serde(default = "default_l2_banks")]
     pub l2_banks: usize,
-    #[serde(default = "default_flush_bytes")]
     pub flush_bytes: u32,
-    #[serde(default = "default_policy_seed")]
     pub seed: u64,
-}
-
-fn default_l0_hit_rate() -> f64 {
-    0.4
-}
-
-fn default_l1_hit_rate() -> f64 {
-    0.7
-}
-
-fn default_l2_hit_rate() -> f64 {
-    0.9
-}
-
-fn default_l1_writeback_rate() -> f64 {
-    0.1
-}
-
-fn default_l2_writeback_rate() -> f64 {
-    0.1
-}
-
-fn default_l0_line_bytes() -> u32 {
-    64
-}
-
-fn default_l1_line_bytes() -> u32 {
-    32
-}
-
-fn default_l2_line_bytes() -> u32 {
-    128
-}
-
-fn default_l0_sets() -> usize {
-    512
-}
-
-fn default_l0_ways() -> usize {
-    1
-}
-
-fn default_l1_sets() -> usize {
-    512
-}
-
-fn default_l1_ways() -> usize {
-    4
-}
-
-fn default_l2_sets() -> usize {
-    512
-}
-
-fn default_l2_ways() -> usize {
-    8
-}
-
-fn default_l0_flush_mmio_base() -> u64 {
-    0x0008_0200
-}
-
-fn default_l0_flush_mmio_stride() -> u64 {
-    0x100
-}
-
-fn default_l0_flush_mmio_size() -> u64 {
-    0x100
-}
-
-fn default_l1_banks() -> usize {
-    2
-}
-
-fn default_l2_banks() -> usize {
-    1
-}
-
-fn default_flush_bytes() -> u32 {
-    4096
-}
-
-fn default_policy_seed() -> u64 {
-    0
 }
 
 impl Default for GmemPolicyConfig {

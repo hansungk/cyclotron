@@ -189,41 +189,7 @@ pub fn aggregate_summaries(per_core: &[CorePerfSummary]) -> AggregatePerfSummary
             .smem_sum
             .saturating_add(core.latencies.smem_sum);
 
-        total.gmem_stats.issued = total.gmem_stats.issued.saturating_add(core.gmem_stats.issued);
-        total.gmem_stats.completed =
-            total.gmem_stats.completed.saturating_add(core.gmem_stats.completed);
-        total.gmem_stats.queue_full_rejects = total
-            .gmem_stats
-            .queue_full_rejects
-            .saturating_add(core.gmem_stats.queue_full_rejects);
-        total.gmem_stats.busy_rejects = total
-            .gmem_stats
-            .busy_rejects
-            .saturating_add(core.gmem_stats.busy_rejects);
-        total.gmem_stats.bytes_issued = total
-            .gmem_stats
-            .bytes_issued
-            .saturating_add(core.gmem_stats.bytes_issued);
-        total.gmem_stats.bytes_completed = total
-            .gmem_stats
-            .bytes_completed
-            .saturating_add(core.gmem_stats.bytes_completed);
-        total.gmem_stats.max_inflight = total
-            .gmem_stats
-            .max_inflight
-            .max(core.gmem_stats.max_inflight);
-        total.gmem_stats.max_completion_queue = total
-            .gmem_stats
-            .max_completion_queue
-            .max(core.gmem_stats.max_completion_queue);
-        total.gmem_stats.last_completion_cycle = match (
-            total.gmem_stats.last_completion_cycle,
-            core.gmem_stats.last_completion_cycle,
-        ) {
-            (Some(a), Some(b)) => Some(a.max(b)),
-            (None, Some(b)) => Some(b),
-            (a, None) => a,
-        };
+        total.gmem_stats.accumulate_from(&core.gmem_stats);
 
         total.smem_stats.issued = total.smem_stats.issued.saturating_add(core.smem_stats.issued);
         total.smem_stats.completed =

@@ -176,7 +176,7 @@ impl CoreTimingModel {
             .read()
             .unwrap()
             .stats(self.core_id)
-            .completed;
+            .completed();
         let prev_smem = self.graph.smem_stats().completed;
         let mut gmem_completions = Vec::new();
         let mut gmem_stats_snapshot = None;
@@ -252,19 +252,19 @@ impl CoreTimingModel {
 
         if self.log_stats {
             if let Some(gmem_stats) = gmem_stats_snapshot {
-                if gmem_stats.completed != prev_gmem {
+                if gmem_stats.completed() != prev_gmem {
                     info!(
                         self.logger,
                         "[gmem] stats issued={} completed={} inflight={} queue_full_rejects={} busy_rejects={} bytes_issued={} bytes_completed={}",
-                        gmem_stats.issued,
-                        gmem_stats.completed,
-                        gmem_stats.inflight,
-                        gmem_stats.queue_full_rejects,
-                        gmem_stats.busy_rejects,
-                        gmem_stats.bytes_issued,
-                        gmem_stats.bytes_completed
+                        gmem_stats.issued(),
+                        gmem_stats.completed(),
+                        gmem_stats.inflight(),
+                        gmem_stats.queue_full_rejects(),
+                        gmem_stats.busy_rejects(),
+                        gmem_stats.bytes_issued(),
+                        gmem_stats.bytes_completed()
                     );
-                    self.last_logged_gmem_completed = gmem_stats.completed;
+                    self.last_logged_gmem_completed = gmem_stats.completed();
                 }
             }
 

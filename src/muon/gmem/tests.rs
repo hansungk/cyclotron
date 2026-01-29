@@ -88,7 +88,7 @@ fn accepted_request_marks_pending_until_completion() {
     let max_cycles = 500;
     for _ in 0..max_cycles {
         model.tick(cycle, &mut scheduler);
-        if model.stats().gmem.completed >= 1 {
+        if model.stats().gmem.completed() >= 1 {
             completed = true;
             break;
         }
@@ -103,8 +103,8 @@ fn accepted_request_marks_pending_until_completion() {
         model.outstanding_gmem()
     );
     assert!(!model.has_pending_gmem(0));
-    assert_eq!(model.stats().gmem.completed, 1);
-    assert!(model.stats().gmem.issued >= 1);
+    assert_eq!(model.stats().gmem.completed(), 1);
+    assert!(model.stats().gmem.issued() >= 1);
 }
 
 #[test]
@@ -345,7 +345,7 @@ fn sequential_loads_benefit_from_cache() {
         .expect("first request should accept");
 
     let mut cycle = now;
-    while model.stats().gmem.completed == 0 {
+    while model.stats().gmem.completed() == 0 {
         model.tick(cycle, &mut scheduler);
         cycle = cycle.saturating_add(1);
     }
@@ -356,7 +356,7 @@ fn sequential_loads_benefit_from_cache() {
         .issue_gmem_request(cycle, 0, req1, &mut scheduler)
         .expect("second request should accept");
 
-    while model.stats().gmem.completed < 2 {
+    while model.stats().gmem.completed() < 2 {
         model.tick(cycle, &mut scheduler);
         cycle = cycle.saturating_add(1);
     }

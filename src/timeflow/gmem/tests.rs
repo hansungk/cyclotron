@@ -99,12 +99,12 @@ fn gmem_stats_track_activity() {
         subgraph.collect_completions(&mut graph, cycle);
     }
     let stats = subgraph.stats;
-    assert_eq!(1, stats.issued);
-    assert_eq!(1, stats.completed);
-    assert_eq!(16, stats.bytes_issued);
-    assert_eq!(16, stats.bytes_completed);
-    assert_eq!(0, stats.inflight);
-    assert!(stats.max_inflight >= 1);
+    assert_eq!(1, stats.issued());
+    assert_eq!(1, stats.completed());
+    assert_eq!(16, stats.bytes_issued());
+    assert_eq!(16, stats.bytes_completed());
+    assert_eq!(0, stats.inflight());
+    assert!(stats.max_inflight() >= 1);
 }
 
 #[test]

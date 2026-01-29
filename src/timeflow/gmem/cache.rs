@@ -2,7 +2,7 @@
 pub(crate) struct CacheTagArray {
     sets: usize,
     ways: usize,
-    tags: Vec<Vec<Option<u64>>>,
+    tags: Vec<Option<u64>>,
     lru: Vec<Vec<usize>>,
 }
 
@@ -10,10 +10,9 @@ impl CacheTagArray {
     pub(crate) fn new(sets: usize, ways: usize) -> Self {
         let sets = sets.max(1);
         let ways = ways.max(1);
-        let mut tags = Vec::with_capacity(sets);
+        let tags = vec![None; sets * ways];
         let mut lru = Vec::with_capacity(sets);
         for _ in 0..sets {
-            tags.push(vec![None; ways]);
             lru.push((0..ways).collect());
         }
         Self {
@@ -24,10 +23,21 @@ impl CacheTagArray {
         }
     }
 
+    fn idx(&self, set_idx: usize, way: usize) -> usize {
+        set_idx * self.ways + way
+    }
+
     pub(crate) fn probe(&mut self, line_addr: u64) -> bool {
         let set_idx = (line_addr as usize) % self.sets;
-        let set = &mut self.tags[set_idx];
-        if let Some(way) = set.iter().position(|tag| tag.map_or(false, |t| t == line_addr)) {
+        let mut hit_way = None;
+        for way in 0..self.ways {
+            let tag = self.tags[self.idx(set_idx, way)];
+            if tag == Some(line_addr) {
+                hit_way = Some(way);
+                break;
+            }
+        }
+        if let Some(way) = hit_way {
             self.touch(set_idx, way);
             return true;
         }
@@ -36,25 +46,37 @@ impl CacheTagArray {
 
     pub(crate) fn fill(&mut self, line_addr: u64) {
         let set_idx = (line_addr as usize) % self.sets;
-        let set = &mut self.tags[set_idx];
-        if let Some(way) = set.iter().position(|tag| tag.map_or(false, |t| t == line_addr)) {
+        let mut hit_way = None;
+        for way in 0..self.ways {
+            let tag = self.tags[self.idx(set_idx, way)];
+            if tag == Some(line_addr) {
+                hit_way = Some(way);
+                break;
+            }
+        }
+        if let Some(way) = hit_way {
             self.touch(set_idx, way);
             return;
         }
 
-        let way = if let Some(idx) = set.iter().position(|tag| tag.is_none()) {
-            idx
-        } else {
-            *self.lru[set_idx].last().unwrap_or(&0)
-        };
-        set[way] = Some(line_addr);
+        let mut empty_way = None;
+        for way in 0..self.ways {
+            if self.tags[self.idx(set_idx, way)].is_none() {
+                empty_way = Some(way);
+                break;
+            }
+        }
+        let way = empty_way.unwrap_or_else(|| *self.lru[set_idx].last().unwrap_or(&0));
+        let idx = self.idx(set_idx, way);
+        self.tags[idx] = Some(line_addr);
         self.touch(set_idx, way);
     }
 
     pub(crate) fn invalidate_all(&mut self) {
         for set_idx in 0..self.sets {
             for way in 0..self.ways {
-                self.tags[set_idx][way] = None;
+                let idx = self.idx(set_idx, way);
+                self.tags[idx] = None;
             }
             self.lru[set_idx].clear();
             self.lru[set_idx].extend(0..self.ways);

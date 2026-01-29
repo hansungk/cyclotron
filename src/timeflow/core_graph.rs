@@ -228,8 +228,8 @@ mod tests {
 
         let gmem_stats = graph.gmem_stats();
         let smem_stats = graph.smem_stats();
-        assert_eq!(gmem_stats.issued, 1);
-        assert_eq!(gmem_stats.completed, 1);
+        assert_eq!(gmem_stats.issued(), 1);
+        assert_eq!(gmem_stats.completed(), 1);
         assert_eq!(smem_stats.issued, 1);
         assert_eq!(smem_stats.completed, 1);
     }
