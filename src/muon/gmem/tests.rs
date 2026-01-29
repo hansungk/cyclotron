@@ -329,3 +329,39 @@ fn csr_write_triggers_tensor_queue() {
 
     assert!(model.tensor_completed() >= 1);
 }
+
+#[test]
+fn sequential_loads_benefit_from_cache() {
+    let mut scheduler = make_scheduler(1);
+    scheduler.spawn_single_warp();
+
+    let mut model = make_model(1);
+    let now = module_now(&scheduler);
+
+    let mut req0 = GmemRequest::new(0, 16, 0xF, true);
+    req0.addr = 0x1000;
+    model
+        .issue_gmem_request(now, 0, req0, &mut scheduler)
+        .expect("first request should accept");
+
+    let mut cycle = now;
+    while model.stats().gmem.completed == 0 {
+        model.tick(cycle, &mut scheduler);
+        cycle = cycle.saturating_add(1);
+    }
+
+    let mut req1 = GmemRequest::new(0, 16, 0xF, true);
+    req1.addr = 0x1004;
+    model
+        .issue_gmem_request(cycle, 0, req1, &mut scheduler)
+        .expect("second request should accept");
+
+    while model.stats().gmem.completed < 2 {
+        model.tick(cycle, &mut scheduler);
+        cycle = cycle.saturating_add(1);
+    }
+
+    let summary = model.perf_summary();
+    assert_eq!(summary.gmem_hits.l0_accesses, 2);
+    assert_eq!(summary.gmem_hits.l0_hits, 1);
+}

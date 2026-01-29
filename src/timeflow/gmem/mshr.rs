@@ -276,4 +276,33 @@ mod tests {
         assert!(table.ensure_entry(1, meta).unwrap());
         assert!(!table.can_allocate(2));
     }
+
+    #[test]
+    fn multiple_merges_same_entry() {
+        let mut table = MshrTable::new(1);
+        let req = GmemRequest::new(0, 16, 0xF, true);
+        let meta = MissMetadata::from_request(&req);
+        table.ensure_entry(1, meta).unwrap();
+        for _ in 0..10 {
+            let merged = GmemRequest::new(0, 8, 0xF, true);
+            assert!(table.merge_request(1, merged).is_none());
+        }
+        let entry = table.remove_entry(1).unwrap();
+        assert_eq!(entry.merged.len(), 10);
+    }
+
+    #[test]
+    fn fill_and_drain_repeatedly() {
+        let mut table = MshrTable::new(4);
+        let req = GmemRequest::new(0, 16, 0xF, true);
+        let meta = MissMetadata::from_request(&req);
+        for round in 0..100 {
+            for line in 0..4 {
+                assert!(table.ensure_entry(line, meta).unwrap(), "round {round}");
+            }
+            for line in 0..4 {
+                assert!(table.remove_entry(line).is_some(), "round {round}");
+            }
+        }
+    }
 }

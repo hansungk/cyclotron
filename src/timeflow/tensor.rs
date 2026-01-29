@@ -174,4 +174,16 @@ mod tests {
         let ticket = tensor.try_issue(10, 0).unwrap().ticket;
         assert_eq!(14, ticket.ready_at());
     }
+
+    #[test]
+    fn tensor_large_operation_bandwidth_limited() {
+        let mut cfg = TensorConfig::default();
+        cfg.enabled = true;
+        cfg.queue.base_latency = 3;
+        cfg.queue.bytes_per_cycle = 8;
+        let mut tensor = TensorQueue::new(cfg);
+
+        let ticket = tensor.try_issue(0, 64).unwrap().ticket;
+        assert_eq!(11, ticket.ready_at());
+    }
 }

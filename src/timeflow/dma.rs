@@ -174,4 +174,28 @@ mod tests {
         let ticket = dma.try_issue(10, 0).unwrap().ticket;
         assert_eq!(13, ticket.ready_at());
     }
+
+    #[test]
+    fn dma_large_transfer_bandwidth_limited() {
+        let mut cfg = DmaConfig::default();
+        cfg.enabled = true;
+        cfg.queue.base_latency = 2;
+        cfg.queue.bytes_per_cycle = 8;
+        let mut dma = DmaQueue::new(cfg);
+
+        let ticket = dma.try_issue(0, 64).unwrap().ticket;
+        assert_eq!(10, ticket.ready_at());
+    }
+
+    #[test]
+    fn dma_very_large_transfer_no_overflow() {
+        let mut cfg = DmaConfig::default();
+        cfg.enabled = true;
+        cfg.queue.base_latency = 1;
+        cfg.queue.bytes_per_cycle = 1;
+        let mut dma = DmaQueue::new(cfg);
+
+        let ticket = dma.try_issue(0, u32::MAX).unwrap().ticket;
+        assert_eq!(u32::MAX as u64 + 1, ticket.ready_at());
+    }
 }

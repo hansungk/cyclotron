@@ -108,4 +108,40 @@ mod tests {
         node.try_put(0, ServiceRequest::new(3u32, 4)).unwrap();
         assert_eq!(3, node.outstanding());
     }
+
+    #[test]
+    fn server_node_peek_ready_non_consuming() {
+        let mut node = ServerNode::new(
+            "node",
+            TimedServer::new(ServerConfig {
+                base_latency: 0,
+                bytes_per_cycle: 4,
+                queue_capacity: 2,
+                ..ServerConfig::default()
+            }),
+        );
+        let ticket = node.try_put(0, ServiceRequest::new(9u32, 4)).unwrap();
+        node.tick(ticket.ready_at());
+        assert!(node.peek_ready(ticket.ready_at()).is_some());
+        assert!(node.peek_ready(ticket.ready_at()).is_some());
+        assert!(node.take_ready(ticket.ready_at()).is_some());
+    }
+
+    #[test]
+    fn server_node_empty_peek_returns_none() {
+        let mut node = ServerNode::new(
+            "node",
+            TimedServer::<u32>::new(ServerConfig::default()),
+        );
+        assert!(node.peek_ready(0).is_none());
+    }
+
+    #[test]
+    fn server_node_empty_take_returns_none() {
+        let mut node = ServerNode::new(
+            "node",
+            TimedServer::<u32>::new(ServerConfig::default()),
+        );
+        assert!(node.take_ready(0).is_none());
+    }
 }

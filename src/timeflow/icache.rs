@@ -313,4 +313,36 @@ mod tests {
         assert_eq!(1, stats.misses);
         assert_eq!(1, stats.completed);
     }
+
+    #[test]
+    fn icache_many_parallel_fetches() {
+        let mut cfg = IcacheFlowConfig::default();
+        cfg.policy.hit_rate = 1.0;
+        cfg.hit.queue_capacity = 8;
+        cfg.hit.base_latency = 0;
+        let mut icache = IcacheSubgraph::new(cfg);
+
+        for warp in 0..8 {
+            let req = IcacheRequest::new(warp, 0x1000 + (warp as u32) * 4, 8);
+            icache.issue(0, req).expect("issue should succeed");
+        }
+        icache.tick(0);
+        let stats = icache.stats();
+        assert_eq!(8, stats.issued);
+        assert_eq!(8, stats.completed);
+    }
+
+    #[test]
+    fn icache_pc_zero_handling() {
+        let mut cfg = IcacheFlowConfig::default();
+        cfg.policy.hit_rate = 1.0;
+        cfg.hit.base_latency = 0;
+        let mut icache = IcacheSubgraph::new(cfg);
+
+        let req = IcacheRequest::new(0, 0, 8);
+        let issue = icache.issue(0, req).expect("issue should succeed");
+        icache.tick(issue.ticket.ready_at());
+        let stats = icache.stats();
+        assert_eq!(1, stats.completed);
+    }
 }

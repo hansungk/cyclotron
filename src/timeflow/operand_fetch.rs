@@ -137,4 +137,21 @@ mod tests {
         let ticket = queue.try_issue(10, 0).expect("issue").ticket;
         assert_eq!(13, ticket.ready_at());
     }
+
+    #[test]
+    fn multiple_operands_queue_fifo() {
+        let mut cfg = OperandFetchConfig::default();
+        cfg.enabled = true;
+        cfg.queue.queue_capacity = 2;
+        cfg.queue.base_latency = 0;
+        let mut queue = OperandFetchQueue::new(cfg);
+
+        let t0 = queue.try_issue(0, 4).expect("issue0").ticket;
+        let t1 = queue.try_issue(0, 4).expect("issue1").ticket;
+        assert!(t1.ready_at() >= t0.ready_at());
+
+        queue.tick(t0.ready_at());
+        let t2 = queue.try_issue(t0.ready_at(), 4).expect("issue2").ticket;
+        assert!(t2.ready_at() >= t0.ready_at());
+    }
 }

@@ -164,4 +164,41 @@ mod tests {
             .expect_err("queue should be full");
         assert_eq!(super::FenceRejectReason::QueueFull, err.reason);
     }
+
+    #[test]
+    fn multiple_fences_queue_fifo() {
+        let mut cfg = FenceConfig::default();
+        cfg.enabled = true;
+        cfg.queue.base_latency = 0;
+        cfg.queue.queue_capacity = 4;
+        let mut fence = FenceQueue::new(cfg);
+
+        fence
+            .try_issue(0, FenceRequest { warp: 0, request_id: 1 })
+            .unwrap();
+        fence
+            .try_issue(0, FenceRequest { warp: 1, request_id: 2 })
+            .unwrap();
+
+        fence.tick(0);
+        let first = fence.pop_ready().expect("first ready");
+        fence.tick(1);
+        let second = fence.pop_ready().expect("second ready");
+        assert_eq!(first.request_id, 1);
+        assert_eq!(second.request_id, 2);
+    }
+
+    #[test]
+    fn fence_at_cycle_zero() {
+        let mut cfg = FenceConfig::default();
+        cfg.enabled = true;
+        cfg.queue.base_latency = 0;
+        let mut fence = FenceQueue::new(cfg);
+
+        fence
+            .try_issue(0, FenceRequest { warp: 0, request_id: 1 })
+            .unwrap();
+        fence.tick(0);
+        assert!(fence.pop_ready().is_some());
+    }
 }

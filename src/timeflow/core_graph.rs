@@ -156,4 +156,81 @@ mod tests {
         }
         assert_eq!(1, graph.pending_gmem_completions());
     }
+
+    #[test]
+    fn core_graph_completes_smem_requests() {
+        let mut cfg = CoreGraphConfig::default();
+        cfg.smem.lane.base_latency = 0;
+        cfg.smem.bank.base_latency = 0;
+        cfg.smem.crossbar.base_latency = 0;
+
+        let mut graph = CoreGraph::new(cfg);
+        let request = SmemRequest::new(0, 16, 0xF, false, 0);
+        let issue = graph.issue_smem(0, request).expect("issue should succeed");
+        let ready_at = issue.ticket.ready_at();
+        for cycle in 0..=ready_at.saturating_add(100) {
+            graph.tick(cycle);
+        }
+        assert_eq!(1, graph.pending_smem_completions());
+    }
+
+    #[test]
+    fn core_graph_handles_mixed_gmem_smem() {
+        let mut cfg = CoreGraphConfig::default();
+        cfg.gmem.nodes.coalescer.base_latency = 0;
+        cfg.gmem.nodes.l0d_tag.base_latency = 0;
+        cfg.gmem.nodes.dram.base_latency = 0;
+        cfg.smem.lane.base_latency = 0;
+        cfg.smem.bank.base_latency = 0;
+        cfg.smem.crossbar.base_latency = 0;
+
+        let mut graph = CoreGraph::new(cfg);
+        let gmem_req = GmemRequest::new(0, 16, 0xF, true);
+        let smem_req = SmemRequest::new(0, 16, 0xF, false, 0);
+        let gmem_issue = graph.issue_gmem(0, gmem_req).expect("gmem issue");
+        let smem_issue = graph.issue_smem(0, smem_req).expect("smem issue");
+        let ready_at = gmem_issue
+            .ticket
+            .ready_at()
+            .max(smem_issue.ticket.ready_at());
+        for cycle in 0..=ready_at.saturating_add(200) {
+            graph.tick(cycle);
+        }
+        assert_eq!(1, graph.pending_gmem_completions());
+        assert_eq!(1, graph.pending_smem_completions());
+    }
+
+    #[test]
+    fn core_graph_tracks_stats_correctly() {
+        let mut cfg = CoreGraphConfig::default();
+        cfg.gmem.nodes.coalescer.base_latency = 0;
+        cfg.gmem.nodes.l0d_tag.base_latency = 0;
+        cfg.gmem.nodes.dram.base_latency = 0;
+        cfg.smem.lane.base_latency = 0;
+        cfg.smem.bank.base_latency = 0;
+        cfg.smem.crossbar.base_latency = 0;
+
+        let mut graph = CoreGraph::new(cfg);
+        graph.clear_gmem_stats();
+        graph.clear_smem_stats();
+
+        let gmem_req = GmemRequest::new(0, 16, 0xF, true);
+        let smem_req = SmemRequest::new(0, 16, 0xF, false, 0);
+        let gmem_issue = graph.issue_gmem(0, gmem_req).expect("gmem issue");
+        let smem_issue = graph.issue_smem(0, smem_req).expect("smem issue");
+        let ready_at = gmem_issue
+            .ticket
+            .ready_at()
+            .max(smem_issue.ticket.ready_at());
+        for cycle in 0..=ready_at.saturating_add(200) {
+            graph.tick(cycle);
+        }
+
+        let gmem_stats = graph.gmem_stats();
+        let smem_stats = graph.smem_stats();
+        assert_eq!(gmem_stats.issued, 1);
+        assert_eq!(gmem_stats.completed, 1);
+        assert_eq!(smem_stats.issued, 1);
+        assert_eq!(smem_stats.completed, 1);
+    }
 }

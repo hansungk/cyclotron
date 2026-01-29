@@ -667,4 +667,165 @@ mod tests {
         }
         panic!("expected completion for address 0");
     }
+
+    #[test]
+    fn smem_dual_port_allows_parallel_read_write() {
+        let mut cfg = SmemFlowConfig::default();
+        cfg.dual_port = true;
+        cfg.num_lanes = 1;
+        cfg.num_banks = 1;
+        cfg.num_subbanks = 1;
+        cfg.lane.base_latency = 0;
+        cfg.crossbar.base_latency = 0;
+        cfg.subbank.base_latency = 0;
+        cfg.bank.base_latency = 1;
+        cfg.bank.queue_capacity = 4;
+
+        let mut graph: FlowGraph<CoreFlowPayload> = FlowGraph::new();
+        let mut subgraph = SmemSubgraph::attach(&mut graph, &cfg);
+
+        let read = SmemRequest::new(0, 16, 0x1, false, 0);
+        let write = SmemRequest::new(0, 16, 0x1, true, 0);
+        subgraph.issue(&mut graph, 0, read).unwrap();
+        subgraph.issue(&mut graph, 0, write).unwrap();
+
+        let mut completions = Vec::new();
+        for cycle in 0..10 {
+            graph.tick(cycle);
+            subgraph.collect_completions(&mut graph, cycle);
+            while let Some(done) = subgraph.completions.pop_front() {
+                completions.push(done);
+            }
+            if completions.len() == 2 {
+                break;
+            }
+        }
+        assert_eq!(completions.len(), 2);
+        let min = completions[0].completed_at.min(completions[1].completed_at);
+        let max = completions[0].completed_at.max(completions[1].completed_at);
+        assert!(
+            max - min <= 1,
+            "dual-port should allow near-parallel completion"
+        );
+    }
+
+    #[test]
+    fn smem_dual_port_disabled_serializes() {
+        let mut cfg = SmemFlowConfig::default();
+        cfg.dual_port = false;
+        cfg.num_lanes = 1;
+        cfg.num_banks = 1;
+        cfg.num_subbanks = 1;
+        cfg.lane.base_latency = 0;
+        cfg.crossbar.base_latency = 0;
+        cfg.subbank.base_latency = 0;
+        cfg.bank.base_latency = 1;
+        cfg.bank.queue_capacity = 4;
+
+        let mut graph: FlowGraph<CoreFlowPayload> = FlowGraph::new();
+        let mut subgraph = SmemSubgraph::attach(&mut graph, &cfg);
+
+        let read = SmemRequest::new(0, 16, 0x1, false, 0);
+        let write = SmemRequest::new(0, 16, 0x1, true, 0);
+        subgraph.issue(&mut graph, 0, read).unwrap();
+        subgraph.issue(&mut graph, 0, write).unwrap();
+
+        let mut completions = Vec::new();
+        for cycle in 0..10 {
+            graph.tick(cycle);
+            subgraph.collect_completions(&mut graph, cycle);
+            while let Some(done) = subgraph.completions.pop_front() {
+                completions.push(done);
+            }
+            if completions.len() == 2 {
+                break;
+            }
+        }
+        assert_eq!(completions.len(), 2);
+        assert!(
+            completions[1].completed_at > completions[0].completed_at,
+            "single-port should serialize read/write"
+        );
+    }
+
+    #[test]
+    fn smem_all_lanes_same_bank_maximum_conflict() {
+        let mut cfg = SmemFlowConfig::default();
+        cfg.dual_port = false;
+        cfg.num_lanes = 16;
+        cfg.num_banks = 1;
+        cfg.num_subbanks = 1;
+        cfg.lane.base_latency = 0;
+        cfg.crossbar.base_latency = 0;
+        cfg.subbank.base_latency = 0;
+        cfg.bank.base_latency = 1;
+        cfg.bank.queue_capacity = 32;
+
+        let mut graph: FlowGraph<CoreFlowPayload> = FlowGraph::new();
+        let mut subgraph = SmemSubgraph::attach(&mut graph, &cfg);
+
+        for warp in 0..16 {
+            let req = SmemRequest::new(warp, 16, 0x1, false, 0);
+            subgraph.issue(&mut graph, 0, req).unwrap();
+        }
+
+        let mut completed_at = Vec::new();
+        for cycle in 0..100 {
+            graph.tick(cycle);
+            subgraph.collect_completions(&mut graph, cycle);
+            while let Some(done) = subgraph.completions.pop_front() {
+                completed_at.push(done.completed_at);
+            }
+            if completed_at.len() == 16 {
+                break;
+            }
+        }
+        assert_eq!(completed_at.len(), 16);
+        completed_at.sort();
+        assert!(
+            completed_at.last().unwrap() - completed_at.first().unwrap() >= 15,
+            "expected strong serialization under bank conflict"
+        );
+    }
+
+    #[test]
+    fn smem_all_lanes_different_banks_no_conflict() {
+        let mut cfg = SmemFlowConfig::default();
+        cfg.dual_port = false;
+        cfg.num_lanes = 16;
+        cfg.num_banks = 16;
+        cfg.num_subbanks = 1;
+        cfg.lane.base_latency = 0;
+        cfg.crossbar.base_latency = 0;
+        cfg.subbank.base_latency = 0;
+        cfg.bank.base_latency = 1;
+        cfg.bank.queue_capacity = 4;
+
+        let mut graph: FlowGraph<CoreFlowPayload> = FlowGraph::new();
+        let mut subgraph = SmemSubgraph::attach(&mut graph, &cfg);
+
+        for warp in 0..16 {
+            let req = SmemRequest::new(warp, 16, 0x1, false, warp);
+            subgraph.issue(&mut graph, 0, req).unwrap();
+        }
+
+        let mut completed_at = Vec::new();
+        for cycle in 0..20 {
+            graph.tick(cycle);
+            subgraph.collect_completions(&mut graph, cycle);
+            while let Some(done) = subgraph.completions.pop_front() {
+                completed_at.push(done.completed_at);
+            }
+            if completed_at.len() == 16 {
+                break;
+            }
+        }
+        assert_eq!(completed_at.len(), 16);
+        let min = *completed_at.iter().min().unwrap();
+        let max = *completed_at.iter().max().unwrap();
+        assert!(
+            max - min <= 1,
+            "expected near-parallel completion when banks differ"
+        );
+    }
 }

@@ -604,7 +604,10 @@ mod tests {
         let mut graph: FlowGraph<u32> = FlowGraph::new();
         let src = graph.add_node(ServerNode::new(
             "src",
-            TimedServer::new(ServerConfig::default()),
+            TimedServer::new(ServerConfig {
+                queue_capacity: 32,
+                ..ServerConfig::default()
+            }),
         ));
         let dst = graph.add_node(ServerNode::new(
             "dst",
@@ -620,6 +623,171 @@ mod tests {
         graph.with_node_mut(dst, |n| {
             assert!(n.peek_ready(10).is_none());
         });
+    }
+
+    #[test]
+    fn three_node_linear_chain() {
+        let mut graph: FlowGraph<&'static str> = FlowGraph::new();
+        let a = graph.add_node(ServerNode::new(
+            "a",
+            TimedServer::new(ServerConfig {
+                base_latency: 1,
+                bytes_per_cycle: 4,
+                queue_capacity: 4,
+                ..ServerConfig::default()
+            }),
+        ));
+        let b = graph.add_node(ServerNode::new(
+            "b",
+            TimedServer::new(ServerConfig {
+                base_latency: 2,
+                bytes_per_cycle: 4,
+                queue_capacity: 4,
+                ..ServerConfig::default()
+            }),
+        ));
+        let c = graph.add_node(ServerNode::new(
+            "c",
+            TimedServer::new(ServerConfig {
+                base_latency: 3,
+                bytes_per_cycle: 4,
+                queue_capacity: 4,
+                ..ServerConfig::default()
+            }),
+        ));
+        graph.connect(a, b, "a->b", Link::new(4));
+        graph.connect(b, c, "b->c", Link::new(4));
+
+        graph
+            .try_put(a, 0, ServiceRequest::new("payload", 4))
+            .expect("enqueue should succeed");
+        for cycle in 0..12 {
+            graph.tick(cycle);
+        }
+        graph.with_node_mut(c, |n| {
+            let result = n.take_ready(12).expect("completion exists");
+            assert_eq!("payload", result.payload);
+        });
+    }
+
+    #[test]
+    fn multiple_inputs_to_one_node() {
+        let mut graph: FlowGraph<&'static str> = FlowGraph::new();
+        let src0 = graph.add_node(ServerNode::new(
+            "src0",
+            TimedServer::new(ServerConfig::default()),
+        ));
+        let src1 = graph.add_node(ServerNode::new(
+            "src1",
+            TimedServer::new(ServerConfig::default()),
+        ));
+        let sink = graph.add_node(ServerNode::new(
+            "sink",
+            TimedServer::new(ServerConfig {
+                queue_capacity: 2,
+                ..ServerConfig::default()
+            }),
+        ));
+        graph.connect(src0, sink, "src0->sink", Link::new(4));
+        graph.connect(src1, sink, "src1->sink", Link::new(4));
+
+        graph
+            .try_put(src0, 0, ServiceRequest::new("a", 1))
+            .unwrap();
+        graph
+            .try_put(src1, 0, ServiceRequest::new("b", 1))
+            .unwrap();
+        for cycle in 0..5 {
+            graph.tick(cycle);
+        }
+        graph.with_node_mut(sink, |n| {
+            let mut results = Vec::new();
+            while let Some(res) = n.take_ready(5) {
+                results.push(res.payload);
+            }
+            results.sort();
+            assert_eq!(results, vec!["a", "b"]);
+        });
+    }
+
+    #[test]
+    fn deep_pipeline_100_nodes() {
+        let mut graph: FlowGraph<u32> = FlowGraph::new();
+        let mut nodes = Vec::new();
+        for i in 0..100 {
+            let node = graph.add_node(ServerNode::new(
+                format!("n{i}"),
+                TimedServer::new(ServerConfig {
+                    base_latency: 0,
+                    bytes_per_cycle: 1,
+                    queue_capacity: 2,
+                    ..ServerConfig::default()
+                }),
+            ));
+            nodes.push(node);
+        }
+        for i in 0..99 {
+            graph.connect(nodes[i], nodes[i + 1], format!("n{i}->n{}", i + 1), Link::new(2));
+        }
+
+        graph
+            .try_put(nodes[0], 0, ServiceRequest::new(42u32, 1))
+            .unwrap();
+        for cycle in 0..200 {
+            graph.tick(cycle);
+        }
+        graph.with_node_mut(nodes[99], |n| {
+            let result = n.take_ready(200).expect("completion exists");
+            assert_eq!(42, result.payload);
+        });
+    }
+
+    #[test]
+    fn wide_fanout_32_branches() {
+        #[derive(Clone, Debug)]
+        struct Payload {
+            branch: usize,
+        }
+        let mut graph: FlowGraph<Payload> = FlowGraph::new();
+        let src = graph.add_node(ServerNode::new(
+            "src",
+            TimedServer::new(ServerConfig {
+                queue_capacity: 32,
+                ..ServerConfig::default()
+            }),
+        ));
+        let mut sinks = Vec::new();
+        for i in 0..32 {
+            let sink = graph.add_node(ServerNode::new(
+                format!("sink{i}"),
+                TimedServer::new(ServerConfig::default()),
+            ));
+            graph.connect_filtered(
+                src,
+                sink,
+                format!("src->sink{i}"),
+                Link::new(4),
+                move |payload: &Payload| payload.branch == i,
+            );
+            sinks.push(sink);
+        }
+
+        for i in 0..32 {
+            graph
+                .try_put(src, 0, ServiceRequest::new(Payload { branch: i }, 1))
+                .unwrap();
+        }
+
+        for cycle in 0..50 {
+            graph.tick(cycle);
+        }
+
+        for (i, &sink) in sinks.iter().enumerate() {
+            graph.with_node_mut(sink, |n| {
+                let result = n.take_ready(50).expect("completion exists");
+                assert_eq!(result.payload.branch, i);
+            });
+        }
     }
 
     #[test]

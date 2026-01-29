@@ -146,4 +146,46 @@ mod tests {
         let grants = sched.select(0, &eligible);
         assert_eq!(grants, vec![false, false, false]);
     }
+
+    #[test]
+    fn scheduler_handles_single_warp() {
+        let mut cfg = WarpSchedulerConfig::default();
+        cfg.enabled = true;
+        cfg.issue_width = 1;
+        let mut sched = WarpIssueScheduler::new(cfg);
+
+        let eligible = vec![true];
+        let grants = sched.select(0, &eligible);
+        assert_eq!(grants, vec![true]);
+    }
+
+    #[test]
+    fn scheduler_handles_all_warps_stalled() {
+        let mut cfg = WarpSchedulerConfig::default();
+        cfg.enabled = true;
+        cfg.issue_width = 2;
+        let mut sched = WarpIssueScheduler::new(cfg);
+
+        let eligible = vec![false, false, false, false];
+        let grants = sched.select(0, &eligible);
+        assert_eq!(grants, vec![false, false, false, false]);
+    }
+
+    #[test]
+    fn scheduler_round_robin_wraps_around() {
+        let mut cfg = WarpSchedulerConfig::default();
+        cfg.enabled = true;
+        cfg.issue_width = 1;
+        let mut sched = WarpIssueScheduler::new(cfg);
+
+        let eligible = vec![true, true, true];
+        let g0 = sched.select(0, &eligible);
+        let g1 = sched.select(1, &eligible);
+        let g2 = sched.select(2, &eligible);
+        let g3 = sched.select(3, &eligible);
+        assert_eq!(g0, vec![true, false, false]);
+        assert_eq!(g1, vec![false, true, false]);
+        assert_eq!(g2, vec![false, false, true]);
+        assert_eq!(g3, vec![true, false, false]);
+    }
 }

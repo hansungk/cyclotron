@@ -618,6 +618,86 @@ mod tests {
     }
 
     #[test]
+    fn back_to_back_requests_pipeline_correctly() {
+        let mut server = make_server(ServerConfig {
+            base_latency: 1,
+            bytes_per_cycle: 4,
+            queue_capacity: 8,
+            ..ServerConfig::default()
+        });
+
+        let mut ready = Vec::new();
+        for cycle in 0..5 {
+            let ticket = server
+                .try_enqueue(cycle, ServiceRequest::new("req", 4))
+                .expect("enqueue should succeed");
+            ready.push(ticket.ready_at());
+        }
+
+        assert_eq!(ready, vec![2, 3, 4, 5, 6]);
+    }
+
+    #[test]
+    fn single_byte_request_at_cycle_zero() {
+        let mut server = make_server(ServerConfig {
+            base_latency: 5,
+            bytes_per_cycle: 4,
+            queue_capacity: 4,
+            ..ServerConfig::default()
+        });
+
+        let ticket = server
+            .try_enqueue(0, ServiceRequest::new("req", 1))
+            .expect("enqueue should succeed");
+        assert_eq!(6, ticket.ready_at());
+    }
+
+    #[test]
+    fn max_capacity_then_drain_one_then_enqueue() {
+        let mut server = make_server(ServerConfig {
+            base_latency: 0,
+            bytes_per_cycle: 4,
+            queue_capacity: 2,
+            ..ServerConfig::default()
+        });
+
+        server.try_enqueue(0, ServiceRequest::new("a", 4)).unwrap();
+        server.try_enqueue(0, ServiceRequest::new("b", 4)).unwrap();
+        assert!(server.try_enqueue(0, ServiceRequest::new("c", 4)).is_err());
+
+        server.advance_ready(1);
+        assert!(server.pop_ready(1).is_some());
+        assert!(server.try_enqueue(1, ServiceRequest::new("c", 4)).is_ok());
+    }
+
+    #[test]
+    fn high_throughput_saturated_queue() {
+        let mut server = TimedServer::<u32>::new(ServerConfig {
+            base_latency: 0,
+            bytes_per_cycle: 1024,
+            queue_capacity: 1024,
+            ..ServerConfig::default()
+        });
+
+        for id in 0..1024u32 {
+            server
+                .try_enqueue(0, ServiceRequest::new(id, 1))
+                .expect("enqueue should succeed");
+        }
+
+        let mut seen = Vec::new();
+        for cycle in 1..=1024u64 {
+            while let Some(result) = server.pop_ready(cycle) {
+                seen.push(result.payload);
+            }
+        }
+        assert_eq!(seen.len(), 1024);
+        for (idx, val) in seen.into_iter().enumerate() {
+            assert_eq!(val as usize, idx);
+        }
+    }
+
+    #[test]
     // Rejected requests due to Busy signal can be retried later
     fn busy_backpressure_can_also_be_retried() {
         let mut server = make_server(ServerConfig {

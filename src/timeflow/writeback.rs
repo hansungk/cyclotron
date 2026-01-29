@@ -233,4 +233,41 @@ mod tests {
             .expect_err("queue should be full");
         assert_eq!(super::WritebackRejectReason::QueueFull, err.reason);
     }
+
+    #[test]
+    fn pop_empty_returns_none() {
+        let mut cfg = WritebackConfig::default();
+        cfg.enabled = true;
+        let mut queue = WritebackQueue::new(cfg);
+        assert!(queue.pop_ready().is_none());
+    }
+
+    #[test]
+    fn interleaved_gmem_smem_completions() {
+        let mut cfg = WritebackConfig::default();
+        cfg.enabled = true;
+        cfg.queue.base_latency = 0;
+        let mut queue = WritebackQueue::new(cfg);
+
+        let gmem = GmemCompletion {
+            request: GmemRequest::new(0, 4, 0xF, true),
+            ticket_ready_at: 0,
+            completed_at: 0,
+        };
+        let smem = SmemCompletion {
+            request: SmemRequest::new(0, 4, 0xF, false, 0),
+            ticket_ready_at: 0,
+            completed_at: 0,
+        };
+
+        queue.try_issue(0, WritebackPayload::Gmem(gmem)).unwrap();
+        queue.try_issue(0, WritebackPayload::Smem(smem)).unwrap();
+        queue.tick(0);
+
+        let first = queue.pop_ready().expect("first");
+        queue.tick(1);
+        let second = queue.pop_ready().expect("second");
+        assert!(matches!(first, WritebackPayload::Gmem(_)));
+        assert!(matches!(second, WritebackPayload::Smem(_)));
+    }
 }
