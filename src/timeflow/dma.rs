@@ -143,4 +143,35 @@ mod tests {
         dma.tick(ticket.ready_at());
         assert_eq!(dma.completed(), 1);
     }
+
+    #[test]
+    fn disabled_dma_immediate() {
+        let mut cfg = DmaConfig::default();
+        cfg.enabled = false;
+        let mut dma = DmaQueue::new(cfg);
+        let ticket = dma.try_issue(5, 64).expect("issue").ticket;
+        assert_eq!(ticket.ready_at(), 5);
+    }
+
+    #[test]
+    fn queue_full_rejects() {
+        let mut cfg = DmaConfig::default();
+        cfg.enabled = true;
+        cfg.queue.queue_capacity = 1;
+        let mut dma = DmaQueue::new(cfg);
+        assert!(dma.try_issue(0, 64).is_ok());
+        let err = dma.try_issue(0, 64).expect_err("queue full");
+        assert_eq!(super::DmaRejectReason::QueueFull, err.reason);
+    }
+
+    #[test]
+    fn zero_byte_transfer_uses_base_latency() {
+        let mut cfg = DmaConfig::default();
+        cfg.enabled = true;
+        cfg.queue.base_latency = 3;
+        cfg.queue.bytes_per_cycle = 4;
+        let mut dma = DmaQueue::new(cfg);
+        let ticket = dma.try_issue(10, 0).unwrap().ticket;
+        assert_eq!(13, ticket.ready_at());
+    }
 }

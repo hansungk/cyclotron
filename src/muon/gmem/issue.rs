@@ -34,7 +34,7 @@ impl CoreTimingModel {
         self.maybe_convert_mmio_flush(&mut request);
         if request.kind.is_mem() {
             if let Some(lane_addrs) = request.lane_addrs.as_ref() {
-                let line_bytes = self.gmem_policy.l1_line_bytes.max(1) as u64;
+                let line_bytes = self.gmem_policy.l0_line_bytes.max(1) as u64;
                 let mut lines: Vec<u64> = lane_addrs
                     .iter()
                     .map(|addr| (addr / line_bytes) * line_bytes)

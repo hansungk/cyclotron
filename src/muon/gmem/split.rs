@@ -6,7 +6,7 @@ impl CoreTimingModel {
         if !request.kind.is_mem() {
             return vec![request.clone()];
         }
-        let line_bytes = self.gmem_policy.l1_line_bytes.max(1) as u64;
+        let line_bytes = self.gmem_policy.l0_line_bytes.max(1) as u64;
         let lines = request
             .coalesced_lines
             .clone()

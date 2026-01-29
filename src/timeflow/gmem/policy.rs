@@ -76,7 +76,7 @@ fn default_l1_line_bytes() -> u32 {
 }
 
 fn default_l2_line_bytes() -> u32 {
-    32
+    128
 }
 
 fn default_l0_sets() -> usize {
@@ -96,7 +96,7 @@ fn default_l1_ways() -> usize {
 }
 
 fn default_l2_sets() -> usize {
-    2048
+    512
 }
 
 fn default_l2_ways() -> usize {
@@ -120,7 +120,7 @@ fn default_l1_banks() -> usize {
 }
 
 fn default_l2_banks() -> usize {
-    4
+    1
 }
 
 fn default_flush_bytes() -> u32 {
@@ -141,18 +141,18 @@ impl Default for GmemPolicyConfig {
             l2_writeback_rate: 0.1,
             l0_line_bytes: 64,
             l1_line_bytes: 32,
-            l2_line_bytes: 32,
+            l2_line_bytes: 128,
             l0_sets: 512,
             l0_ways: 1,
             l1_sets: 512,
             l1_ways: 4,
-            l2_sets: 2048,
+            l2_sets: 512,
             l2_ways: 8,
             l0_flush_mmio_base: 0x0008_0200,
             l0_flush_mmio_stride: 0x100,
             l0_flush_mmio_size: 0x100,
             l1_banks: 2,
-            l2_banks: 4,
+            l2_banks: 1,
             flush_bytes: 4096,
             seed: 0,
         }

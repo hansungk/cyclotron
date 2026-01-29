@@ -272,3 +272,25 @@ fn mshr_full_rejects_with_retry_cycle() {
     assert_eq!(GmemRejectReason::QueueFull, err.reason);
     assert!(err.retry_at > now);
 }
+
+#[test]
+fn address_zero_load_completes() {
+    let cfg = fast_config();
+    let mut cluster = ClusterGmemGraph::new(cfg, 1, 1);
+    let mut req = GmemRequest::new(0, 16, 0xF, true);
+    req.addr = 0;
+    req.cluster_id = 0;
+    cluster.issue(0, 0, req).unwrap();
+    let _ = complete_one(&mut cluster, 0, 0, 200);
+}
+
+#[test]
+fn unaligned_address_handling_completes() {
+    let cfg = fast_config();
+    let mut cluster = ClusterGmemGraph::new(cfg, 1, 1);
+    let mut req = GmemRequest::new(0, 16, 0xF, true);
+    req.addr = 0x123;
+    req.cluster_id = 0;
+    cluster.issue(0, 0, req).unwrap();
+    let _ = complete_one(&mut cluster, 0, 0, 200);
+}

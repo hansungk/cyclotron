@@ -137,4 +137,31 @@ mod tests {
         fence.tick(2);
         assert!(fence.pop_ready().is_some());
     }
+
+    #[test]
+    fn disabled_fence_immediate() {
+        let mut cfg = FenceConfig::default();
+        cfg.enabled = false;
+        let mut fence = FenceQueue::new(cfg);
+        fence
+            .try_issue(5, FenceRequest { warp: 0, request_id: 1 })
+            .unwrap();
+        assert!(fence.pop_ready().is_some());
+    }
+
+    #[test]
+    fn queue_full_rejects() {
+        let mut cfg = FenceConfig::default();
+        cfg.enabled = true;
+        cfg.queue.queue_capacity = 1;
+        let mut fence = FenceQueue::new(cfg);
+
+        fence
+            .try_issue(0, FenceRequest { warp: 0, request_id: 1 })
+            .unwrap();
+        let err = fence
+            .try_issue(0, FenceRequest { warp: 0, request_id: 2 })
+            .expect_err("queue should be full");
+        assert_eq!(super::FenceRejectReason::QueueFull, err.reason);
+    }
 }

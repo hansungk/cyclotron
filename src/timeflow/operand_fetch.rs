@@ -117,4 +117,24 @@ mod tests {
         queue.tick(ready_at);
         assert!(queue.try_issue(ready_at, 16).is_ok());
     }
+
+    #[test]
+    fn disabled_operand_fetch_immediate() {
+        let mut cfg = OperandFetchConfig::default();
+        cfg.enabled = false;
+        let mut queue = OperandFetchQueue::new(cfg);
+        let ticket = queue.try_issue(5, 16).expect("issue").ticket;
+        assert_eq!(ticket.ready_at(), 5);
+    }
+
+    #[test]
+    fn zero_byte_fetch_uses_base_latency() {
+        let mut cfg = OperandFetchConfig::default();
+        cfg.enabled = true;
+        cfg.queue.base_latency = 3;
+        cfg.queue.bytes_per_cycle = 4;
+        let mut queue = OperandFetchQueue::new(cfg);
+        let ticket = queue.try_issue(10, 0).expect("issue").ticket;
+        assert_eq!(13, ticket.ready_at());
+    }
 }

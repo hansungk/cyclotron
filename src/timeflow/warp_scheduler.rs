@@ -111,4 +111,39 @@ mod tests {
         let grants1 = sched.select(1, &eligible);
         assert_eq!(grants1, vec![false, false, true]);
     }
+
+    #[test]
+    fn disabled_scheduler_passes_through() {
+        let mut cfg = WarpSchedulerConfig::default();
+        cfg.enabled = false;
+        let mut sched = WarpIssueScheduler::new(cfg);
+
+        let eligible = vec![true, false, true];
+        let grants = sched.select(0, &eligible);
+        assert_eq!(grants, eligible);
+    }
+
+    #[test]
+    fn issue_width_limits_grants() {
+        let mut cfg = WarpSchedulerConfig::default();
+        cfg.enabled = true;
+        cfg.issue_width = 2;
+        let mut sched = WarpIssueScheduler::new(cfg);
+
+        let eligible = vec![true, true, true, false];
+        let grants = sched.select(0, &eligible);
+        assert_eq!(grants.iter().filter(|&&g| g).count(), 2);
+    }
+
+    #[test]
+    fn no_eligible_returns_all_false() {
+        let mut cfg = WarpSchedulerConfig::default();
+        cfg.enabled = true;
+        cfg.issue_width = 2;
+        let mut sched = WarpIssueScheduler::new(cfg);
+
+        let eligible = vec![false, false, false];
+        let grants = sched.select(0, &eligible);
+        assert_eq!(grants, vec![false, false, false]);
+    }
 }

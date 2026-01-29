@@ -174,6 +174,8 @@ pub struct LsuSubgraph {
     graph: FlowGraph<LsuPayload>,
     issue_node: NodeId,
     queues: Vec<WarpQueues>,
+    store_pending_global: Vec<u32>,
+    store_pending_shared: Vec<u32>,
     resources: LsuResourceConfig,
     address_in_use: usize,
     store_in_use: usize,
@@ -250,10 +252,13 @@ impl LsuSubgraph {
             );
         }
 
+        let num_warps = queues.len();
         Self {
             graph,
             issue_node,
             queues,
+            store_pending_global: vec![0; num_warps],
+            store_pending_shared: vec![0; num_warps],
             resources: config.resources,
             address_in_use: 0,
             store_in_use: 0,
@@ -279,6 +284,14 @@ impl LsuSubgraph {
     }
 
     fn issue(&mut self, now: Cycle, payload: LsuPayload) -> Result<LsuIssue, LsuReject> {
+        if self.load_blocked_by_store(&payload) {
+            return Err(LsuReject {
+                request: payload,
+                retry_at: now.saturating_add(1),
+                reason: LsuRejectReason::Busy,
+            });
+        }
+
         if !self.can_reserve(&payload) {
             return Err(LsuReject {
                 request: payload,
@@ -305,6 +318,7 @@ impl LsuSubgraph {
         match self.graph.try_put(node_id, now, service_req) {
             Ok(ticket) => {
                 self.stats.issued = self.stats.issued.saturating_add(1);
+                self.bump_store_pending(&payload_clone, true);
                 if Self::needs_address(&payload_clone) {
                     self.address_in_use = self.address_in_use.saturating_add(1);
                 }
@@ -381,15 +395,17 @@ impl LsuSubgraph {
     }
 
     pub fn take_ready(&mut self, now: Cycle) -> Option<LsuCompletion<LsuPayload>> {
-        self.graph.with_node_mut(self.issue_node, |node| {
-            node.take_ready(now).map(|result| {
-                self.stats.completed = self.stats.completed.saturating_add(1);
-                LsuCompletion {
-                    request: result.payload,
-                    ticket_ready_at: result.ticket.ready_at(),
-                    completed_at: now,
-                }
-            })
+        let result = self
+            .graph
+            .with_node_mut(self.issue_node, |node| node.take_ready(now));
+        result.map(|result| {
+            self.stats.completed = self.stats.completed.saturating_add(1);
+            self.bump_store_pending(&result.payload, false);
+            LsuCompletion {
+                request: result.payload,
+                ticket_ready_at: result.ticket.ready_at(),
+                completed_at: now,
+            }
         })
     }
 
@@ -401,6 +417,46 @@ impl LsuSubgraph {
             LsuQueueKind::SharedLoad => queues.shared_ldq,
             LsuQueueKind::SharedStore => queues.shared_stq,
         })
+    }
+
+    fn load_blocked_by_store(&self, payload: &LsuPayload) -> bool {
+        let warp = payload.warp();
+        match payload.queue_kind() {
+            LsuQueueKind::GlobalLoad => self
+                .store_pending_global
+                .get(warp)
+                .map_or(false, |&pending| pending > 0),
+            LsuQueueKind::SharedLoad => self
+                .store_pending_shared
+                .get(warp)
+                .map_or(false, |&pending| pending > 0),
+            _ => false,
+        }
+    }
+
+    fn bump_store_pending(&mut self, payload: &LsuPayload, increment: bool) {
+        let warp = payload.warp();
+        match payload.queue_kind() {
+            LsuQueueKind::GlobalStore => {
+                if let Some(slot) = self.store_pending_global.get_mut(warp) {
+                    if increment {
+                        *slot = slot.saturating_add(1);
+                    } else {
+                        *slot = slot.saturating_sub(1);
+                    }
+                }
+            }
+            LsuQueueKind::SharedStore => {
+                if let Some(slot) = self.store_pending_shared.get_mut(warp) {
+                    if increment {
+                        *slot = slot.saturating_add(1);
+                    } else {
+                        *slot = slot.saturating_sub(1);
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 
     fn needs_address(payload: &LsuPayload) -> bool {
@@ -518,8 +574,8 @@ mod tests {
         load.kind = GmemRequestKind::Load;
         store.kind = GmemRequestKind::Store;
 
-        assert!(lsu.issue_gmem(0, store).is_ok());
         assert!(lsu.issue_gmem(0, load).is_ok());
+        assert!(lsu.issue_gmem(0, store).is_ok());
 
         let mut issued = Vec::new();
         for cycle in 0..10 {
@@ -538,5 +594,69 @@ mod tests {
             })
             .expect("expected a gmem request");
         assert!(first.is_load);
+    }
+
+    #[test]
+    fn per_warp_queues_independent() {
+        let mut config = LsuFlowConfig::default();
+        config.issue = default_issue_config();
+        config.queues.global_ldq.queue_capacity = 1;
+        config.resources.address_entries = 4;
+
+        let mut lsu = LsuSubgraph::new(config, 2);
+        let req0 = GmemRequest::new(0, 16, 0xF, true);
+        let req1 = GmemRequest::new(0, 16, 0xF, true);
+        assert!(lsu.issue_gmem(0, req0).is_ok());
+        assert!(lsu.issue_gmem(0, req1).is_err());
+
+        let req_other = GmemRequest::new(1, 16, 0xF, true);
+        assert!(lsu.issue_gmem(0, req_other).is_ok());
+    }
+
+    #[test]
+    fn address_entries_exactly_full() {
+        let mut config = LsuFlowConfig::default();
+        config.issue = default_issue_config();
+        config.queues.global_ldq.queue_capacity = 2;
+        config.resources.address_entries = 1;
+
+        let mut lsu = LsuSubgraph::new(config, 1);
+        let req0 = GmemRequest::new(0, 16, 0xF, true);
+        let req1 = GmemRequest::new(0, 16, 0xF, true);
+        assert!(lsu.issue_gmem(0, req0).is_ok());
+        let err = lsu.issue_gmem(0, req1).expect_err("address entries full");
+        assert_eq!(err.reason, LsuRejectReason::QueueFull);
+    }
+
+    #[test]
+    fn store_data_entries_exactly_full() {
+        let mut config = LsuFlowConfig::default();
+        config.issue = default_issue_config();
+        config.queues.global_stq.queue_capacity = 2;
+        config.resources.store_data_entries = 1;
+
+        let mut lsu = LsuSubgraph::new(config, 1);
+        let req0 = GmemRequest::new(0, 16, 0xF, false);
+        let req1 = GmemRequest::new(0, 16, 0xF, false);
+        assert!(lsu.issue_gmem(0, req0).is_ok());
+        let err = lsu.issue_gmem(0, req1).expect_err("store data full");
+        assert_eq!(err.reason, LsuRejectReason::QueueFull);
+    }
+
+    #[test]
+    fn load_blocked_by_pending_store_same_warp() {
+        let mut config = LsuFlowConfig::default();
+        config.issue = default_issue_config();
+        config.queues.global_ldq.queue_capacity = 2;
+        config.queues.global_stq.queue_capacity = 2;
+        config.resources.address_entries = 4;
+        config.resources.store_data_entries = 4;
+
+        let mut lsu = LsuSubgraph::new(config, 1);
+        let store = GmemRequest::new(0, 16, 0xF, false);
+        let load = GmemRequest::new(0, 16, 0xF, true);
+        assert!(lsu.issue_gmem(0, store).is_ok());
+        let err = lsu.issue_gmem(0, load).expect_err("load should be blocked");
+        assert_eq!(err.reason, LsuRejectReason::Busy);
     }
 }

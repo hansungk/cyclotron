@@ -572,4 +572,99 @@ mod tests {
         assert_eq!(completions.len(), 2);
         assert!(completions[1].completed_at > completions[0].completed_at);
     }
+
+    #[test]
+    fn smem_single_bank_configuration() {
+        let mut cfg = SmemFlowConfig::default();
+        cfg.num_banks = 1;
+        cfg.num_lanes = 2;
+        cfg.num_subbanks = 1;
+
+        let mut graph: FlowGraph<CoreFlowPayload> = FlowGraph::new();
+        let mut subgraph = SmemSubgraph::attach(&mut graph, &cfg);
+
+        let req0 = SmemRequest::new(0, 16, 0x1, false, 0);
+        let req1 = SmemRequest::new(1, 16, 0x1, false, 0);
+        subgraph.issue(&mut graph, 0, req0).unwrap();
+        subgraph.issue(&mut graph, 0, req1).unwrap();
+
+        let mut count = 0;
+        for cycle in 0..50 {
+            graph.tick(cycle);
+            subgraph.collect_completions(&mut graph, cycle);
+            count += subgraph.completions.len();
+            subgraph.completions.clear();
+            if count == 2 {
+                return;
+            }
+        }
+        panic!("expected completions for both requests");
+    }
+
+    #[test]
+    fn smem_single_lane_configuration() {
+        let mut cfg = SmemFlowConfig::default();
+        cfg.num_lanes = 1;
+        cfg.num_banks = 2;
+        cfg.num_subbanks = 1;
+
+        let mut graph: FlowGraph<CoreFlowPayload> = FlowGraph::new();
+        let mut subgraph = SmemSubgraph::attach(&mut graph, &cfg);
+
+        let req = SmemRequest::new(0, 16, 0x1, false, 0);
+        subgraph.issue(&mut graph, 0, req).unwrap();
+        for cycle in 0..50 {
+            graph.tick(cycle);
+            subgraph.collect_completions(&mut graph, cycle);
+            if !subgraph.completions.is_empty() {
+                return;
+            }
+        }
+        panic!("expected completion in single-lane config");
+    }
+
+    #[test]
+    fn smem_single_subbank_configuration() {
+        let mut cfg = SmemFlowConfig::default();
+        cfg.num_lanes = 1;
+        cfg.num_banks = 2;
+        cfg.num_subbanks = 1;
+
+        let mut graph: FlowGraph<CoreFlowPayload> = FlowGraph::new();
+        let mut subgraph = SmemSubgraph::attach(&mut graph, &cfg);
+
+        let req = SmemRequest::new(0, 16, 0x1, false, 1);
+        subgraph.issue(&mut graph, 0, req).unwrap();
+        for cycle in 0..50 {
+            graph.tick(cycle);
+            subgraph.collect_completions(&mut graph, cycle);
+            if !subgraph.completions.is_empty() {
+                return;
+            }
+        }
+        panic!("expected completion in single-subbank config");
+    }
+
+    #[test]
+    fn smem_address_zero_access() {
+        let mut cfg = SmemFlowConfig::default();
+        cfg.num_lanes = 1;
+        cfg.num_banks = 2;
+        cfg.num_subbanks = 2;
+
+        let mut graph: FlowGraph<CoreFlowPayload> = FlowGraph::new();
+        let mut subgraph = SmemSubgraph::attach(&mut graph, &cfg);
+
+        let mut req = SmemRequest::new(0, 16, 0x1, false, 0);
+        req.addr = 0;
+        subgraph.issue(&mut graph, 0, req).unwrap();
+        for cycle in 0..50 {
+            graph.tick(cycle);
+            subgraph.collect_completions(&mut graph, cycle);
+            if !subgraph.completions.is_empty() {
+                return;
+            }
+        }
+        panic!("expected completion for address 0");
+    }
 }

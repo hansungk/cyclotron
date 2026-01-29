@@ -44,3 +44,68 @@ impl<T: Send + Sync + 'static> TimedNode<T> for ServerNode<T> {
         self.server.outstanding()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::timeq::{ServerConfig, ServiceRequest, TimedServer};
+
+    #[test]
+    fn server_node_name_preserved() {
+        let node = ServerNode::new("test_node", TimedServer::<u32>::new(ServerConfig::default()));
+        assert_eq!("test_node", node.name());
+    }
+
+    #[test]
+    fn server_node_tick_advances_server() {
+        let mut node = ServerNode::new(
+            "node",
+            TimedServer::new(ServerConfig {
+                base_latency: 1,
+                bytes_per_cycle: 4,
+                queue_capacity: 2,
+                ..ServerConfig::default()
+            }),
+        );
+        let ticket = node.try_put(0, ServiceRequest::new(42u32, 4)).unwrap();
+        assert!(node.peek_ready(ticket.ready_at().saturating_sub(1)).is_none());
+        node.tick(ticket.ready_at());
+        assert!(node.peek_ready(ticket.ready_at()).is_some());
+    }
+
+    #[test]
+    fn server_node_take_ready_returns_completion() {
+        let mut node = ServerNode::new(
+            "node",
+            TimedServer::new(ServerConfig {
+                base_latency: 0,
+                bytes_per_cycle: 4,
+                queue_capacity: 2,
+                ..ServerConfig::default()
+            }),
+        );
+        let ticket = node.try_put(0, ServiceRequest::new(7u32, 4)).unwrap();
+        node.tick(ticket.ready_at());
+        let result = node
+            .take_ready(ticket.ready_at())
+            .expect("completion should exist");
+        assert_eq!(7, result.payload);
+    }
+
+    #[test]
+    fn server_node_outstanding_count_accurate() {
+        let mut node = ServerNode::new(
+            "node",
+            TimedServer::new(ServerConfig {
+                base_latency: 1,
+                bytes_per_cycle: 4,
+                queue_capacity: 4,
+                ..ServerConfig::default()
+            }),
+        );
+        node.try_put(0, ServiceRequest::new(1u32, 4)).unwrap();
+        node.try_put(0, ServiceRequest::new(2u32, 4)).unwrap();
+        node.try_put(0, ServiceRequest::new(3u32, 4)).unwrap();
+        assert_eq!(3, node.outstanding());
+    }
+}

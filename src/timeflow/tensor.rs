@@ -143,4 +143,35 @@ mod tests {
         tensor.tick(ticket.ready_at());
         assert_eq!(tensor.completed(), 1);
     }
+
+    #[test]
+    fn disabled_tensor_immediate() {
+        let mut cfg = TensorConfig::default();
+        cfg.enabled = false;
+        let mut tensor = TensorQueue::new(cfg);
+        let ticket = tensor.try_issue(5, 128).expect("issue").ticket;
+        assert_eq!(ticket.ready_at(), 5);
+    }
+
+    #[test]
+    fn queue_full_rejects() {
+        let mut cfg = TensorConfig::default();
+        cfg.enabled = true;
+        cfg.queue.queue_capacity = 1;
+        let mut tensor = TensorQueue::new(cfg);
+        assert!(tensor.try_issue(0, 64).is_ok());
+        let err = tensor.try_issue(0, 64).expect_err("queue full");
+        assert_eq!(super::TensorRejectReason::QueueFull, err.reason);
+    }
+
+    #[test]
+    fn zero_byte_operation_uses_base_latency() {
+        let mut cfg = TensorConfig::default();
+        cfg.enabled = true;
+        cfg.queue.base_latency = 4;
+        cfg.queue.bytes_per_cycle = 8;
+        let mut tensor = TensorQueue::new(cfg);
+        let ticket = tensor.try_issue(10, 0).unwrap().ticket;
+        assert_eq!(14, ticket.ready_at());
+    }
 }

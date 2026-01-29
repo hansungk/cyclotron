@@ -654,6 +654,9 @@ impl ClusterGmemGraph {
         if !request.kind.is_mem() {
             return;
         }
+        if !request.is_load {
+            return;
+        }
 
         let policy = self.policy;
         let l0_line = line_addr(request.addr, policy.l0_line_bytes);

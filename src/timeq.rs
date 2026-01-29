@@ -540,6 +540,84 @@ mod tests {
     }
 
     #[test]
+    fn variable_size_requests_compute_correct_service_time() {
+        let mut server = make_server(ServerConfig {
+            base_latency: 3,
+            bytes_per_cycle: 4,
+            queue_capacity: 8,
+            ..ServerConfig::default()
+        });
+
+        let sizes = [1u32, 4, 16, 64, 128];
+        for (idx, size) in sizes.iter().enumerate() {
+            let now = (idx as u64) * 100;
+            let ticket = server
+                .try_enqueue(now, ServiceRequest::new("req", *size))
+                .expect("request should be accepted");
+            let service = ((*size as u64) + 3) / 4;
+            let expected = now + 3 + service;
+            assert_eq!(expected, ticket.ready_at());
+        }
+    }
+
+    #[test]
+    fn enqueue_at_exact_warmup_boundary() {
+        let mut server = make_server(ServerConfig {
+            base_latency: 1,
+            bytes_per_cycle: 4,
+            queue_capacity: 2,
+            ..ServerConfig::default()
+        });
+        server.set_warmup_until(100);
+
+        let ticket = server
+            .try_enqueue(100, ServiceRequest::new("req", 4))
+            .expect("enqueue at warmup boundary should succeed");
+        assert_eq!(102, ticket.ready_at());
+    }
+
+    #[test]
+    fn completions_per_cycle_equals_one_with_many_ready() {
+        let mut server = make_server(ServerConfig {
+            base_latency: 0,
+            bytes_per_cycle: 8,
+            queue_capacity: 16,
+            completions_per_cycle: 1,
+            ..ServerConfig::default()
+        });
+
+        for _ in 0..5 {
+            server
+                .try_enqueue(0, ServiceRequest::new("req", 0))
+                .expect("enqueue should succeed");
+        }
+
+        server.advance_ready(0);
+        let mut ready = Vec::new();
+        server.service_ready(0, |res| ready.push(res.payload));
+        assert_eq!(1, ready.len(), "only one completion per cycle");
+        server.service_ready(0, |res| ready.push(res.payload));
+        assert_eq!(1, ready.len(), "same cycle should not drain more");
+    }
+
+    #[test]
+    fn advance_ready_moves_to_ready_queue() {
+        let mut server = make_server(ServerConfig {
+            base_latency: 1,
+            bytes_per_cycle: 4,
+            queue_capacity: 4,
+            ..ServerConfig::default()
+        });
+
+        let ticket = server
+            .try_enqueue(0, ServiceRequest::new("req", 4))
+            .expect("enqueue should succeed");
+        assert!(server.peek_ready(0).is_none());
+        server.advance_ready(ticket.ready_at());
+        assert!(server.peek_ready(ticket.ready_at()).is_some());
+    }
+
+    #[test]
     // Rejected requests due to Busy signal can be retried later
     fn busy_backpressure_can_also_be_retried() {
         let mut server = make_server(ServerConfig {

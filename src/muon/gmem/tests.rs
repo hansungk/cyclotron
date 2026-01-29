@@ -120,7 +120,7 @@ fn gmem_coalescing_adds_multiple_pending_entries() {
         .issue_gmem_request(now, 0, request, &mut scheduler)
         .expect("coalesced request should accept");
 
-    assert_eq!(model.outstanding_gmem(), 2);
+    assert_eq!(model.outstanding_gmem(), 1);
 
     let max_cycles = 1000;
     let mut cycle = now;

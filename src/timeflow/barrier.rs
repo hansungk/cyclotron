@@ -179,4 +179,41 @@ mod tests {
         let released = barrier.tick(cycle).unwrap_or_default();
         assert!(!released.is_empty(), "expected some warps released");
     }
+
+    #[test]
+    fn single_warp_barrier_immediate() {
+        let mut cfg = BarrierConfig::default();
+        cfg.enabled = true;
+        cfg.expected_warps = 1;
+        cfg.queue.base_latency = 0;
+
+        let mut barrier = BarrierManager::new(cfg, 1);
+        let release_at = barrier.arrive(0, 0, 0).expect("should schedule release");
+        let released = barrier.tick(release_at).expect("should release");
+        assert_eq!(released, vec![0]);
+    }
+
+    #[test]
+    fn partial_arrival_waits() {
+        let mut cfg = BarrierConfig::default();
+        cfg.enabled = true;
+        cfg.expected_warps = 4;
+        cfg.queue.base_latency = 1;
+
+        let mut barrier = BarrierManager::new(cfg, 4);
+        assert!(barrier.arrive(0, 0, 0).is_none());
+        assert!(barrier.arrive(0, 1, 0).is_none());
+        assert!(barrier.tick(2).is_none());
+    }
+
+    #[test]
+    fn disabled_barrier_passthrough() {
+        let mut cfg = BarrierConfig::default();
+        cfg.enabled = false;
+        cfg.expected_warps = 4;
+
+        let mut barrier = BarrierManager::new(cfg, 4);
+        let release = barrier.arrive(0, 0, 0);
+        assert_eq!(release, Some(0));
+    }
 }
