@@ -13,7 +13,7 @@ use crate::timeflow::{
 };
 use crate::timeq::Cycle;
 
-use super::logging::{LatencySink, SchedulerSink, SmemConflictSink, TraceSink};
+use super::logging::{LatencySink, SchedulerSink, SmemConflictSink, SmemSummarySink, TraceSink};
 use super::{CorePerfSummary, CoreStats, CoreTimingModel};
 
 impl CoreTimingModel {
@@ -102,6 +102,14 @@ impl CoreTimingModel {
                     None
                 }
             });
+        let smem_summary = perf_log::per_core_path("smem_summary.csv", core_id)
+            .and_then(|path| match SmemSummarySink::new(path) {
+                Ok(sink) => Some(sink),
+                Err(err) => {
+                    info!(logger, "failed to open smem summary file: {err}");
+                    None
+                }
+            });
 
         Self {
             graph: CoreGraph::new(config),
@@ -139,6 +147,7 @@ impl CoreTimingModel {
             trace,
             mem_latency,
             smem_conflicts,
+            smem_summary,
             scheduler_log,
             log_stats,
             last_logged_gmem_completed: 0,
@@ -359,7 +368,7 @@ impl CoreTimingModel {
         }
         self.last_metrics_cycle = Some(now);
         self.smem_util.cycles = self.smem_util.cycles.saturating_add(1);
-
+        // sample instantaneous utilization counters
         let sample = self.graph.sample_smem_utilization();
         self.smem_util.lane_busy_sum = self
             .smem_util
@@ -371,6 +380,59 @@ impl CoreTimingModel {
             .saturating_add(sample.bank_busy as u64);
         self.smem_util.lane_total = sample.lane_total as u64;
         self.smem_util.bank_total = sample.bank_total as u64;
+
+        // record per-bank busy samples and conflict attempts accumulated inside the
+        // timeflow SMEM subgraph (bank_attempts / bank_conflicts maintained there).
+        self.graph.record_smem_sample();
+
+        // Periodically log aggregated SMEM stats so users can observe utilization
+        // and bank conflict rate without opening CSVs. Use configured period.
+        let period = self.smem_config.smem_log_period.max(1);
+        if self.log_stats && now % period == 0 {
+            let cycles = self.smem_util.cycles.max(1) as f64;
+            let lane_total = self.smem_util.lane_total.max(1) as f64;
+            let bank_total = self.smem_util.bank_total.max(1) as f64;
+            let lane_busy = self.smem_util.lane_busy_sum as f64;
+            let bank_busy = self.smem_util.bank_busy_sum as f64;
+            let lane_util_pct = 100.0 * lane_busy / (cycles * lane_total);
+            let bank_util_pct = 100.0 * bank_busy / (cycles * bank_total);
+
+            let smem_stats = self.graph.smem_stats();
+            let mut total_attempts: u64 = 0;
+            let mut total_conflicts: u64 = 0;
+            for a in &smem_stats.bank_attempts {
+                total_attempts = total_attempts.saturating_add(*a);
+            }
+            for c in &smem_stats.bank_conflicts {
+                total_conflicts = total_conflicts.saturating_add(*c);
+            }
+            let conflict_rate_pct = if total_attempts == 0 {
+                0.0
+            } else {
+                100.0 * (total_conflicts as f64) / (total_attempts as f64)
+            };
+
+            info!(
+                self.logger,
+                "[smem] util lane={:.2}% bank={:.2}% conflicts={:.2}% attempts={} conflicts={}",
+                lane_util_pct,
+                bank_util_pct,
+                conflict_rate_pct,
+                total_attempts,
+                total_conflicts
+            );
+            if let Some(sink) = self.smem_summary.as_mut() {
+                sink.write_row(
+                    now,
+                    self.core_id,
+                    lane_util_pct,
+                    bank_util_pct,
+                    total_attempts,
+                    total_conflicts,
+                    conflict_rate_pct,
+                );
+            }
+        }
     }
 
     pub fn dma_completed(&self) -> u64 {

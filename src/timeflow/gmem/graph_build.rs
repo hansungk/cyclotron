@@ -11,7 +11,6 @@ use super::policy::GmemPolicyConfig;
 #[serde(default)]
 pub struct LinkConfig {
     pub entries: usize,
-    #[serde(default)]
     pub bytes: Option<u32>,
 }
 
@@ -34,42 +33,25 @@ impl LinkConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(default)] 
 pub struct GmemNodeConfig {
-    #[serde(default)]
     pub coalescer: ServerConfig,
-    #[serde(default)]
     pub l0_flush_gate: ServerConfig,
-    #[serde(default)]
     pub l0d_tag: ServerConfig,
-    #[serde(default)]
     pub l0d_data: ServerConfig,
-    #[serde(default)]
     pub l0d_mshr: ServerConfig,
-    #[serde(default)]
     pub l1_flush_gate: ServerConfig,
-    #[serde(default)]
     pub l1_tag: ServerConfig,
-    #[serde(default)]
     pub l1_data: ServerConfig,
-    #[serde(default)]
     pub l1_mshr: ServerConfig,
-    #[serde(default)]
     pub l1_refill: ServerConfig,
-    #[serde(default)]
     pub l1_writeback: ServerConfig,
-    #[serde(default)]
     pub l2_tag: ServerConfig,
-    #[serde(default)]
     pub l2_data: ServerConfig,
-    #[serde(default)]
     pub l2_mshr: ServerConfig,
-    #[serde(default)]
     pub l2_refill: ServerConfig,
-    #[serde(default)]
     pub l2_writeback: ServerConfig,
-    #[serde(default)]
     pub dram: ServerConfig,
-    #[serde(default)]
     pub return_path: ServerConfig,
 }
 
@@ -189,58 +171,33 @@ impl Default for GmemNodeConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
 pub struct GmemLinkConfig {
-    #[serde(default)]
     pub default: LinkConfig,
-    #[serde(default)]
     pub coalescer_to_l0_flush: Option<LinkConfig>,
-    #[serde(default)]
     pub l0_flush_to_l0_tag: Option<LinkConfig>,
-    #[serde(default)]
     pub l0_flush_to_return: Option<LinkConfig>,
-    #[serde(default)]
     pub l0_flush_to_l1_flush: Option<LinkConfig>,
-    #[serde(default)]
     pub l0_tag_to_l0_hit: Option<LinkConfig>,
-    #[serde(default)]
     pub l0_tag_to_l0_mshr: Option<LinkConfig>,
-    #[serde(default)]
     pub l0_hit_to_return: Option<LinkConfig>,
-    #[serde(default)]
     pub l0_mshr_to_l1_flush: Option<LinkConfig>,
-    #[serde(default)]
     pub l1_flush_to_l1_tag: Option<LinkConfig>,
-    #[serde(default)]
     pub l1_flush_to_return: Option<LinkConfig>,
-    #[serde(default)]
     pub l1_tag_to_l1_hit: Option<LinkConfig>,
-    #[serde(default)]
     pub l1_tag_to_l1_mshr: Option<LinkConfig>,
-    #[serde(default)]
     pub l1_hit_to_return: Option<LinkConfig>,
-    #[serde(default)]
     pub l1_mshr_to_l1_writeback: Option<LinkConfig>,
-    #[serde(default)]
     pub l1_mshr_to_l2_tag: Option<LinkConfig>,
-    #[serde(default)]
     pub l1_writeback_to_l2_tag: Option<LinkConfig>,
-    #[serde(default)]
     pub l2_tag_to_l2_hit: Option<LinkConfig>,
-    #[serde(default)]
     pub l2_tag_to_l2_mshr: Option<LinkConfig>,
-    #[serde(default)]
     pub l2_hit_to_l1_refill: Option<LinkConfig>,
-    #[serde(default)]
     pub l2_mshr_to_l2_writeback: Option<LinkConfig>,
-    #[serde(default)]
     pub l2_mshr_to_dram: Option<LinkConfig>,
-    #[serde(default)]
     pub l2_writeback_to_dram: Option<LinkConfig>,
-    #[serde(default)]
     pub dram_to_l2_refill: Option<LinkConfig>,
-    #[serde(default)]
     pub l2_refill_to_l1_refill: Option<LinkConfig>,
-    #[serde(default)]
     pub l1_refill_to_return: Option<LinkConfig>,
 }
 
@@ -278,12 +235,10 @@ impl Default for GmemLinkConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
 pub struct GmemFlowConfig {
-    #[serde(default)]
     pub nodes: GmemNodeConfig,
-    #[serde(default)]
     pub links: GmemLinkConfig,
-    #[serde(default)]
     pub policy: GmemPolicyConfig,
 }
 

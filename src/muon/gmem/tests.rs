@@ -47,6 +47,7 @@ fn make_model_with_lsu(num_warps: usize, lsu_depth: usize) -> CoreTimingModel {
         word_bytes: 4,
         serialize_cores: false,
         link_capacity: 1,
+        smem_log_period: 1000,
     };
     let mut cfg = CoreGraphConfig {
         gmem,
@@ -232,6 +233,7 @@ fn smem_crossbar_capacity_backpressures_new_requests() {
         word_bytes: 4,
         serialize_cores: false,
         link_capacity: 1,
+        smem_log_period: 1000,
     };
     let cfg = CoreGraphConfig {
         gmem,

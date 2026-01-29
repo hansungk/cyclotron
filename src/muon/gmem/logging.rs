@@ -240,3 +240,54 @@ impl Drop for SchedulerSink {
         let _ = self.writer.flush();
     }
 }
+
+pub(crate) struct SmemSummarySink {
+    writer: BufWriter<File>,
+    wrote_header: bool,
+}
+
+impl SmemSummarySink {
+    pub(crate) fn new(path: PathBuf) -> std::io::Result<Self> {
+        let file = File::create(path)?;
+        Ok(Self {
+            writer: BufWriter::new(file),
+            wrote_header: false,
+        })
+    }
+
+    pub(crate) fn write_row(
+        &mut self,
+        cycle: Cycle,
+        core: usize,
+        lane_util_pct: f64,
+        bank_util_pct: f64,
+        total_attempts: u64,
+        total_conflicts: u64,
+        conflict_rate_pct: f64,
+    ) {
+        if !self.wrote_header {
+            let _ = writeln!(
+                self.writer,
+                "cycle,core,lane_util_pct,bank_util_pct,total_attempts,total_conflicts,conflict_rate_pct"
+            );
+            self.wrote_header = true;
+        }
+        let _ = writeln!(
+            self.writer,
+            "{},{},{:.6},{:.6},{},{},{}",
+            cycle,
+            core,
+            lane_util_pct,
+            bank_util_pct,
+            total_attempts,
+            total_conflicts,
+            format!("{:.6}", conflict_rate_pct)
+        );
+    }
+}
+
+impl Drop for SmemSummarySink {
+    fn drop(&mut self) {
+        let _ = self.writer.flush();
+    }
+}

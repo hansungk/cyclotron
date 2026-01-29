@@ -6,7 +6,7 @@ use crate::timeflow::types::{CoreFlowPayload, NodeId};
 use crate::timeq::{Backpressure, Cycle, ServerConfig, ServiceRequest, Ticket, TimedServer};
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct SmemStats {
     pub issued: u64,
     pub completed: u64,
@@ -18,6 +18,11 @@ pub struct SmemStats {
     pub max_inflight: u64,
     pub max_completion_queue: u64,
     pub last_completion_cycle: Option<Cycle>,
+    // Sampling and conflict counters (per-bank)
+    pub sample_cycles: u64,
+    pub bank_busy_samples: Vec<u64>,
+    pub bank_attempts: Vec<u64>,
+    pub bank_conflicts: Vec<u64>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -84,31 +89,22 @@ pub struct SmemReject {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
 pub struct SmemFlowConfig {
-    #[serde(default)]
     pub lane: ServerConfig,
-    #[serde(default)]
     pub serial: ServerConfig,
-    #[serde(default)]
     pub crossbar: ServerConfig,
-    #[serde(default)]
     pub subbank: ServerConfig,
-    #[serde(default)]
     pub bank: ServerConfig,
-    #[serde(default)]
     pub dual_port: bool,
-    #[serde(default)]
     pub num_banks: usize,
-    #[serde(default)]
     pub num_lanes: usize,
-    #[serde(default)]
     pub num_subbanks: usize,
-    #[serde(default)]
     pub word_bytes: u32,
-    #[serde(default)]
     pub serialize_cores: bool,
-    #[serde(default)]
     pub link_capacity: usize,
+    // How often (in cycles) to emit SMEM aggregated logs / CSV rows. Default: 1000.
+    pub smem_log_period: Cycle,
 }
 
 impl Default for SmemFlowConfig {
@@ -151,6 +147,7 @@ impl Default for SmemFlowConfig {
             word_bytes: 4,
             serialize_cores: false,
             link_capacity: 32,
+            smem_log_period: 1000,
         }
     }
 }
@@ -310,6 +307,11 @@ impl SmemSubgraph {
             subbank_nodes.push(bank_subbanks);
         }
 
+        let mut stats = SmemStats::default();
+        stats.bank_busy_samples = vec![0; config.num_banks];
+        stats.bank_attempts = vec![0; config.num_banks];
+        stats.bank_conflicts = vec![0; config.num_banks];
+
         Self {
             serial_node,
             lane_nodes,
@@ -320,7 +322,28 @@ impl SmemSubgraph {
             subbank_nodes,
             completions: VecDeque::new(),
             next_id: 0,
-            stats: SmemStats::default(),
+            stats,
+        }
+    }
+
+    /// Sample per-bank and per-port busy state and accumulate into statistics.
+    /// Call this once per cycle to build utilization counters.
+    pub fn sample_and_accumulate(&mut self, graph: &mut FlowGraph<CoreFlowPayload>) {
+        self.stats.sample_cycles = self.stats.sample_cycles.saturating_add(1);
+        let num_banks = self.stats.bank_busy_samples.len();
+        for bank in 0..num_banks {
+            let busy = if self.dual_port {
+                let r = self.bank_read_nodes.get(bank).map(|&n| graph.with_node_mut(n, |nd| nd.outstanding() > 0)).unwrap_or(false);
+                let w = self.bank_write_nodes.get(bank).map(|&n| graph.with_node_mut(n, |nd| nd.outstanding() > 0)).unwrap_or(false);
+                r || w
+            } else {
+                // bank_nodes stores one node per bank when not dual_port
+                let node = self.bank_nodes.get(bank).copied();
+                node.map(|n| graph.with_node_mut(n, |nd| nd.outstanding() > 0)).unwrap_or(false)
+            };
+            if busy {
+                self.stats.bank_busy_samples[bank] = self.stats.bank_busy_samples[bank].saturating_add(1);
+            }
         }
     }
 
@@ -399,6 +422,12 @@ impl SmemSubgraph {
                         retry_at = now.saturating_add(1);
                     }
                     let request = extract_smem_request(request);
+                    // record an attempt and a conflict for this bank
+                    let bank = request.bank.min(self.stats.bank_attempts.len().saturating_sub(1));
+                    if bank < self.stats.bank_attempts.len() {
+                        self.stats.bank_attempts[bank] = self.stats.bank_attempts[bank].saturating_add(1);
+                        self.stats.bank_conflicts[bank] = self.stats.bank_conflicts[bank].saturating_add(1);
+                    }
                     Err(SmemReject {
                         request,
                         retry_at,
@@ -409,6 +438,12 @@ impl SmemSubgraph {
                     self.stats.queue_full_rejects += 1;
                     let retry_at = now.saturating_add(1);
                     let request = extract_smem_request(request);
+                    // record an attempt and a conflict for this bank
+                    let bank = request.bank.min(self.stats.bank_attempts.len().saturating_sub(1));
+                    if bank < self.stats.bank_attempts.len() {
+                        self.stats.bank_attempts[bank] = self.stats.bank_attempts[bank].saturating_add(1);
+                        self.stats.bank_conflicts[bank] = self.stats.bank_conflicts[bank].saturating_add(1);
+                    }
                     Err(SmemReject {
                         request,
                         retry_at,

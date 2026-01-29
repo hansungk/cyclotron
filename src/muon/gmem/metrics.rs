@@ -2,7 +2,7 @@ use serde::Serialize;
 
 use crate::timeflow::{GmemStats, SmemStats};
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct CoreStats {
     pub gmem: GmemStats,
     pub smem: SmemStats,

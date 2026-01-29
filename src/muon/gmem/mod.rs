@@ -22,7 +22,7 @@ mod tests;
 
 pub use metrics::*;
 
-use logging::{LatencySink, SchedulerSink, SmemConflictSink, TraceSink};
+use logging::{LatencySink, SchedulerSink, SmemConflictSink, SmemSummarySink, TraceSink};
 
 pub struct CoreTimingModel {
     graph: CoreGraph,
@@ -60,6 +60,7 @@ pub struct CoreTimingModel {
     trace: Option<TraceSink>,
     mem_latency: Option<LatencySink>,
     smem_conflicts: Option<SmemConflictSink>,
+    smem_summary: Option<SmemSummarySink>,
     scheduler_log: Option<SchedulerSink>,
     log_stats: bool,
     last_logged_gmem_completed: u64,

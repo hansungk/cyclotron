@@ -20,28 +20,18 @@ use crate::timeq::Cycle;
 use serde::Deserialize;
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
 pub struct CoreGraphConfig {
-    #[serde(default)]
     pub gmem: GmemFlowConfig,
-    #[serde(default)]
     pub smem: SmemFlowConfig,
-    #[serde(default)]
     pub lsu: LsuFlowConfig,
-    #[serde(default)]
     pub icache: IcacheFlowConfig,
-    #[serde(default)]
     pub writeback: WritebackConfig,
-    #[serde(default)]
     pub operand_fetch: OperandFetchConfig,
-    #[serde(default)]
     pub barrier: BarrierConfig,
-    #[serde(default)]
     pub fence: FenceConfig,
-    #[serde(default)]
     pub dma: DmaConfig,
-    #[serde(default)]
     pub tensor: TensorConfig,
-    #[serde(default)]
     pub scheduler: WarpSchedulerConfig,
 }
 
@@ -124,7 +114,7 @@ impl CoreGraph {
     }
 
     pub fn smem_stats(&self) -> SmemStats {
-        self.smem.stats
+        self.smem.stats.clone()
     }
 
     pub fn clear_smem_stats(&mut self) {
@@ -133,6 +123,11 @@ impl CoreGraph {
 
     pub fn sample_smem_utilization(&mut self) -> SmemUtilSample {
         self.smem.sample_utilization(&mut self.graph)
+    }
+
+    /// Record one SMEM sample cycle into SMEM statistics (busy samples per bank).
+    pub fn record_smem_sample(&mut self) {
+        self.smem.sample_and_accumulate(&mut self.graph);
     }
 }
 
