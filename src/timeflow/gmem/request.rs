@@ -155,6 +155,9 @@ pub struct GmemReject {
     pub reason: GmemRejectReason,
 }
 
+/// Convenience alias for functions that return GmemReject on error.
+pub type GmemResult<T> = Result<T, GmemReject>;
+
 pub(crate) fn extract_gmem_request(request: ServiceRequest<CoreFlowPayload>) -> GmemRequest {
     match request.payload {
         CoreFlowPayload::Gmem(req) => req,

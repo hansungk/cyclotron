@@ -189,7 +189,7 @@ pub fn aggregate_summaries(per_core: &[CorePerfSummary]) -> AggregatePerfSummary
             .smem_sum
             .saturating_add(core.latencies.smem_sum);
 
-        total.gmem_stats.accumulate_from(&core.gmem_stats);
+        total.gmem_stats += &core.gmem_stats;
 
         total.smem_stats.issued = total.smem_stats.issued.saturating_add(core.smem_stats.issued);
         total.smem_stats.completed =

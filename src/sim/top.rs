@@ -151,7 +151,7 @@ impl CyclotronTop {
         let num_clusters = 1;
         let cores_per_cluster = cluster_config.muon_config.num_cores;
         let gmem_timing = Arc::new(RwLock::new(crate::timeflow::ClusterGmemGraph::new(
-            cluster_config.timing_config.gmem.clone(),
+            cluster_config.timing_config.memory.gmem.clone(),
             num_clusters,
             cores_per_cluster,
         )));

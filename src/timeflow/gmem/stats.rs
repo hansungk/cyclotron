@@ -1,4 +1,5 @@
 use crate::timeq::Cycle;
+use std::ops::AddAssign;
 use serde::Serialize;
 
 #[derive(Debug, Clone, Copy, Default, Serialize)]
@@ -83,6 +84,12 @@ impl GmemStats {
     }
 
     pub fn accumulate_from(&mut self, other: &GmemStats) {
+        *self += other;
+    }
+}
+
+impl AddAssign<&GmemStats> for GmemStats {
+    fn add_assign(&mut self, other: &GmemStats) {
         self.issued = self.issued.saturating_add(other.issued);
         self.completed = self.completed.saturating_add(other.completed);
         self.queue_full_rejects = self

@@ -7,6 +7,7 @@ pub mod graph;
 pub mod icache;
 pub mod lsu;
 pub mod operand_fetch;
+pub mod simple_queue;
 pub mod server_node;
 pub mod smem;
 pub mod tensor;

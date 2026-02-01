@@ -1,4 +1,5 @@
 use serde::Deserialize;
+use std::collections::HashMap;
 
 use crate::timeq::{Cycle, ServerConfig, ServiceRequest, TimedServer};
 
@@ -29,35 +30,74 @@ impl Default for BarrierConfig {
     }
 }
 
+impl BarrierConfig {
+    fn expected_warps_for(&self, num_warps: usize) -> usize {
+        let total = num_warps.max(1);
+        if self.expected_warps == 0 {
+            total
+        } else {
+            self.expected_warps.min(total)
+        }
+    }
+}
+
 pub struct BarrierManager {
     enabled: bool,
     expected_warps: usize,
-    barrier_id_bits: u32,
     server: TimedServer<u32>,
-    states: std::collections::HashMap<u32, BarrierState>,
+    states: HashMap<u32, BarrierState>,
     num_warps: usize,
+    use_mask: bool,
+    expected_mask: u64,
+    id_mask: Option<u32>,
 }
 
 struct BarrierState {
-    arrived: Vec<bool>,
+    arrived: ArrivedState,
     releasing: Vec<usize>,
     release_at: Option<Cycle>,
 }
 
+enum ArrivedState {
+    Mask { arrived: u64 },
+    Vec { arrived: Vec<bool> },
+}
+
 impl BarrierManager {
     pub fn new(config: BarrierConfig, num_warps: usize) -> Self {
-        let expected = if config.expected_warps == 0 {
-            num_warps.max(1)
+        let num_warps = num_warps.max(1);
+        let expected = config.expected_warps_for(num_warps);
+        let use_mask = expected == num_warps && num_warps <= 64;
+        let expected_mask = if use_mask {
+            if num_warps == 64 {
+                u64::MAX
+            } else {
+                (1u64 << num_warps) - 1
+            }
         } else {
-            config.expected_warps.min(num_warps.max(1))
+            0
+        };
+        let id_mask = if config.barrier_id_bits == 0 {
+            None
+        } else if config.barrier_id_bits >= 32 {
+            None
+        } else {
+            Some((1u32 << config.barrier_id_bits) - 1)
+        };
+        let state_capacity = if config.barrier_id_bits == 0 {
+            1
+        } else {
+            (1usize << config.barrier_id_bits.min(16)).max(1)
         };
         Self {
             enabled: config.enabled,
             expected_warps: expected,
-            barrier_id_bits: config.barrier_id_bits,
             server: TimedServer::new(config.queue),
-            states: std::collections::HashMap::new(),
-            num_warps: num_warps.max(1),
+            states: HashMap::with_capacity(state_capacity),
+            num_warps,
+            use_mask,
+            expected_mask,
+            id_mask,
         }
     }
 
@@ -71,7 +111,13 @@ impl BarrierManager {
 
         let id = self.normalize_id(barrier_id);
         let state = self.states.entry(id).or_insert_with(|| BarrierState {
-            arrived: vec![false; self.num_warps],
+            arrived: if self.use_mask {
+                ArrivedState::Mask { arrived: 0 }
+            } else {
+                ArrivedState::Vec {
+                    arrived: vec![false; self.num_warps],
+                }
+            },
             releasing: Vec::new(),
             release_at: None,
         });
@@ -80,19 +126,42 @@ impl BarrierManager {
             return Some(release_at);
         }
 
-        state.arrived[warp] = true;
-        let arrived_count = state.arrived.iter().filter(|&&v| v).count();
-        if arrived_count < self.expected_warps {
+        let ready = match &mut state.arrived {
+            ArrivedState::Mask { arrived } => {
+                *arrived |= 1u64 << warp;
+                *arrived == self.expected_mask
+            }
+            ArrivedState::Vec { arrived } => {
+                arrived[warp] = true;
+                let arrived_count = arrived.iter().filter(|&&v| v).count();
+                arrived_count >= self.expected_warps
+            }
+        };
+
+        if !ready {
             return None;
         }
 
         let request = ServiceRequest::new(id, 0);
         if let Ok(ticket) = self.server.try_enqueue(now, request) {
             let mut warps = Vec::new();
-            for (idx, arrived) in state.arrived.iter_mut().enumerate() {
-                if *arrived {
-                    warps.push(idx);
-                    *arrived = false;
+            match &mut state.arrived {
+                ArrivedState::Mask { arrived } => {
+                    let mut mask = *arrived;
+                    while mask != 0 {
+                        let idx = mask.trailing_zeros() as usize;
+                        warps.push(idx);
+                        mask &= mask - 1;
+                    }
+                    *arrived = 0;
+                }
+                ArrivedState::Vec { arrived } => {
+                    for (idx, arrived) in arrived.iter_mut().enumerate() {
+                        if *arrived {
+                            warps.push(idx);
+                            *arrived = false;
+                        }
+                    }
                 }
             }
             state.releasing = warps;
@@ -130,14 +199,7 @@ impl BarrierManager {
     }
 
     fn normalize_id(&self, barrier_id: u32) -> u32 {
-        if self.barrier_id_bits == 0 {
-            barrier_id
-        } else if self.barrier_id_bits >= 32 {
-            barrier_id
-        } else {
-            let mask = (1u32 << self.barrier_id_bits) - 1;
-            barrier_id & mask
-        }
+        self.id_mask.map_or(barrier_id, |mask| barrier_id & mask)
     }
 }
 

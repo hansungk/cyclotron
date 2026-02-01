@@ -1,13 +1,15 @@
+use std::sync::Arc;
+
 use crate::timeflow::graph::TimedNode;
 use crate::timeq::{Backpressure, Cycle, ServiceRequest, ServiceResult, Ticket, TimedServer};
 
 pub struct ServerNode<T> {
-    name: String,
+    name: Arc<str>,
     server: TimedServer<T>,
 }
 
 impl<T> ServerNode<T> {
-    pub fn new(name: impl Into<String>, server: TimedServer<T>) -> Self {
+    pub fn new(name: impl Into<Arc<str>>, server: TimedServer<T>) -> Self {
         Self {
             name: name.into(),
             server,
@@ -50,6 +52,18 @@ mod tests {
     use super::*;
     use crate::timeq::{ServerConfig, ServiceRequest, TimedServer};
 
+    fn make_node(base_latency: u64, queue_capacity: usize) -> ServerNode<u32> {
+        ServerNode::new(
+            "node",
+            TimedServer::new(ServerConfig {
+                base_latency,
+                bytes_per_cycle: 4,
+                queue_capacity,
+                ..ServerConfig::default()
+            }),
+        )
+    }
+
     #[test]
     fn server_node_name_preserved() {
         let node = ServerNode::new("test_node", TimedServer::<u32>::new(ServerConfig::default()));
@@ -58,15 +72,7 @@ mod tests {
 
     #[test]
     fn server_node_tick_advances_server() {
-        let mut node = ServerNode::new(
-            "node",
-            TimedServer::new(ServerConfig {
-                base_latency: 1,
-                bytes_per_cycle: 4,
-                queue_capacity: 2,
-                ..ServerConfig::default()
-            }),
-        );
+        let mut node = make_node(1, 2);
         let ticket = node.try_put(0, ServiceRequest::new(42u32, 4)).unwrap();
         assert!(node.peek_ready(ticket.ready_at().saturating_sub(1)).is_none());
         node.tick(ticket.ready_at());
@@ -75,15 +81,7 @@ mod tests {
 
     #[test]
     fn server_node_take_ready_returns_completion() {
-        let mut node = ServerNode::new(
-            "node",
-            TimedServer::new(ServerConfig {
-                base_latency: 0,
-                bytes_per_cycle: 4,
-                queue_capacity: 2,
-                ..ServerConfig::default()
-            }),
-        );
+        let mut node = make_node(0, 2);
         let ticket = node.try_put(0, ServiceRequest::new(7u32, 4)).unwrap();
         node.tick(ticket.ready_at());
         let result = node
@@ -94,15 +92,7 @@ mod tests {
 
     #[test]
     fn server_node_outstanding_count_accurate() {
-        let mut node = ServerNode::new(
-            "node",
-            TimedServer::new(ServerConfig {
-                base_latency: 1,
-                bytes_per_cycle: 4,
-                queue_capacity: 4,
-                ..ServerConfig::default()
-            }),
-        );
+        let mut node = make_node(1, 4);
         node.try_put(0, ServiceRequest::new(1u32, 4)).unwrap();
         node.try_put(0, ServiceRequest::new(2u32, 4)).unwrap();
         node.try_put(0, ServiceRequest::new(3u32, 4)).unwrap();
@@ -111,15 +101,7 @@ mod tests {
 
     #[test]
     fn server_node_peek_ready_non_consuming() {
-        let mut node = ServerNode::new(
-            "node",
-            TimedServer::new(ServerConfig {
-                base_latency: 0,
-                bytes_per_cycle: 4,
-                queue_capacity: 2,
-                ..ServerConfig::default()
-            }),
-        );
+        let mut node = make_node(0, 2);
         let ticket = node.try_put(0, ServiceRequest::new(9u32, 4)).unwrap();
         node.tick(ticket.ready_at());
         assert!(node.peek_ready(ticket.ready_at()).is_some());

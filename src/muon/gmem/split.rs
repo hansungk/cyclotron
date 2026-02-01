@@ -83,24 +83,49 @@ impl CoreTimingModel {
             if lane_addrs.is_empty() {
                 return None;
             }
-            let mut banks = std::collections::HashSet::new();
-            let mut subbanks = std::collections::HashSet::new();
-            for &addr in lane_addrs {
-                let word = addr / word_bytes;
-                let bank = (word % num_banks) as usize;
-                let subbank = ((word / num_banks) % num_subbanks) as usize;
-                banks.insert(bank);
-                subbanks.insert((bank, subbank));
+            // Fast path: use bitmasks when bank/subbank counts are small.
+            let nb = num_banks as usize;
+            let ns = num_subbanks as usize;
+            if nb <= 64 && ns <= 64 {
+                let mut bank_mask: u64 = 0;
+                let mut subbank_masks: Vec<u64> = vec![0u64; nb];
+                for &addr in lane_addrs {
+                    let word = addr / word_bytes;
+                    let bank = (word % num_banks) as usize;
+                    let subbank = ((word / num_banks) % num_subbanks) as usize;
+                    bank_mask |= 1u64 << bank;
+                    subbank_masks[bank] |= 1u64 << subbank;
+                }
+                let unique_banks = bank_mask.count_ones() as u32;
+                let unique_subbanks = subbank_masks.iter().map(|m| m.count_ones()).sum::<u32>();
+                let conflict_lanes = active.saturating_sub(unique_banks.max(1));
+                return Some(SmemConflictSample {
+                    active_lanes: active,
+                    unique_banks,
+                    unique_subbanks,
+                    conflict_lanes,
+                });
+            } else {
+                // Fallback: use HashSet for arbitrary sizes to preserve correctness.
+                let mut banks = std::collections::HashSet::new();
+                let mut subbanks = std::collections::HashSet::new();
+                for &addr in lane_addrs {
+                    let word = addr / word_bytes;
+                    let bank = (word % num_banks) as usize;
+                    let subbank = ((word / num_banks) % num_subbanks) as usize;
+                    banks.insert(bank);
+                    subbanks.insert((bank, subbank));
+                }
+                let unique_banks = banks.len() as u32;
+                let unique_subbanks = subbanks.len() as u32;
+                let conflict_lanes = active.saturating_sub(unique_banks.max(1));
+                return Some(SmemConflictSample {
+                    active_lanes: active,
+                    unique_banks,
+                    unique_subbanks,
+                    conflict_lanes,
+                });
             }
-            let unique_banks = banks.len() as u32;
-            let unique_subbanks = subbanks.len() as u32;
-            let conflict_lanes = active.saturating_sub(unique_banks.max(1));
-            return Some(SmemConflictSample {
-                active_lanes: active,
-                unique_banks,
-                unique_subbanks,
-                conflict_lanes,
-            });
         }
 
         let unique_banks = 1;

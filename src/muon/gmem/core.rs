@@ -58,19 +58,19 @@ impl CoreTimingModel {
         trace_path: Option<PathBuf>,
         log_stats: bool,
     ) -> Self {
-        let lsu = LsuSubgraph::new(config.lsu.clone(), num_warps);
-        let gmem_policy = config.gmem.policy;
-        let smem_config = config.smem.clone();
-        let icache = IcacheSubgraph::new(config.icache.clone());
-        let operand_fetch = OperandFetchQueue::new(config.operand_fetch.clone());
-        let writeback = WritebackQueue::new(config.writeback.clone());
-        let barrier = BarrierManager::new(config.barrier.clone(), num_warps);
-        let fence = FenceQueue::new(config.fence.clone());
-        let dma = DmaQueue::new(config.dma.clone());
-        let tensor = TensorQueue::new(config.tensor.clone());
-        let issue_scheduler = WarpIssueScheduler::new(config.scheduler.clone());
+        let lsu = LsuSubgraph::new(config.memory.lsu.clone(), num_warps);
+        let gmem_policy = config.memory.gmem.policy;
+        let smem_config = config.memory.smem.clone();
+        let icache = IcacheSubgraph::new(config.memory.icache.clone());
+        let operand_fetch = OperandFetchQueue::new(config.memory.operand_fetch.clone());
+        let writeback = WritebackQueue::new(config.memory.writeback.clone());
+        let barrier = BarrierManager::new(config.io.barrier.clone(), num_warps);
+        let fence = FenceQueue::new(config.io.fence.clone());
+        let dma = DmaQueue::new(config.io.dma.clone());
+        let tensor = TensorQueue::new(config.compute.tensor.clone());
+        let issue_scheduler = WarpIssueScheduler::new(config.compute.scheduler.clone());
         let mut scheduler_stats = super::SchedulerSummary::default();
-        scheduler_stats.issue_width = config.scheduler.issue_width.max(1) as u64;
+        scheduler_stats.issue_width = config.compute.scheduler.issue_width.max(1) as u64;
         let trace = trace_path.and_then(|path| match TraceSink::new(path) {
             Ok(sink) => Some(sink),
             Err(err) => {

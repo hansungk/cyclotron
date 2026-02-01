@@ -2,7 +2,9 @@ use std::collections::VecDeque;
 
 use serde::Deserialize;
 
-use crate::timeq::{Backpressure, Cycle, ServerConfig, ServiceRequest, Ticket, TimedServer};
+use crate::timeflow::simple_queue::SimpleTimedQueue;
+use crate::timeflow::types::RejectReason;
+use crate::timeq::{Cycle, ServerConfig, Ticket};
 
 use super::gmem::GmemCompletion;
 use super::smem::SmemCompletion;
@@ -54,8 +56,7 @@ impl Default for WritebackConfig {
 }
 
 pub struct WritebackQueue {
-    enabled: bool,
-    server: TimedServer<WritebackPayload>,
+    queue: SimpleTimedQueue<WritebackPayload>,
     ready: VecDeque<WritebackPayload>,
 }
 
@@ -64,8 +65,7 @@ impl WritebackQueue {
         let mut cfg = config.queue;
         cfg.base_latency = cfg.base_latency.max(0);
         Self {
-            enabled: config.enabled,
-            server: TimedServer::new(cfg),
+            queue: SimpleTimedQueue::new(config.enabled, cfg),
             ready: VecDeque::new(),
         }
     }
@@ -75,41 +75,28 @@ impl WritebackQueue {
         now: Cycle,
         payload: WritebackPayload,
     ) -> Result<WritebackIssue, WritebackReject> {
-        if !self.enabled {
+        if !self.queue.is_enabled() {
             self.ready.push_back(payload);
             return Ok(WritebackIssue {
                 ticket: Ticket::synthetic(now, now, 0),
             });
         }
 
-        let request = ServiceRequest::new(payload, 0);
-        match self.server.try_enqueue(now, request) {
+        match self.queue.try_issue_with_payload(now, payload, 0) {
             Ok(ticket) => Ok(WritebackIssue { ticket }),
-            Err(Backpressure::Busy { available_at, .. }) => Err(WritebackReject {
-                retry_at: available_at.max(now.saturating_add(1)),
-                reason: WritebackRejectReason::Busy,
+            Err(err) => Err(WritebackReject {
+                retry_at: err.retry_at,
+                reason: match err.reason {
+                    RejectReason::Busy => WritebackRejectReason::Busy,
+                    RejectReason::QueueFull => WritebackRejectReason::QueueFull,
+                },
             }),
-            Err(Backpressure::QueueFull { .. }) => {
-                let retry_at = self
-                    .server
-                    .oldest_ticket()
-                    .map(|ticket| ticket.ready_at())
-                    .unwrap_or_else(|| self.server.available_at())
-                    .max(now.saturating_add(1));
-                Err(WritebackReject {
-                    retry_at,
-                    reason: WritebackRejectReason::QueueFull,
-                })
-            }
         }
     }
 
     pub fn tick(&mut self, now: Cycle) {
-        if !self.enabled {
-            return;
-        }
-        self.server.service_ready(now, |result| {
-            self.ready.push_back(result.payload);
+        self.queue.tick(now, |payload| {
+            self.ready.push_back(payload);
         });
     }
 
@@ -122,7 +109,7 @@ impl WritebackQueue {
     }
 
     pub fn is_enabled(&self) -> bool {
-        self.enabled
+        self.queue.is_enabled()
     }
 }
 

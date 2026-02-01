@@ -1,6 +1,8 @@
 use serde::Deserialize;
 
-use crate::timeq::{Backpressure, Cycle, ServerConfig, ServiceRequest, Ticket, TimedServer};
+use crate::timeflow::simple_queue::SimpleTimedQueue;
+use crate::timeflow::types::RejectReason;
+use crate::timeq::{Cycle, ServerConfig, Ticket};
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct IcacheStats {
@@ -107,8 +109,8 @@ impl Default for IcacheFlowConfig {
 }
 
 pub struct IcacheSubgraph {
-    hit: TimedServer<IcacheRequest>,
-    miss: TimedServer<IcacheRequest>,
+    hit: SimpleTimedQueue<IcacheRequest>,
+    miss: SimpleTimedQueue<IcacheRequest>,
     policy: IcachePolicyConfig,
     stats: IcacheStats,
 }
@@ -116,8 +118,8 @@ pub struct IcacheSubgraph {
 impl IcacheSubgraph {
     pub fn new(config: IcacheFlowConfig) -> Self {
         Self {
-            hit: TimedServer::new(config.hit),
-            miss: TimedServer::new(config.miss),
+            hit: SimpleTimedQueue::new(true, config.hit),
+            miss: SimpleTimedQueue::new(true, config.miss),
             policy: config.policy,
             stats: IcacheStats::default(),
         }
@@ -134,10 +136,9 @@ impl IcacheSubgraph {
         request.miss = !hit;
 
         let bytes = request.bytes;
-        let service_req = ServiceRequest::new(request, 0);
-        let server = if hit { &mut self.hit } else { &mut self.miss };
+        let queue = if hit { &mut self.hit } else { &mut self.miss };
 
-        match server.try_enqueue(now, service_req) {
+        match queue.try_issue_with_payload(now, request, 0) {
             Ok(ticket) => {
                 self.stats.issued = self.stats.issued.saturating_add(1);
                 self.stats.bytes_issued = self.stats.bytes_issued.saturating_add(bytes as u64);
@@ -148,33 +149,25 @@ impl IcacheSubgraph {
                 }
                 Ok(IcacheIssue { ticket })
             }
-            Err(bp) => match bp {
-                Backpressure::Busy {
-                    request,
-                    available_at,
-                } => {
-                    self.stats.busy_rejects = self.stats.busy_rejects.saturating_add(1);
-                    Err(IcacheReject {
-                        request: request.payload,
-                        retry_at: available_at.max(now.saturating_add(1)),
-                        reason: IcacheRejectReason::Busy,
-                    })
+            Err(err) => {
+                match err.reason {
+                    RejectReason::Busy => {
+                        self.stats.busy_rejects = self.stats.busy_rejects.saturating_add(1);
+                    }
+                    RejectReason::QueueFull => {
+                        self.stats.queue_full_rejects =
+                            self.stats.queue_full_rejects.saturating_add(1);
+                    }
                 }
-                Backpressure::QueueFull { request, .. } => {
-                    self.stats.queue_full_rejects =
-                        self.stats.queue_full_rejects.saturating_add(1);
-                    let retry_at = server
-                        .oldest_ticket()
-                        .map(|ticket| ticket.ready_at())
-                        .unwrap_or_else(|| server.available_at())
-                        .max(now.saturating_add(1));
-                    Err(IcacheReject {
-                        request: request.payload,
-                        retry_at,
-                        reason: IcacheRejectReason::QueueFull,
-                    })
-                }
-            },
+                Err(IcacheReject {
+                    request: err.payload,
+                    retry_at: err.retry_at,
+                    reason: match err.reason {
+                        RejectReason::Busy => IcacheRejectReason::Busy,
+                        RejectReason::QueueFull => IcacheRejectReason::QueueFull,
+                    },
+                })
+            }
         }
     }
 
@@ -184,8 +177,8 @@ impl IcacheSubgraph {
             self.stats.bytes_completed = self.stats.bytes_completed.saturating_add(request.bytes as u64);
             self.stats.last_completion_cycle = Some(now);
         };
-        self.hit.service_ready(now, |result| complete(result.payload));
-        self.miss.service_ready(now, |result| complete(result.payload));
+        self.hit.tick(now, |payload| complete(payload));
+        self.miss.tick(now, |payload| complete(payload));
     }
 
     pub fn stats(&self) -> IcacheStats {

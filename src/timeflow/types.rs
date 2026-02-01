@@ -8,3 +8,9 @@ pub enum CoreFlowPayload {
     Gmem(GmemRequest),
     Smem(SmemRequest),
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RejectReason {
+    QueueFull,
+    Busy,
+}

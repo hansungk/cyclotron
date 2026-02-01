@@ -29,6 +29,9 @@ pub struct ClusterGmemGraph {
     last_tick: Cycle,
 }
 
+const L1_BANK_SEED: u64 = 0x1111_2222_3333_4444;
+const L2_BANK_SEED: u64 = 0x5555_6666_7777_8888;
+
 struct ClusterCoreState {
     ingress_node: NodeId,
     return_node: NodeId,
@@ -38,6 +41,17 @@ struct ClusterCoreState {
 }
 
 impl ClusterGmemGraph {
+    fn build_vec<T, F>(count: usize, mut build: F) -> Vec<T>
+    where
+        F: FnMut() -> T,
+    {
+        let mut out = Vec::with_capacity(count);
+        for _ in 0..count {
+            out.push(build());
+        }
+        out
+    }
+
     pub fn new(config: GmemFlowConfig, num_clusters: usize, cores_per_cluster: usize) -> Self {
         let (graph, core_nodes) = build_cluster_graph(&config, num_clusters, cores_per_cluster);
         let nodes = &config.nodes;
@@ -64,15 +78,8 @@ impl ClusterGmemGraph {
         let l2_sets = policy.l2_sets.max(1);
         let l2_ways = policy.l2_ways.max(1);
 
-        let mut l0_tags = Vec::with_capacity(total_cores);
-        for _ in 0..total_cores {
-            l0_tags.push(CacheTagArray::new(l0_sets, l0_ways));
-        }
-
-        let mut l1_tags = Vec::with_capacity(num_clusters);
-        for _ in 0..num_clusters {
-            l1_tags.push(CacheTagArray::new(l1_sets, l1_ways));
-        }
+        let l0_tags = Self::build_vec(total_cores, || CacheTagArray::new(l0_sets, l0_ways));
+        let l1_tags = Self::build_vec(num_clusters, || CacheTagArray::new(l1_sets, l1_ways));
 
         let l2_tags = CacheTagArray::new(l2_sets, l2_ways);
 
@@ -80,43 +87,18 @@ impl ClusterGmemGraph {
         let l1_mshr_capacity = nodes.l1_mshr.queue_capacity;
         let l2_mshr_capacity = nodes.l2_mshr.queue_capacity;
 
-        let mut l0_mshrs = Vec::with_capacity(total_cores);
-        for _ in 0..total_cores {
-            l0_mshrs.push(MshrTable::new(l0_mshr_capacity));
-        }
+        let l0_mshrs = Self::build_vec(total_cores, || MshrTable::new(l0_mshr_capacity));
+        let l1_mshrs = Self::build_vec(num_clusters, || {
+            Self::build_vec(l1_banks, || MshrTable::new(l1_mshr_capacity))
+        });
+        let l2_mshrs = Self::build_vec(l2_banks, || MshrTable::new(l2_mshr_capacity));
 
-        let mut l1_mshrs = Vec::with_capacity(num_clusters);
-        for _ in 0..num_clusters {
-            let mut banks = Vec::with_capacity(l1_banks);
-            for _ in 0..l1_banks {
-                banks.push(MshrTable::new(l1_mshr_capacity));
-            }
-            l1_mshrs.push(banks);
-        }
-
-        let mut l2_mshrs = Vec::with_capacity(l2_banks);
-        for _ in 0..l2_banks {
-            l2_mshrs.push(MshrTable::new(l2_mshr_capacity));
-        }
-
-        let mut l0_mshr_admit = Vec::with_capacity(total_cores);
-        for _ in 0..total_cores {
-            l0_mshr_admit.push(MshrAdmission::new(nodes.l0d_mshr));
-        }
-
-        let mut l1_mshr_admit = Vec::with_capacity(num_clusters);
-        for _ in 0..num_clusters {
-            let mut banks = Vec::with_capacity(l1_banks);
-            for _ in 0..l1_banks {
-                banks.push(MshrAdmission::new(nodes.l1_mshr));
-            }
-            l1_mshr_admit.push(banks);
-        }
-
-        let mut l2_mshr_admit = Vec::with_capacity(l2_banks);
-        for _ in 0..l2_banks {
-            l2_mshr_admit.push(MshrAdmission::new(nodes.l2_mshr));
-        }
+        let l0_mshr_admit =
+            Self::build_vec(total_cores, || MshrAdmission::new(nodes.l0d_mshr));
+        let l1_mshr_admit = Self::build_vec(num_clusters, || {
+            Self::build_vec(l1_banks, || MshrAdmission::new(nodes.l1_mshr))
+        });
+        let l2_mshr_admit = Self::build_vec(l2_banks, || MshrAdmission::new(nodes.l2_mshr));
 
         Self {
             graph,
@@ -189,8 +171,8 @@ impl ClusterGmemGraph {
         request.line_addr = l2_line;
         let l1_banks = self.l1_banks.max(1) as u64;
         let l2_banks = self.l2_banks.max(1) as u64;
-        request.l1_bank = bank_for(l1_line, l1_banks, 0x1111_2222_3333_4444);
-        request.l2_bank = bank_for(l2_line, l2_banks, 0x5555_6666_7777_8888);
+        request.l1_bank = bank_for(l1_line, l1_banks, L1_BANK_SEED);
+        request.l2_bank = bank_for(l2_line, l2_banks, L2_BANK_SEED);
 
         let l0_hit = { self.l0_tags[core_id].probe(l0_line) };
         request.l0_hit = l0_hit;
@@ -270,7 +252,7 @@ impl ClusterGmemGraph {
                     });
                 }
                 if let Err(bp) = self.l0_mshr_admit[core_id].try_admit(now) {
-                    return Err(self.reject_for_admission(core_id, now, &request, bp));
+                    return Err(self.reject_for_admission(core_id, &request, bp));
                 }
                 l0_new = match self.l0_mshrs[core_id].ensure_entry(l0_line, meta) {
                     Ok(new_entry) => new_entry,
@@ -332,7 +314,7 @@ impl ClusterGmemGraph {
                         core_id, cluster_id, l1_bank, l2_bank, l0_line, l1_line, l2_line,
                         l0_new, l1_new, l2_new,
                     );
-                    return Err(self.reject_for_admission(core_id, now, &request, bp));
+                    return Err(self.reject_for_admission(core_id, &request, bp));
                 }
                 l1_new = match self.l1_mshrs[cluster_id][l1_bank].ensure_entry(l1_line, meta) {
                     Ok(new_entry) => new_entry,
@@ -417,7 +399,7 @@ impl ClusterGmemGraph {
                         core_id, cluster_id, l1_bank, l2_bank, l0_line, l1_line, l2_line,
                         l0_new, l1_new, l2_new,
                     );
-                    return Err(self.reject_for_admission(core_id, now, &request, bp));
+                    return Err(self.reject_for_admission(core_id, &request, bp));
                 }
                 l2_new = match self.l2_mshrs[l2_bank].ensure_entry(l2_line, meta) {
                     Ok(new_entry) => new_entry,
@@ -565,7 +547,6 @@ impl ClusterGmemGraph {
     fn reject_for_admission(
         &mut self,
         core_id: usize,
-        now: Cycle,
         request: &GmemRequest,
         bp: AdmissionBackpressure,
     ) -> GmemReject {
@@ -690,7 +671,7 @@ impl ClusterGmemGraph {
         match miss_level {
             MissLevel::L0 => self.l0_mshrs[request.core_id]
                 .remove_entry(l0_line)
-                .map(|entry| entry.merged)
+                .map(|entry| entry.merged.into_vec())
                 .unwrap_or_default(),
             MissLevel::L1 => {
                 let cluster_id = request.cluster_id;
@@ -700,7 +681,7 @@ impl ClusterGmemGraph {
                 {
                     self.l1_mshrs[cluster_id][l1_bank]
                         .remove_entry(l1_line)
-                        .map(|entry| entry.merged)
+                        .map(|entry| entry.merged.into_vec())
                         .unwrap_or_default()
                 } else {
                     Vec::new()
@@ -722,7 +703,7 @@ impl ClusterGmemGraph {
                 let merged = if l2_bank < self.l2_mshrs.len() {
                     self.l2_mshrs[l2_bank]
                         .remove_entry(l2_line)
-                        .map(|entry| entry.merged)
+                        .map(|entry| entry.merged.into_vec())
                         .unwrap_or_default()
                 } else {
                     Vec::new()

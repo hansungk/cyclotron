@@ -48,18 +48,13 @@ impl MuonCore {
             scheduler: Scheduler::new(Arc::clone(&config), id),
             warps: (0..num_warps)
                 .map(|warp_id| {
-                    Warp::new(
-                        Arc::new(MuonConfig {
-                            lane_config: LaneConfig {
-                                warp_id,
-                                core_id: id,
-                                ..config.lane_config
-                            },
-                            ..*config
-                        }),
-                        logger,
-                        gmem.clone(),
-                    )
+                    let mut per_cfg = (*config).clone();
+                    per_cfg.lane_config = LaneConfig {
+                        warp_id,
+                        core_id: id,
+                        ..config.lane_config
+                    };
+                    Warp::new(Arc::new(per_cfg), logger, gmem.clone())
                 })
                 .collect(),
             shared_mem: FlatMemory::new_with_size(config.smem_size, None),

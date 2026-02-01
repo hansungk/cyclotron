@@ -169,9 +169,12 @@ impl SmemSubgraph {
     pub fn attach(graph: &mut FlowGraph<CoreFlowPayload>, config: &SmemFlowConfig) -> Self {
         assert!(config.num_banks > 0, "SMEM must have at least one bank");
         assert!(config.num_lanes > 0, "SMEM must have at least one lane");
+        let num_lanes = config.num_lanes;
+        let num_banks = config.num_banks;
+        let num_subbanks = config.num_subbanks.max(1);
 
-        let mut lane_nodes = Vec::with_capacity(config.num_lanes);
-        for lane_idx in 0..config.num_lanes {
+        let mut lane_nodes = Vec::with_capacity(num_lanes);
+        for lane_idx in 0..num_lanes {
             let node = graph.add_node(ServerNode::new(
                 format!("smem_lane_{lane_idx}"),
                 TimedServer::new(config.lane),
@@ -188,7 +191,6 @@ impl SmemSubgraph {
             None
         };
         if let Some(serial) = serial_node {
-            let num_lanes = config.num_lanes.max(1);
             for (lane_idx, &lane_node) in lane_nodes.iter().enumerate() {
                 let lane_mod = lane_idx;
                 graph.connect_filtered(
@@ -204,8 +206,8 @@ impl SmemSubgraph {
             }
         }
 
-        let mut crossbar_nodes = Vec::with_capacity(config.num_banks);
-        for bank_idx in 0..config.num_banks {
+        let mut crossbar_nodes = Vec::with_capacity(num_banks);
+        for bank_idx in 0..num_banks {
             let node = graph.add_node(ServerNode::new(
                 format!("smem_xbar_bank_{bank_idx}"),
                 TimedServer::new(config.crossbar),
@@ -213,13 +215,12 @@ impl SmemSubgraph {
             crossbar_nodes.push(node);
         }
 
-        let mut bank_nodes = Vec::with_capacity(config.num_banks);
-        let mut bank_read_nodes = Vec::with_capacity(config.num_banks);
-        let mut bank_write_nodes = Vec::with_capacity(config.num_banks);
-        let mut subbank_nodes = Vec::with_capacity(config.num_banks);
-        for bank_idx in 0..config.num_banks {
+        let mut bank_nodes = Vec::with_capacity(num_banks);
+        let mut bank_read_nodes = Vec::with_capacity(num_banks);
+        let mut bank_write_nodes = Vec::with_capacity(num_banks);
+        let mut subbank_nodes = Vec::with_capacity(num_banks);
+        for bank_idx in 0..num_banks {
             let bank_mod = bank_idx;
-            let num_banks = config.num_banks;
             for &lane_node in &lane_nodes {
                 graph.connect_filtered(
                     lane_node,
@@ -233,10 +234,10 @@ impl SmemSubgraph {
                 );
             }
 
-            let mut bank_subbanks = Vec::with_capacity(config.num_subbanks.max(1));
-            for subbank_idx in 0..config.num_subbanks.max(1) {
+            let mut bank_subbanks = Vec::with_capacity(num_subbanks);
+            for subbank_idx in 0..num_subbanks {
                 let subbank_mod = subbank_idx;
-                let num_subbanks = config.num_subbanks.max(1);
+                let num_subbanks = num_subbanks;
                 let subbank_node = graph.add_node(ServerNode::new(
                     format!("smem_subbank_{bank_idx}_{subbank_idx}"),
                     TimedServer::new(config.subbank),
@@ -308,9 +309,9 @@ impl SmemSubgraph {
         }
 
         let mut stats = SmemStats::default();
-        stats.bank_busy_samples = vec![0; config.num_banks];
-        stats.bank_attempts = vec![0; config.num_banks];
-        stats.bank_conflicts = vec![0; config.num_banks];
+        stats.bank_busy_samples = vec![0; num_banks];
+        stats.bank_attempts = vec![0; num_banks];
+        stats.bank_conflicts = vec![0; num_banks];
 
         Self {
             serial_node,
@@ -330,16 +331,17 @@ impl SmemSubgraph {
     /// Call this once per cycle to build utilization counters.
     pub fn sample_and_accumulate(&mut self, graph: &mut FlowGraph<CoreFlowPayload>) {
         self.stats.sample_cycles = self.stats.sample_cycles.saturating_add(1);
+        let mut is_busy = |node_id| graph.with_node_mut(node_id, |nd| nd.outstanding() > 0);
         let num_banks = self.stats.bank_busy_samples.len();
         for bank in 0..num_banks {
             let busy = if self.dual_port {
-                let r = self.bank_read_nodes.get(bank).map(|&n| graph.with_node_mut(n, |nd| nd.outstanding() > 0)).unwrap_or(false);
-                let w = self.bank_write_nodes.get(bank).map(|&n| graph.with_node_mut(n, |nd| nd.outstanding() > 0)).unwrap_or(false);
+                let r = self.bank_read_nodes.get(bank).map(|&n| is_busy(n)).unwrap_or(false);
+                let w = self.bank_write_nodes.get(bank).map(|&n| is_busy(n)).unwrap_or(false);
                 r || w
             } else {
                 // bank_nodes stores one node per bank when not dual_port
                 let node = self.bank_nodes.get(bank).copied();
-                node.map(|n| graph.with_node_mut(n, |nd| nd.outstanding() > 0)).unwrap_or(false)
+                node.map(|n| is_busy(n)).unwrap_or(false)
             };
             if busy {
                 self.stats.bank_busy_samples[bank] = self.stats.bank_busy_samples[bank].saturating_add(1);
@@ -417,17 +419,9 @@ impl SmemSubgraph {
                     available_at,
                 } => {
                     self.stats.busy_rejects += 1;
-                    let mut retry_at = available_at;
-                    if retry_at <= now {
-                        retry_at = now.saturating_add(1);
-                    }
+                    let retry_at = available_at.max(now.saturating_add(1));
                     let request = extract_smem_request(request);
-                    // record an attempt and a conflict for this bank
-                    let bank = request.bank.min(self.stats.bank_attempts.len().saturating_sub(1));
-                    if bank < self.stats.bank_attempts.len() {
-                        self.stats.bank_attempts[bank] = self.stats.bank_attempts[bank].saturating_add(1);
-                        self.stats.bank_conflicts[bank] = self.stats.bank_conflicts[bank].saturating_add(1);
-                    }
+                    self.record_bank_attempt_and_conflict(request.bank);
                     Err(SmemReject {
                         request,
                         retry_at,
@@ -438,12 +432,7 @@ impl SmemSubgraph {
                     self.stats.queue_full_rejects += 1;
                     let retry_at = now.saturating_add(1);
                     let request = extract_smem_request(request);
-                    // record an attempt and a conflict for this bank
-                    let bank = request.bank.min(self.stats.bank_attempts.len().saturating_sub(1));
-                    if bank < self.stats.bank_attempts.len() {
-                        self.stats.bank_attempts[bank] = self.stats.bank_attempts[bank].saturating_add(1);
-                        self.stats.bank_conflicts[bank] = self.stats.bank_conflicts[bank].saturating_add(1);
-                    }
+                    self.record_bank_attempt_and_conflict(request.bank);
                     Err(SmemReject {
                         request,
                         retry_at,
@@ -483,6 +472,15 @@ impl SmemSubgraph {
             .max_completion_queue
             .max(self.completions.len() as u64);
     }
+
+    fn record_bank_attempt_and_conflict(&mut self, bank: usize) {
+        if self.stats.bank_attempts.is_empty() {
+            return;
+        }
+        let bank = bank.min(self.stats.bank_attempts.len().saturating_sub(1));
+        self.stats.bank_attempts[bank] = self.stats.bank_attempts[bank].saturating_add(1);
+        self.stats.bank_conflicts[bank] = self.stats.bank_conflicts[bank].saturating_add(1);
+    }
 }
 
 pub fn extract_smem_request(request: ServiceRequest<CoreFlowPayload>) -> SmemRequest {
@@ -498,6 +496,18 @@ mod tests {
     use crate::timeflow::graph::FlowGraph;
     use crate::timeflow::types::CoreFlowPayload;
 
+    fn drive_until_ready(
+        graph: &mut FlowGraph<CoreFlowPayload>,
+        subgraph: &mut SmemSubgraph,
+        ready_at: Cycle,
+        extra: Cycle,
+    ) {
+        for cycle in 0..=ready_at.saturating_add(extra) {
+            graph.tick(cycle);
+            subgraph.collect_completions(graph, cycle);
+        }
+    }
+
     #[test]
     fn smem_requests_complete() {
         let mut graph: FlowGraph<CoreFlowPayload> = FlowGraph::new();
@@ -507,10 +517,7 @@ mod tests {
             .issue(&mut graph, 0, req)
             .expect("smem issue should succeed");
         let ready_at = issue.ticket.ready_at();
-        for cycle in 0..=ready_at.saturating_add(10) {
-            graph.tick(cycle);
-            subgraph.collect_completions(&mut graph, cycle);
-        }
+        drive_until_ready(&mut graph, &mut subgraph, ready_at, 10);
         assert_eq!(1, subgraph.completions.len());
     }
 
@@ -537,10 +544,7 @@ mod tests {
         let req = SmemRequest::new(0, 32, 0xF, false, 0);
         let issue = subgraph.issue(&mut graph, 0, req).unwrap();
         let ready_at = issue.ticket.ready_at();
-        for cycle in 0..=ready_at.saturating_add(100) {
-            graph.tick(cycle);
-            subgraph.collect_completions(&mut graph, cycle);
-        }
+        drive_until_ready(&mut graph, &mut subgraph, ready_at, 100);
         let stats = subgraph.stats;
         assert_eq!(1, stats.issued);
         assert_eq!(1, stats.completed);

@@ -2,7 +2,9 @@ use std::collections::VecDeque;
 
 use serde::Deserialize;
 
-use crate::timeq::{Backpressure, Cycle, ServerConfig, ServiceRequest, Ticket, TimedServer};
+use crate::timeflow::simple_queue::SimpleTimedQueue;
+use crate::timeflow::types::RejectReason;
+use crate::timeq::{Cycle, ServerConfig, Ticket};
 
 #[derive(Debug, Clone)]
 pub struct FenceRequest {
@@ -51,16 +53,14 @@ impl Default for FenceConfig {
 }
 
 pub struct FenceQueue {
-    enabled: bool,
-    server: TimedServer<FenceRequest>,
+    queue: SimpleTimedQueue<FenceRequest>,
     ready: VecDeque<FenceRequest>,
 }
 
 impl FenceQueue {
     pub fn new(config: FenceConfig) -> Self {
         Self {
-            enabled: config.enabled,
-            server: TimedServer::new(config.queue),
+            queue: SimpleTimedQueue::new(config.enabled, config.queue),
             ready: VecDeque::new(),
         }
     }
@@ -70,41 +70,28 @@ impl FenceQueue {
         now: Cycle,
         request: FenceRequest,
     ) -> Result<FenceIssue, FenceReject> {
-        if !self.enabled {
+        if !self.queue.is_enabled() {
             self.ready.push_back(request);
             return Ok(FenceIssue {
                 ticket: Ticket::synthetic(now, now, 0),
             });
         }
 
-        let request = ServiceRequest::new(request, 0);
-        match self.server.try_enqueue(now, request) {
+        match self.queue.try_issue(now, request, 0) {
             Ok(ticket) => Ok(FenceIssue { ticket }),
-            Err(Backpressure::Busy { available_at, .. }) => Err(FenceReject {
-                retry_at: available_at.max(now.saturating_add(1)),
-                reason: FenceRejectReason::Busy,
+            Err(err) => Err(FenceReject {
+                retry_at: err.retry_at,
+                reason: match err.reason {
+                    RejectReason::Busy => FenceRejectReason::Busy,
+                    RejectReason::QueueFull => FenceRejectReason::QueueFull,
+                },
             }),
-            Err(Backpressure::QueueFull { .. }) => {
-                let retry_at = self
-                    .server
-                    .oldest_ticket()
-                    .map(|ticket| ticket.ready_at())
-                    .unwrap_or_else(|| self.server.available_at())
-                    .max(now.saturating_add(1));
-                Err(FenceReject {
-                    retry_at,
-                    reason: FenceRejectReason::QueueFull,
-                })
-            }
         }
     }
 
     pub fn tick(&mut self, now: Cycle) {
-        if !self.enabled {
-            return;
-        }
-        self.server.service_ready(now, |result| {
-            self.ready.push_back(result.payload);
+        self.queue.tick(now, |payload| {
+            self.ready.push_back(payload);
         });
     }
 
@@ -113,7 +100,7 @@ impl FenceQueue {
     }
 
     pub fn is_enabled(&self) -> bool {
-        self.enabled
+        self.queue.is_enabled()
     }
 }
 

@@ -82,12 +82,16 @@ impl WarpIssueScheduler {
 mod tests {
     use super::{WarpIssueScheduler, WarpSchedulerConfig};
 
-    #[test]
-    fn grants_round_robin_across_eligible() {
+    fn enabled_scheduler(issue_width: usize) -> WarpIssueScheduler {
         let mut cfg = WarpSchedulerConfig::default();
         cfg.enabled = true;
-        cfg.issue_width = 1;
-        let mut sched = WarpIssueScheduler::new(cfg);
+        cfg.issue_width = issue_width;
+        WarpIssueScheduler::new(cfg)
+    }
+
+    #[test]
+    fn grants_round_robin_across_eligible() {
+        let mut sched = enabled_scheduler(1);
 
         let eligible = vec![true, true, false];
         let grants0 = sched.select(0, &eligible);
@@ -100,10 +104,7 @@ mod tests {
 
     #[test]
     fn skips_ineligible_warps() {
-        let mut cfg = WarpSchedulerConfig::default();
-        cfg.enabled = true;
-        cfg.issue_width = 1;
-        let mut sched = WarpIssueScheduler::new(cfg);
+        let mut sched = enabled_scheduler(1);
 
         let eligible = vec![false, true, true];
         let grants0 = sched.select(0, &eligible);
@@ -125,10 +126,7 @@ mod tests {
 
     #[test]
     fn issue_width_limits_grants() {
-        let mut cfg = WarpSchedulerConfig::default();
-        cfg.enabled = true;
-        cfg.issue_width = 2;
-        let mut sched = WarpIssueScheduler::new(cfg);
+        let mut sched = enabled_scheduler(2);
 
         let eligible = vec![true, true, true, false];
         let grants = sched.select(0, &eligible);
@@ -137,10 +135,7 @@ mod tests {
 
     #[test]
     fn no_eligible_returns_all_false() {
-        let mut cfg = WarpSchedulerConfig::default();
-        cfg.enabled = true;
-        cfg.issue_width = 2;
-        let mut sched = WarpIssueScheduler::new(cfg);
+        let mut sched = enabled_scheduler(2);
 
         let eligible = vec![false, false, false];
         let grants = sched.select(0, &eligible);
@@ -149,10 +144,7 @@ mod tests {
 
     #[test]
     fn scheduler_handles_single_warp() {
-        let mut cfg = WarpSchedulerConfig::default();
-        cfg.enabled = true;
-        cfg.issue_width = 1;
-        let mut sched = WarpIssueScheduler::new(cfg);
+        let mut sched = enabled_scheduler(1);
 
         let eligible = vec![true];
         let grants = sched.select(0, &eligible);
@@ -161,10 +153,7 @@ mod tests {
 
     #[test]
     fn scheduler_handles_all_warps_stalled() {
-        let mut cfg = WarpSchedulerConfig::default();
-        cfg.enabled = true;
-        cfg.issue_width = 2;
-        let mut sched = WarpIssueScheduler::new(cfg);
+        let mut sched = enabled_scheduler(2);
 
         let eligible = vec![false, false, false, false];
         let grants = sched.select(0, &eligible);
@@ -173,10 +162,7 @@ mod tests {
 
     #[test]
     fn scheduler_round_robin_wraps_around() {
-        let mut cfg = WarpSchedulerConfig::default();
-        cfg.enabled = true;
-        cfg.issue_width = 1;
-        let mut sched = WarpIssueScheduler::new(cfg);
+        let mut sched = enabled_scheduler(1);
 
         let eligible = vec![true, true, true];
         let g0 = sched.select(0, &eligible);

@@ -92,6 +92,16 @@ pub struct LsuReject {
     pub reason: LsuRejectReason,
 }
 
+impl LsuReject {
+    fn new(request: LsuPayload, retry_at: Cycle, reason: LsuRejectReason) -> Self {
+        Self {
+            request,
+            retry_at,
+            reason,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct LsuQueueConfig {
@@ -272,7 +282,7 @@ impl LsuSubgraph {
         now: Cycle,
         request: GmemRequest,
     ) -> Result<LsuIssue, LsuReject> {
-        self.issue(now, LsuPayload::Gmem(request))
+        self.issue_payload(now, LsuPayload::Gmem(request))
     }
 
     pub fn issue_smem(
@@ -280,24 +290,25 @@ impl LsuSubgraph {
         now: Cycle,
         request: SmemRequest,
     ) -> Result<LsuIssue, LsuReject> {
-        self.issue(now, LsuPayload::Smem(request))
+        self.issue_payload(now, LsuPayload::Smem(request))
     }
 
-    fn issue(&mut self, now: Cycle, payload: LsuPayload) -> Result<LsuIssue, LsuReject> {
+    pub fn issue_payload(&mut self, now: Cycle, payload: LsuPayload) -> Result<LsuIssue, LsuReject> {
+        let retry_next = now.saturating_add(1);
         if self.load_blocked_by_store(&payload) {
-            return Err(LsuReject {
-                request: payload,
-                retry_at: now.saturating_add(1),
-                reason: LsuRejectReason::Busy,
-            });
+            return Err(LsuReject::new(
+                payload,
+                retry_next,
+                LsuRejectReason::Busy,
+            ));
         }
 
         if !self.can_reserve(&payload) {
-            return Err(LsuReject {
-                request: payload,
-                retry_at: now.saturating_add(1),
-                reason: LsuRejectReason::QueueFull,
-            });
+            return Err(LsuReject::new(
+                payload,
+                retry_next,
+                LsuRejectReason::QueueFull,
+            ));
         }
 
         let warp = payload.warp();
@@ -305,11 +316,11 @@ impl LsuSubgraph {
         let node_id = match self.queue_node(warp, kind) {
             Some(node) => node,
             None => {
-                return Err(LsuReject {
-                    request: payload,
-                    retry_at: now.saturating_add(1),
-                    reason: LsuRejectReason::QueueFull,
-                })
+                return Err(LsuReject::new(
+                    payload,
+                    retry_next,
+                    LsuRejectReason::QueueFull,
+                ))
             }
         };
         let payload_clone = payload.clone();
@@ -333,21 +344,21 @@ impl LsuSubgraph {
                     available_at,
                 } => {
                     self.stats.busy_rejects = self.stats.busy_rejects.saturating_add(1);
-                    let retry_at = available_at.max(now.saturating_add(1));
-                    Err(LsuReject {
-                        request: request.payload,
+                    let retry_at = available_at.max(retry_next);
+                    Err(LsuReject::new(
+                        request.payload,
                         retry_at,
-                        reason: LsuRejectReason::Busy,
-                    })
+                        LsuRejectReason::Busy,
+                    ))
                 }
                 Backpressure::QueueFull { request, .. } => {
                     self.stats.queue_full_rejects =
                         self.stats.queue_full_rejects.saturating_add(1);
-                    Err(LsuReject {
-                        request: request.payload,
-                        retry_at: now.saturating_add(1),
-                        reason: LsuRejectReason::QueueFull,
-                    })
+                    Err(LsuReject::new(
+                        request.payload,
+                        retry_next,
+                        LsuRejectReason::QueueFull,
+                    ))
                 }
             },
         }
@@ -362,11 +373,11 @@ impl LsuSubgraph {
     }
 
     pub fn release_issue_resources(&mut self, payload: &LsuPayload) {
-        if Self::needs_address(payload) && self.address_in_use > 0 {
-            self.address_in_use -= 1;
+        if Self::needs_address(payload) {
+            self.address_in_use = self.address_in_use.saturating_sub(1);
         }
-        if Self::needs_store_data(payload) && self.store_in_use > 0 {
-            self.store_in_use -= 1;
+        if Self::needs_store_data(payload) {
+            self.store_in_use = self.store_in_use.saturating_sub(1);
         }
     }
 
@@ -382,8 +393,8 @@ impl LsuSubgraph {
     }
 
     pub fn release_load_data(&mut self, payload: &LsuPayload) {
-        if Self::needs_load_data(payload) && self.load_in_use > 0 {
-            self.load_in_use -= 1;
+        if Self::needs_load_data(payload) {
+            self.load_in_use = self.load_in_use.saturating_sub(1);
         }
     }
 
@@ -514,6 +525,18 @@ mod tests {
         }
     }
 
+    fn drain_issued(lsu: &mut LsuSubgraph, start: Cycle, end: Cycle) -> Vec<LsuPayload> {
+        let mut issued = Vec::new();
+        for cycle in start..end {
+            lsu.tick(cycle);
+            while lsu.peek_ready(cycle).is_some() {
+                let completion = lsu.take_ready(cycle).expect("ready should exist");
+                issued.push(completion.request);
+            }
+        }
+        issued
+    }
+
     #[test]
     fn lsu_rejects_when_per_warp_queue_full() {
         let mut config = LsuFlowConfig::default();
@@ -543,14 +566,7 @@ mod tests {
         assert!(lsu.issue_gmem(0, gmem_req).is_ok());
         assert!(lsu.issue_smem(0, smem_req).is_ok());
 
-        let mut issued = Vec::new();
-        for cycle in 0..10 {
-            lsu.tick(cycle);
-            while lsu.peek_ready(cycle).is_some() {
-                let completion = lsu.take_ready(cycle).expect("ready should exist");
-                issued.push(completion.request);
-            }
-        }
+        let issued = drain_issued(&mut lsu, 0, 10);
 
         assert!(
             matches!(issued.get(0), Some(LsuPayload::Smem(_))),
@@ -577,14 +593,7 @@ mod tests {
         assert!(lsu.issue_gmem(0, load).is_ok());
         assert!(lsu.issue_gmem(0, store).is_ok());
 
-        let mut issued = Vec::new();
-        for cycle in 0..10 {
-            lsu.tick(cycle);
-            while lsu.peek_ready(cycle).is_some() {
-                let completion = lsu.take_ready(cycle).expect("ready should exist");
-                issued.push(completion.request);
-            }
-        }
+        let issued = drain_issued(&mut lsu, 0, 10);
 
         let first = issued
             .into_iter()

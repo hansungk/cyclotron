@@ -1,3 +1,5 @@
+use std::ops::{Index, IndexMut};
+
 #[derive(Debug)]
 pub(crate) struct CacheTagArray {
     sets: usize,
@@ -6,15 +8,33 @@ pub(crate) struct CacheTagArray {
     lru: Vec<Vec<usize>>,
 }
 
-impl CacheTagArray {
-    pub(crate) fn new(sets: usize, ways: usize) -> Self {
+#[derive(Debug, Clone, Copy)]
+struct CacheLine {
+    line_addr: u64,
+    set_idx: usize,
+}
+
+impl CacheLine {
+    fn new(line_addr: u64, sets: usize) -> Self {
         let sets = sets.max(1);
-        let ways = ways.max(1);
-        let tags = vec![None; sets * ways];
+        let set_idx = (line_addr as usize) % sets;
+        Self { line_addr, set_idx }
+    }
+}
+
+impl CacheTagArray {
+    fn build_lru(sets: usize, ways: usize) -> Vec<Vec<usize>> {
         let mut lru = Vec::with_capacity(sets);
         for _ in 0..sets {
             lru.push((0..ways).collect());
         }
+        lru
+    }
+    pub(crate) fn new(sets: usize, ways: usize) -> Self {
+        let sets = sets.max(1);
+        let ways = ways.max(1);
+        let tags = vec![None; sets * ways];
+        let lru = Self::build_lru(sets, ways);
         Self {
             sets,
             ways,
@@ -23,63 +43,69 @@ impl CacheTagArray {
         }
     }
 
+    fn reset_lru_for_set(&mut self, set_idx: usize) {
+        self.lru[set_idx].clear();
+        self.lru[set_idx].extend(0..self.ways);
+    }
+
     fn idx(&self, set_idx: usize, way: usize) -> usize {
         set_idx * self.ways + way
     }
 
+    fn bounds_ok(&self, set_idx: usize, way: usize) -> bool {
+        set_idx < self.sets && way < self.ways
+    }
+
     pub(crate) fn probe(&mut self, line_addr: u64) -> bool {
-        let set_idx = (line_addr as usize) % self.sets;
+        let line = CacheLine::new(line_addr, self.sets);
         let mut hit_way = None;
         for way in 0..self.ways {
-            let tag = self.tags[self.idx(set_idx, way)];
-            if tag == Some(line_addr) {
+            let tag = self[(line.set_idx, way)];
+            if tag == Some(line.line_addr) {
                 hit_way = Some(way);
                 break;
             }
         }
         if let Some(way) = hit_way {
-            self.touch(set_idx, way);
+            self.touch(line.set_idx, way);
             return true;
         }
         false
     }
 
     pub(crate) fn fill(&mut self, line_addr: u64) {
-        let set_idx = (line_addr as usize) % self.sets;
+        let line = CacheLine::new(line_addr, self.sets);
         let mut hit_way = None;
         for way in 0..self.ways {
-            let tag = self.tags[self.idx(set_idx, way)];
-            if tag == Some(line_addr) {
+            let tag = self[(line.set_idx, way)];
+            if tag == Some(line.line_addr) {
                 hit_way = Some(way);
                 break;
             }
         }
         if let Some(way) = hit_way {
-            self.touch(set_idx, way);
+            self.touch(line.set_idx, way);
             return;
         }
 
         let mut empty_way = None;
         for way in 0..self.ways {
-            if self.tags[self.idx(set_idx, way)].is_none() {
+            if self[(line.set_idx, way)].is_none() {
                 empty_way = Some(way);
                 break;
             }
         }
-        let way = empty_way.unwrap_or_else(|| *self.lru[set_idx].last().unwrap_or(&0));
-        let idx = self.idx(set_idx, way);
-        self.tags[idx] = Some(line_addr);
-        self.touch(set_idx, way);
+        let way = empty_way.unwrap_or_else(|| *self.lru[line.set_idx].last().unwrap_or(&0));
+        self[(line.set_idx, way)] = Some(line.line_addr);
+        self.touch(line.set_idx, way);
     }
 
     pub(crate) fn invalidate_all(&mut self) {
         for set_idx in 0..self.sets {
             for way in 0..self.ways {
-                let idx = self.idx(set_idx, way);
-                self.tags[idx] = None;
+                self[(set_idx, way)] = None;
             }
-            self.lru[set_idx].clear();
-            self.lru[set_idx].extend(0..self.ways);
+            self.reset_lru_for_set(set_idx);
         }
     }
 
@@ -89,6 +115,26 @@ impl CacheTagArray {
             order.remove(pos);
         }
         order.insert(0, way);
+    }
+}
+
+impl Index<(usize, usize)> for CacheTagArray {
+    type Output = Option<u64>;
+
+    fn index(&self, index: (usize, usize)) -> &Self::Output {
+        let (set_idx, way) = index;
+        debug_assert!(self.bounds_ok(set_idx, way));
+        let idx = self.idx(set_idx, way);
+        &self.tags[idx]
+    }
+}
+
+impl IndexMut<(usize, usize)> for CacheTagArray {
+    fn index_mut(&mut self, index: (usize, usize)) -> &mut Self::Output {
+        let (set_idx, way) = index;
+        debug_assert!(self.bounds_ok(set_idx, way));
+        let idx = self.idx(set_idx, way);
+        &mut self.tags[idx]
     }
 }
 

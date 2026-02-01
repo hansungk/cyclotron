@@ -1,6 +1,8 @@
 use serde::Deserialize;
 
-use crate::timeq::{Backpressure, Cycle, ServerConfig, ServiceRequest, Ticket, TimedServer};
+use crate::timeflow::simple_queue::SimpleTimedQueue;
+use crate::timeflow::types::RejectReason;
+use crate::timeq::{Cycle, ServerConfig, Ticket};
 
 #[derive(Debug, Clone)]
 pub struct TensorIssue {
@@ -49,8 +51,7 @@ impl Default for TensorConfig {
 }
 
 pub struct TensorQueue {
-    enabled: bool,
-    server: TimedServer<()>,
+    queue: SimpleTimedQueue<()>,
     completed: u64,
     mmio_base: u64,
     mmio_size: u64,
@@ -60,8 +61,7 @@ pub struct TensorQueue {
 impl TensorQueue {
     pub fn new(config: TensorConfig) -> Self {
         Self {
-            enabled: config.enabled,
-            server: TimedServer::new(config.queue),
+            queue: SimpleTimedQueue::new(config.enabled, config.queue),
             completed: 0,
             mmio_base: config.mmio_base,
             mmio_size: config.mmio_size,
@@ -70,38 +70,20 @@ impl TensorQueue {
     }
 
     pub fn try_issue(&mut self, now: Cycle, bytes: u32) -> Result<TensorIssue, TensorReject> {
-        if !self.enabled {
-            return Ok(TensorIssue {
-                ticket: Ticket::synthetic(now, now, bytes),
-            });
-        }
-        let request = ServiceRequest::new((), bytes);
-        match self.server.try_enqueue(now, request) {
+        match self.queue.try_issue(now, (), bytes) {
             Ok(ticket) => Ok(TensorIssue { ticket }),
-            Err(Backpressure::Busy { available_at, .. }) => Err(TensorReject {
-                retry_at: available_at.max(now.saturating_add(1)),
-                reason: TensorRejectReason::Busy,
+            Err(err) => Err(TensorReject {
+                retry_at: err.retry_at,
+                reason: match err.reason {
+                    RejectReason::Busy => TensorRejectReason::Busy,
+                    RejectReason::QueueFull => TensorRejectReason::QueueFull,
+                },
             }),
-            Err(Backpressure::QueueFull { .. }) => {
-                let retry_at = self
-                    .server
-                    .oldest_ticket()
-                    .map(|ticket| ticket.ready_at())
-                    .unwrap_or_else(|| self.server.available_at())
-                    .max(now.saturating_add(1));
-                Err(TensorReject {
-                    retry_at,
-                    reason: TensorRejectReason::QueueFull,
-                })
-            }
         }
     }
 
     pub fn tick(&mut self, now: Cycle) {
-        if !self.enabled {
-            return;
-        }
-        self.server.service_ready(now, |_| {
+        self.queue.tick(now, |_| {
             self.completed = self.completed.saturating_add(1);
         });
     }
@@ -111,7 +93,7 @@ impl TensorQueue {
     }
 
     pub fn matches_mmio(&self, addr: u64) -> bool {
-        if !self.enabled || self.mmio_size == 0 {
+        if !self.queue.is_enabled() || self.mmio_size == 0 {
             return false;
         }
         let end = self.mmio_base.saturating_add(self.mmio_size);
@@ -119,7 +101,7 @@ impl TensorQueue {
     }
 
     pub fn matches_csr(&self, addr: u32) -> bool {
-        if !self.enabled {
+        if !self.queue.is_enabled() {
             return false;
         }
         self.csr_addrs.iter().any(|&csr| csr == addr)

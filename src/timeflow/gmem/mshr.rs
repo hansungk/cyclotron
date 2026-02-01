@@ -1,4 +1,5 @@
 use crate::timeq::{Backpressure, Cycle, ServerConfig, ServiceRequest, TimedServer};
+use smallvec::SmallVec;
 use std::cmp::max;
 
 use super::request::GmemRequest;
@@ -54,7 +55,7 @@ pub(crate) struct MshrEntry {
     line_addr: u64,
     meta: MissMetadata,
     ready_at: Option<Cycle>,
-    pub(crate) merged: Vec<GmemRequest>,
+    pub(crate) merged: SmallVec<[GmemRequest; 2]>,
 }
 
 impl MshrEntry {
@@ -63,7 +64,7 @@ impl MshrEntry {
             line_addr,
             meta,
             ready_at: None,
-            merged: Vec::new(),
+            merged: SmallVec::new(),
         }
     }
 }

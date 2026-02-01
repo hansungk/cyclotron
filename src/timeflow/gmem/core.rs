@@ -91,16 +91,13 @@ impl GmemSubgraph {
         let completions = &mut self.completions;
         graph.with_node_mut(self.return_node, |node| {
             while let Some(result) = node.take_ready(now) {
-                match result.payload {
-                    CoreFlowPayload::Gmem(request) => {
-                        self.stats.record_completion(request.bytes, now);
-                        completions.push_back(GmemCompletion {
-                            ticket_ready_at: result.ticket.ready_at(),
-                            completed_at: now,
-                            request,
-                        });
-                    }
-                    CoreFlowPayload::Smem(_) => continue,
+                if let CoreFlowPayload::Gmem(request) = result.payload {
+                    self.stats.record_completion(request.bytes, now);
+                    completions.push_back(GmemCompletion {
+                        ticket_ready_at: result.ticket.ready_at(),
+                        completed_at: now,
+                        request,
+                    });
                 }
             }
         });

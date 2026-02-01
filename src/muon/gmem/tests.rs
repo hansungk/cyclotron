@@ -49,18 +49,16 @@ fn make_model_with_lsu(num_warps: usize, lsu_depth: usize) -> CoreTimingModel {
         link_capacity: 1,
         smem_log_period: 1000,
     };
-    let mut cfg = CoreGraphConfig {
-        gmem,
-        smem,
-        ..CoreGraphConfig::default()
-    };
-    cfg.lsu.queues.global_ldq.queue_capacity = lsu_depth.max(1);
-    cfg.lsu.queues.global_stq.queue_capacity = lsu_depth.max(1);
-    cfg.lsu.queues.shared_ldq.queue_capacity = lsu_depth.max(1);
-    cfg.lsu.queues.shared_stq.queue_capacity = lsu_depth.max(1);
+    let mut cfg = CoreGraphConfig::default();
+    cfg.memory.gmem = gmem;
+    cfg.memory.smem = smem;
+    cfg.memory.lsu.queues.global_ldq.queue_capacity = lsu_depth.max(1);
+    cfg.memory.lsu.queues.global_stq.queue_capacity = lsu_depth.max(1);
+    cfg.memory.lsu.queues.shared_ldq.queue_capacity = lsu_depth.max(1);
+    cfg.memory.lsu.queues.shared_stq.queue_capacity = lsu_depth.max(1);
     let logger = Arc::new(Logger::silent());
     let cluster_gmem = Arc::new(std::sync::RwLock::new(ClusterGmemGraph::new(
-        cfg.gmem.clone(),
+        cfg.memory.gmem.clone(),
         1,
         1,
     )));
@@ -235,14 +233,12 @@ fn smem_crossbar_capacity_backpressures_new_requests() {
         link_capacity: 1,
         smem_log_period: 1000,
     };
-    let cfg = CoreGraphConfig {
-        gmem,
-        smem,
-        ..CoreGraphConfig::default()
-    };
+    let mut cfg = CoreGraphConfig::default();
+    cfg.memory.gmem = gmem;
+    cfg.memory.smem = smem;
     let logger = Arc::new(Logger::silent());
     let cluster_gmem = Arc::new(std::sync::RwLock::new(ClusterGmemGraph::new(
-        cfg.gmem.clone(),
+        cfg.memory.gmem.clone(),
         1,
         1,
     )));
@@ -278,15 +274,15 @@ fn mmio_store_triggers_dma_queue() {
     scheduler.spawn_single_warp();
 
     let mut cfg = CoreGraphConfig::default();
-    cfg.dma.enabled = true;
-    cfg.dma.mmio_base = 0x1000;
-    cfg.dma.mmio_size = 0x100;
-    cfg.dma.queue.base_latency = 1;
-    cfg.lsu.queues.global_ldq.queue_capacity = 8;
-    cfg.lsu.queues.global_stq.queue_capacity = 8;
+    cfg.io.dma.enabled = true;
+    cfg.io.dma.mmio_base = 0x1000;
+    cfg.io.dma.mmio_size = 0x100;
+    cfg.io.dma.queue.base_latency = 1;
+    cfg.memory.lsu.queues.global_ldq.queue_capacity = 8;
+    cfg.memory.lsu.queues.global_stq.queue_capacity = 8;
     let logger = Arc::new(Logger::silent());
     let cluster_gmem = Arc::new(std::sync::RwLock::new(ClusterGmemGraph::new(
-        cfg.gmem.clone(),
+        cfg.memory.gmem.clone(),
         1,
         1,
     )));
@@ -312,12 +308,12 @@ fn csr_write_triggers_tensor_queue() {
     scheduler.spawn_single_warp();
 
     let mut cfg = CoreGraphConfig::default();
-    cfg.tensor.enabled = true;
-    cfg.tensor.csr_addrs = vec![0x7c0];
-    cfg.tensor.queue.base_latency = 1;
+    cfg.compute.tensor.enabled = true;
+    cfg.compute.tensor.csr_addrs = vec![0x7c0];
+    cfg.compute.tensor.queue.base_latency = 1;
     let logger = Arc::new(Logger::silent());
     let cluster_gmem = Arc::new(std::sync::RwLock::new(ClusterGmemGraph::new(
-        cfg.gmem.clone(),
+        cfg.memory.gmem.clone(),
         1,
         1,
     )));

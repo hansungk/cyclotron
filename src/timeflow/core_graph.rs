@@ -22,20 +22,36 @@ use serde::Deserialize;
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct CoreGraphConfig {
+    #[serde(flatten)]
+    pub memory: MemoryConfig,
+    #[serde(flatten)]
+    pub compute: ComputeConfig,
+    #[serde(flatten)]
+    pub io: IoConfig,
+}
+
+impl Default for CoreGraphConfig {
+    fn default() -> Self {
+        Self {
+            memory: MemoryConfig::default(),
+            compute: ComputeConfig::default(),
+            io: IoConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct MemoryConfig {
     pub gmem: GmemFlowConfig,
     pub smem: SmemFlowConfig,
     pub lsu: LsuFlowConfig,
     pub icache: IcacheFlowConfig,
     pub writeback: WritebackConfig,
     pub operand_fetch: OperandFetchConfig,
-    pub barrier: BarrierConfig,
-    pub fence: FenceConfig,
-    pub dma: DmaConfig,
-    pub tensor: TensorConfig,
-    pub scheduler: WarpSchedulerConfig,
 }
 
-impl Default for CoreGraphConfig {
+impl Default for MemoryConfig {
     fn default() -> Self {
         Self {
             gmem: GmemFlowConfig::default(),
@@ -44,26 +60,55 @@ impl Default for CoreGraphConfig {
             icache: IcacheFlowConfig::default(),
             writeback: WritebackConfig::default(),
             operand_fetch: OperandFetchConfig::default(),
-            barrier: BarrierConfig::default(),
-            fence: FenceConfig::default(),
-            dma: DmaConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct ComputeConfig {
+    pub tensor: TensorConfig,
+    pub scheduler: WarpSchedulerConfig,
+}
+
+impl Default for ComputeConfig {
+    fn default() -> Self {
+        Self {
             tensor: TensorConfig::default(),
             scheduler: WarpSchedulerConfig::default(),
         }
     }
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct IoConfig {
+    pub barrier: BarrierConfig,
+    pub fence: FenceConfig,
+    pub dma: DmaConfig,
+}
+
+impl Default for IoConfig {
+    fn default() -> Self {
+        Self {
+            barrier: BarrierConfig::default(),
+            fence: FenceConfig::default(),
+            dma: DmaConfig::default(),
+        }
+    }
+}
+
 pub struct CoreGraph {
-    graph: FlowGraph<CoreFlowPayload>,
-    gmem: GmemSubgraph,
-    smem: SmemSubgraph,
+    pub(crate) graph: FlowGraph<CoreFlowPayload>,
+    pub(crate) gmem: GmemSubgraph,
+    pub(crate) smem: SmemSubgraph,
 }
 
 impl CoreGraph {
     pub fn new(config: CoreGraphConfig) -> Self {
         let mut graph = FlowGraph::new();
-        let gmem = GmemSubgraph::attach(&mut graph, &config.gmem);
-        let smem = SmemSubgraph::attach(&mut graph, &config.smem);
+        let gmem = GmemSubgraph::attach(&mut graph, &config.memory.gmem);
+        let smem = SmemSubgraph::attach(&mut graph, &config.memory.smem);
         Self { graph, gmem, smem }
     }
 
@@ -74,6 +119,7 @@ impl CoreGraph {
     ) -> Result<GmemIssue, GmemReject> {
         self.gmem.issue(&mut self.graph, now, request)
     }
+
 
     pub fn issue_smem(
         &mut self,
@@ -138,9 +184,9 @@ mod tests {
     #[test]
     fn core_graph_completes_gmem_requests() {
         let mut cfg = CoreGraphConfig::default();
-        cfg.gmem.nodes.coalescer.base_latency = 1;
-        cfg.gmem.nodes.l0d_tag.base_latency = 2;
-        cfg.gmem.nodes.dram.base_latency = 3;
+        cfg.memory.gmem.nodes.coalescer.base_latency = 1;
+        cfg.memory.gmem.nodes.l0d_tag.base_latency = 2;
+        cfg.memory.gmem.nodes.dram.base_latency = 3;
 
         let mut graph = CoreGraph::new(cfg);
         let request = GmemRequest::new(0, 16, 0xF, true);
@@ -155,9 +201,9 @@ mod tests {
     #[test]
     fn core_graph_completes_smem_requests() {
         let mut cfg = CoreGraphConfig::default();
-        cfg.smem.lane.base_latency = 0;
-        cfg.smem.bank.base_latency = 0;
-        cfg.smem.crossbar.base_latency = 0;
+        cfg.memory.smem.lane.base_latency = 0;
+        cfg.memory.smem.bank.base_latency = 0;
+        cfg.memory.smem.crossbar.base_latency = 0;
 
         let mut graph = CoreGraph::new(cfg);
         let request = SmemRequest::new(0, 16, 0xF, false, 0);
@@ -172,12 +218,12 @@ mod tests {
     #[test]
     fn core_graph_handles_mixed_gmem_smem() {
         let mut cfg = CoreGraphConfig::default();
-        cfg.gmem.nodes.coalescer.base_latency = 0;
-        cfg.gmem.nodes.l0d_tag.base_latency = 0;
-        cfg.gmem.nodes.dram.base_latency = 0;
-        cfg.smem.lane.base_latency = 0;
-        cfg.smem.bank.base_latency = 0;
-        cfg.smem.crossbar.base_latency = 0;
+        cfg.memory.gmem.nodes.coalescer.base_latency = 0;
+        cfg.memory.gmem.nodes.l0d_tag.base_latency = 0;
+        cfg.memory.gmem.nodes.dram.base_latency = 0;
+        cfg.memory.smem.lane.base_latency = 0;
+        cfg.memory.smem.bank.base_latency = 0;
+        cfg.memory.smem.crossbar.base_latency = 0;
 
         let mut graph = CoreGraph::new(cfg);
         let gmem_req = GmemRequest::new(0, 16, 0xF, true);
@@ -198,12 +244,12 @@ mod tests {
     #[test]
     fn core_graph_tracks_stats_correctly() {
         let mut cfg = CoreGraphConfig::default();
-        cfg.gmem.nodes.coalescer.base_latency = 0;
-        cfg.gmem.nodes.l0d_tag.base_latency = 0;
-        cfg.gmem.nodes.dram.base_latency = 0;
-        cfg.smem.lane.base_latency = 0;
-        cfg.smem.bank.base_latency = 0;
-        cfg.smem.crossbar.base_latency = 0;
+        cfg.memory.gmem.nodes.coalescer.base_latency = 0;
+        cfg.memory.gmem.nodes.l0d_tag.base_latency = 0;
+        cfg.memory.gmem.nodes.dram.base_latency = 0;
+        cfg.memory.smem.lane.base_latency = 0;
+        cfg.memory.smem.bank.base_latency = 0;
+        cfg.memory.smem.crossbar.base_latency = 0;
 
         let mut graph = CoreGraph::new(cfg);
         graph.clear_gmem_stats();
