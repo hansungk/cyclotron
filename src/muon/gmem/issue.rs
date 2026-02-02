@@ -93,7 +93,7 @@ impl CoreTimingModel {
                 Ok(ticket)
             }
             Err(LsuReject {
-                request,
+                payload: request,
                 retry_at,
                 reason,
             }) => {
@@ -177,7 +177,7 @@ impl CoreTimingModel {
                 Ok(ticket)
             }
             Err(LsuReject {
-                request,
+                payload: request,
                 retry_at,
                 reason,
             }) => {

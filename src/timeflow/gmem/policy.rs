@@ -28,7 +28,7 @@ pub struct GmemPolicyConfig {
 
 impl Default for GmemPolicyConfig {
     fn default() -> Self {
-        Self {
+        let s = Self {
             l0_hit_rate: 0.4,
             l1_hit_rate: 0.7,
             l2_hit_rate: 0.9,
@@ -50,7 +50,28 @@ impl Default for GmemPolicyConfig {
             l2_banks: 1,
             flush_bytes: 4096,
             seed: 0,
-        }
+        };
+        s.ensure_valid();
+        s
+    }
+}
+
+impl GmemPolicyConfig {
+    /// Ensure the config has sensible, non-zero values for fields
+    /// that must be positive. This centralizes validation so callers
+    /// can choose to fail fast on bad configs instead of scattering
+    /// `.max(1)` defensive clamping across the codebase.
+    pub fn ensure_valid(&self) {
+        assert!(self.l0_line_bytes > 0, "l0_line_bytes must be > 0");
+        assert!(self.l1_line_bytes > 0, "l1_line_bytes must be > 0");
+        assert!(self.l2_line_bytes > 0, "l2_line_bytes must be > 0");
+        assert!(self.l0_sets > 0, "l0_sets must be > 0");
+        assert!(self.l1_sets > 0, "l1_sets must be > 0");
+        assert!(self.l2_sets > 0, "l2_sets must be > 0");
+        assert!(self.l0_ways > 0, "l0_ways must be > 0");
+        assert!(self.l1_ways > 0, "l1_ways must be > 0");
+        assert!(self.l2_ways > 0, "l2_ways must be > 0");
+        assert!(self.flush_bytes > 0, "flush_bytes must be > 0");
     }
 }
 

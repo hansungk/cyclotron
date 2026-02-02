@@ -4,6 +4,7 @@ use serde::Deserialize;
 
 use crate::timeflow::simple_queue::SimpleTimedQueue;
 use crate::timeflow::types::RejectReason;
+pub use crate::timeflow::types::RejectReason as WritebackRejectReason;
 use crate::timeq::{Cycle, ServerConfig, Ticket};
 
 use super::gmem::GmemCompletion;
@@ -20,17 +21,9 @@ pub struct WritebackIssue {
     pub ticket: Ticket,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WritebackRejectReason {
-    QueueFull,
-    Busy,
-}
+// Alias to central RejectReason for consistency across timeflow modules.
 
-#[derive(Debug, Clone)]
-pub struct WritebackReject {
-    pub retry_at: Cycle,
-    pub reason: WritebackRejectReason,
-}
+pub type WritebackReject = crate::timeflow::types::Reject;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
@@ -84,13 +77,7 @@ impl WritebackQueue {
 
         match self.queue.try_issue_with_payload(now, payload, 0) {
             Ok(ticket) => Ok(WritebackIssue { ticket }),
-            Err(err) => Err(WritebackReject {
-                retry_at: err.retry_at,
-                reason: match err.reason {
-                    RejectReason::Busy => WritebackRejectReason::Busy,
-                    RejectReason::QueueFull => WritebackRejectReason::QueueFull,
-                },
-            }),
+            Err(err) => Err(WritebackReject { retry_at: err.retry_at, reason: err.reason }),
         }
     }
 

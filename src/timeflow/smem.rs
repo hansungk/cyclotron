@@ -75,18 +75,10 @@ pub struct SmemIssue {
     pub ticket: Ticket,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SmemRejectReason {
-    QueueFull,
-    Busy,
-}
+pub type SmemReject = crate::timeflow::types::RejectWith<SmemRequest>;
 
-#[derive(Debug, Clone)]
-pub struct SmemReject {
-    pub request: SmemRequest,
-    pub retry_at: Cycle,
-    pub reason: SmemRejectReason,
-}
+// Centralize the reject reason alias for SMEM.
+pub use crate::timeflow::types::RejectReason as SmemRejectReason;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
@@ -423,7 +415,7 @@ impl SmemSubgraph {
                     let request = extract_smem_request(request);
                     self.record_bank_attempt_and_conflict(request.bank);
                     Err(SmemReject {
-                        request,
+                        payload: request,
                         retry_at,
                         reason: SmemRejectReason::Busy,
                     })
@@ -434,7 +426,7 @@ impl SmemSubgraph {
                     let request = extract_smem_request(request);
                     self.record_bank_attempt_and_conflict(request.bank);
                     Err(SmemReject {
-                        request,
+                        payload: request,
                         retry_at,
                         reason: SmemRejectReason::QueueFull,
                     })

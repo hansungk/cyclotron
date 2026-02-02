@@ -2,6 +2,7 @@ use serde::Deserialize;
 
 use crate::timeflow::simple_queue::SimpleTimedQueue;
 use crate::timeflow::types::RejectReason;
+pub use crate::timeflow::types::RejectReason as DmaRejectReason;
 use crate::timeq::{Cycle, ServerConfig, Ticket};
 
 #[derive(Debug, Clone)]
@@ -9,17 +10,9 @@ pub struct DmaIssue {
     pub ticket: Ticket,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DmaRejectReason {
-    QueueFull,
-    Busy,
-}
+// Alias DmaRejectReason to the central RejectReason.
 
-#[derive(Debug, Clone)]
-pub struct DmaReject {
-    pub retry_at: Cycle,
-    pub reason: DmaRejectReason,
-}
+pub type DmaReject = crate::timeflow::types::Reject;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
@@ -72,13 +65,7 @@ impl DmaQueue {
     pub fn try_issue(&mut self, now: Cycle, bytes: u32) -> Result<DmaIssue, DmaReject> {
         match self.queue.try_issue(now, (), bytes) {
             Ok(ticket) => Ok(DmaIssue { ticket }),
-            Err(err) => Err(DmaReject {
-                retry_at: err.retry_at,
-                reason: match err.reason {
-                    RejectReason::Busy => DmaRejectReason::Busy,
-                    RejectReason::QueueFull => DmaRejectReason::QueueFull,
-                },
-            }),
+            Err(err) => Err(DmaReject { retry_at: err.retry_at, reason: err.reason }),
         }
     }
 

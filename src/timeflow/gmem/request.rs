@@ -142,18 +142,12 @@ pub struct GmemIssue {
     pub ticket: Ticket,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GmemRejectReason {
-    QueueFull,
-    Busy,
-}
+// Centralize the reject reason to `types::RejectReason` to avoid duplicate enums.
+pub use crate::timeflow::types::RejectReason as GmemRejectReason;
 
-#[derive(Debug, Clone)]
-pub struct GmemReject {
-    pub request: GmemRequest,
-    pub retry_at: Cycle,
-    pub reason: GmemRejectReason,
-}
+
+/// Reject type for GMEM operations: includes the rejected request as payload.
+pub type GmemReject = crate::timeflow::types::RejectWith<GmemRequest>;
 
 /// Convenience alias for functions that return GmemReject on error.
 pub type GmemResult<T> = Result<T, GmemReject>;

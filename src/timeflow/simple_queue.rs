@@ -1,18 +1,5 @@
-use crate::timeflow::types::RejectReason;
+use crate::timeflow::types::{Reject, RejectWith, RejectReason};
 use crate::timeq::{Backpressure, Cycle, ServerConfig, ServiceRequest, Ticket, TimedServer};
-
-#[derive(Debug, Clone)]
-pub struct SimpleReject {
-    pub retry_at: Cycle,
-    pub reason: RejectReason,
-}
-
-#[derive(Debug, Clone)]
-pub struct SimpleRejectWith<T> {
-    pub retry_at: Cycle,
-    pub reason: RejectReason,
-    pub payload: T,
-}
 
 pub struct SimpleTimedQueue<T> {
     enabled: bool,
@@ -31,7 +18,7 @@ impl<T> SimpleTimedQueue<T> {
         self.enabled
     }
 
-    pub fn try_issue(&mut self, now: Cycle, payload: T, bytes: u32) -> Result<Ticket, SimpleReject> {
+    pub fn try_issue(&mut self, now: Cycle, payload: T, bytes: u32) -> Result<Ticket, Reject> {
         if !self.enabled {
             return Ok(Ticket::synthetic(now, now, bytes));
         }
@@ -39,7 +26,7 @@ impl<T> SimpleTimedQueue<T> {
         let request = ServiceRequest::new(payload, bytes);
         match self.server.try_enqueue(now, request) {
             Ok(ticket) => Ok(ticket),
-            Err(Backpressure::Busy { available_at, .. }) => Err(SimpleReject {
+            Err(Backpressure::Busy { available_at, .. }) => Err(Reject {
                 retry_at: available_at.max(now.saturating_add(1)),
                 reason: RejectReason::Busy,
             }),
@@ -50,7 +37,7 @@ impl<T> SimpleTimedQueue<T> {
                     .map(|ticket| ticket.ready_at())
                     .unwrap_or_else(|| self.server.available_at())
                     .max(now.saturating_add(1));
-                Err(SimpleReject {
+                Err(Reject {
                     retry_at,
                     reason: RejectReason::QueueFull,
                 })
@@ -63,7 +50,7 @@ impl<T> SimpleTimedQueue<T> {
         now: Cycle,
         payload: T,
         bytes: u32,
-    ) -> Result<Ticket, SimpleRejectWith<T>> {
+    ) -> Result<Ticket, RejectWith<T>> {
         if !self.enabled {
             return Ok(Ticket::synthetic(now, now, bytes));
         }
@@ -74,7 +61,7 @@ impl<T> SimpleTimedQueue<T> {
             Err(Backpressure::Busy {
                 request,
                 available_at,
-            }) => Err(SimpleRejectWith {
+            }) => Err(RejectWith {
                 retry_at: available_at.max(now.saturating_add(1)),
                 reason: RejectReason::Busy,
                 payload: request.payload,
@@ -86,7 +73,7 @@ impl<T> SimpleTimedQueue<T> {
                     .map(|ticket| ticket.ready_at())
                     .unwrap_or_else(|| self.server.available_at())
                     .max(now.saturating_add(1));
-                Err(SimpleRejectWith {
+                Err(RejectWith {
                     retry_at,
                     reason: RejectReason::QueueFull,
                     payload: request.payload,

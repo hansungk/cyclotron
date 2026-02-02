@@ -2,6 +2,7 @@ use serde::Deserialize;
 
 use crate::timeflow::simple_queue::SimpleTimedQueue;
 use crate::timeflow::types::RejectReason;
+pub use crate::timeflow::types::RejectReason as TensorRejectReason;
 use crate::timeq::{Cycle, ServerConfig, Ticket};
 
 #[derive(Debug, Clone)]
@@ -9,17 +10,9 @@ pub struct TensorIssue {
     pub ticket: Ticket,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TensorRejectReason {
-    QueueFull,
-    Busy,
-}
+// Alias to central RejectReason for Tensor.
 
-#[derive(Debug, Clone)]
-pub struct TensorReject {
-    pub retry_at: Cycle,
-    pub reason: TensorRejectReason,
-}
+pub type TensorReject = crate::timeflow::types::Reject;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
@@ -72,13 +65,7 @@ impl TensorQueue {
     pub fn try_issue(&mut self, now: Cycle, bytes: u32) -> Result<TensorIssue, TensorReject> {
         match self.queue.try_issue(now, (), bytes) {
             Ok(ticket) => Ok(TensorIssue { ticket }),
-            Err(err) => Err(TensorReject {
-                retry_at: err.retry_at,
-                reason: match err.reason {
-                    RejectReason::Busy => TensorRejectReason::Busy,
-                    RejectReason::QueueFull => TensorRejectReason::QueueFull,
-                },
-            }),
+            Err(err) => Err(TensorReject { retry_at: err.retry_at, reason: err.reason }),
         }
     }
 

@@ -79,28 +79,9 @@ pub struct LsuIssue {
     pub ticket: Ticket,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LsuRejectReason {
-    QueueFull,
-    Busy,
-}
+pub use crate::timeflow::types::RejectReason as LsuRejectReason;
 
-#[derive(Debug, Clone)]
-pub struct LsuReject {
-    pub request: LsuPayload,
-    pub retry_at: Cycle,
-    pub reason: LsuRejectReason,
-}
-
-impl LsuReject {
-    fn new(request: LsuPayload, retry_at: Cycle, reason: LsuRejectReason) -> Self {
-        Self {
-            request,
-            retry_at,
-            reason,
-        }
-    }
-}
+pub type LsuReject = crate::timeflow::types::RejectWith<LsuPayload>;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]

@@ -1,16 +1,16 @@
 use std::collections::VecDeque;
 
 use crate::timeflow::graph::FlowGraph;
-use crate::timeflow::types::CoreFlowPayload;
+use crate::timeflow::types::{CoreFlowPayload, NodeId};
 use crate::timeq::{Backpressure, Cycle, ServiceRequest};
 
 use super::graph_build::{build_core_graph, GmemFlowConfig};
-use super::request::{extract_gmem_request, GmemCompletion, GmemIssue, GmemReject, GmemRejectReason, GmemRequest};
+use super::request::{extract_gmem_request, GmemCompletion, GmemIssue, GmemReject, GmemRejectReason, GmemRequest, GmemResult};
 use super::stats::GmemStats;
 
 pub(crate) struct GmemSubgraph {
-    ingress_node: crate::timeflow::types::NodeId,
-    return_node: crate::timeflow::types::NodeId,
+    ingress_node: NodeId,
+    return_node: NodeId,
     pub(crate) completions: VecDeque<GmemCompletion>,
     next_id: u64,
     pub(crate) stats: GmemStats,
@@ -33,7 +33,7 @@ impl GmemSubgraph {
         graph: &mut FlowGraph<CoreFlowPayload>,
         now: Cycle,
         mut request: GmemRequest,
-    ) -> Result<GmemIssue, GmemReject> {
+    ) -> GmemResult<GmemIssue> {
         let assigned_id = if request.id == 0 {
             self.next_id
         } else {
@@ -68,7 +68,7 @@ impl GmemSubgraph {
                     }
                     let request = extract_gmem_request(request);
                     Err(GmemReject {
-                        request,
+                        payload: request,
                         retry_at,
                         reason: GmemRejectReason::Busy,
                     })
@@ -78,7 +78,7 @@ impl GmemSubgraph {
                     let retry_at = now.saturating_add(1);
                     let request = extract_gmem_request(request);
                     Err(GmemReject {
-                        request,
+                        payload: request,
                         retry_at,
                         reason: GmemRejectReason::QueueFull,
                     })

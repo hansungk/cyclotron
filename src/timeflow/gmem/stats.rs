@@ -108,3 +108,9 @@ impl AddAssign<&GmemStats> for GmemStats {
         };
     }
 }
+
+impl AddAssign<GmemStats> for GmemStats {
+    fn add_assign(&mut self, other: GmemStats) {
+        *self += &other;
+    }
+}

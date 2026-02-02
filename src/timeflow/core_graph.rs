@@ -1,6 +1,7 @@
 use crate::timeflow::gmem::{
     GmemCompletion, GmemFlowConfig, GmemIssue, GmemReject, GmemRequest, GmemStats, GmemSubgraph,
 };
+use crate::timeflow::gmem::GmemResult;
 use crate::timeflow::graph::FlowGraph;
 use crate::timeflow::barrier::BarrierConfig;
 use crate::timeflow::dma::DmaConfig;
@@ -116,7 +117,7 @@ impl CoreGraph {
         &mut self,
         now: Cycle,
         request: GmemRequest,
-    ) -> Result<GmemIssue, GmemReject> {
+    ) -> GmemResult<GmemIssue> {
         self.gmem.issue(&mut self.graph, now, request)
     }
 

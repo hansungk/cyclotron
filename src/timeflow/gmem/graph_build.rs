@@ -252,6 +252,42 @@ impl Default for GmemFlowConfig {
     }
 }
 
+impl GmemFlowConfig {
+    /// Test helper: a compact, high-throughput config used by unit tests.
+    /// Keeps the same initialization behavior as the previous local
+    /// `fast_config()` used in tests.
+    pub fn zeroed() -> Self {
+        let mut cfg = Self::default();
+        let mut nodes = [
+            &mut cfg.nodes.coalescer,
+            &mut cfg.nodes.l0_flush_gate,
+            &mut cfg.nodes.l0d_tag,
+            &mut cfg.nodes.l0d_data,
+            &mut cfg.nodes.l0d_mshr,
+            &mut cfg.nodes.l1_flush_gate,
+            &mut cfg.nodes.l1_tag,
+            &mut cfg.nodes.l1_data,
+            &mut cfg.nodes.l1_mshr,
+            &mut cfg.nodes.l1_refill,
+            &mut cfg.nodes.l1_writeback,
+            &mut cfg.nodes.l2_tag,
+            &mut cfg.nodes.l2_data,
+            &mut cfg.nodes.l2_mshr,
+            &mut cfg.nodes.l2_refill,
+            &mut cfg.nodes.l2_writeback,
+            &mut cfg.nodes.dram,
+            &mut cfg.nodes.return_path,
+        ];
+        for node in &mut nodes {
+            node.base_latency = 0;
+            node.bytes_per_cycle = 1024;
+            node.queue_capacity = 8;
+        }
+        cfg.links.default.entries = 8;
+        cfg
+    }
+}
+
 pub(crate) struct CoreGraphNodes {
     pub(crate) ingress_node: NodeId,
     pub(crate) return_node: NodeId,

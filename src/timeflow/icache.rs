@@ -2,6 +2,7 @@ use serde::Deserialize;
 
 use crate::timeflow::simple_queue::SimpleTimedQueue;
 use crate::timeflow::types::RejectReason;
+pub use crate::timeflow::types::RejectReason as IcacheRejectReason;
 use crate::timeq::{Cycle, ServerConfig, Ticket};
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -17,11 +18,7 @@ pub struct IcacheStats {
     pub last_completion_cycle: Option<Cycle>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum IcacheRejectReason {
-    QueueFull,
-    Busy,
-}
+// Alias to central RejectReason for Icache.
 
 #[derive(Debug, Clone)]
 pub struct IcacheRequest {
@@ -53,12 +50,7 @@ pub struct IcacheIssue {
     pub ticket: Ticket,
 }
 
-#[derive(Debug, Clone)]
-pub struct IcacheReject {
-    pub request: IcacheRequest,
-    pub retry_at: Cycle,
-    pub reason: IcacheRejectReason,
-}
+pub type IcacheReject = crate::timeflow::types::RejectWith<IcacheRequest>;
 
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(default)]
@@ -159,14 +151,7 @@ impl IcacheSubgraph {
                             self.stats.queue_full_rejects.saturating_add(1);
                     }
                 }
-                Err(IcacheReject {
-                    request: err.payload,
-                    retry_at: err.retry_at,
-                    reason: match err.reason {
-                        RejectReason::Busy => IcacheRejectReason::Busy,
-                        RejectReason::QueueFull => IcacheRejectReason::QueueFull,
-                    },
-                })
+                Err(IcacheReject { payload: err.payload, retry_at: err.retry_at, reason: err.reason })
             }
         }
     }

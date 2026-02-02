@@ -80,7 +80,7 @@ impl CoreTimingModel {
                         .lsu
                         .reserve_load_data(&LsuPayload::Gmem(entry.request));
                 }
-                Err(GmemReject { request, retry_at, .. }) => {
+                Err(GmemReject { payload: request, retry_at, .. }) => {
                     pending.push_back(PendingClusterIssue {
                         request,
                         retry_at: retry_at.max(now.saturating_add(1)),
@@ -127,7 +127,7 @@ impl CoreTimingModel {
                         .lsu
                         .reserve_load_data(&LsuPayload::Smem(entry.request));
                 }
-                Err(SmemReject { request, retry_at, .. }) => {
+                Err(SmemReject { payload: request, retry_at, .. }) => {
                     pending.push_back(PendingClusterIssue {
                         request,
                         retry_at: retry_at.max(now.saturating_add(1)),

@@ -6,36 +6,7 @@ use crate::timeq::Cycle;
 const MAX_CYCLES: u64 = 200;
 const LONG_CYCLES: u64 = 500;
 
-fn fast_config() -> GmemFlowConfig {
-    let mut cfg = GmemFlowConfig::default();
-    let mut nodes = [
-        &mut cfg.nodes.coalescer,
-        &mut cfg.nodes.l0_flush_gate,
-        &mut cfg.nodes.l0d_tag,
-        &mut cfg.nodes.l0d_data,
-        &mut cfg.nodes.l0d_mshr,
-        &mut cfg.nodes.l1_flush_gate,
-        &mut cfg.nodes.l1_tag,
-        &mut cfg.nodes.l1_data,
-        &mut cfg.nodes.l1_mshr,
-        &mut cfg.nodes.l1_refill,
-        &mut cfg.nodes.l1_writeback,
-        &mut cfg.nodes.l2_tag,
-        &mut cfg.nodes.l2_data,
-        &mut cfg.nodes.l2_mshr,
-        &mut cfg.nodes.l2_refill,
-        &mut cfg.nodes.l2_writeback,
-        &mut cfg.nodes.dram,
-        &mut cfg.nodes.return_path,
-    ];
-    for node in &mut nodes {
-        node.base_latency = 0;
-        node.bytes_per_cycle = 1024;
-        node.queue_capacity = 8;
-    }
-    cfg.links.default.entries = 8;
-    cfg
-}
+// `fast_config()` removed — use `GmemFlowConfig::zeroed()` directly.
 
 fn make_load(addr: u64, cluster_id: usize) -> GmemRequest {
     let mut req = GmemRequest::new(0, 16, 0xF, true);
@@ -175,7 +146,7 @@ fn gmem_allows_overlapping_requests() {
 
 #[test]
 fn cross_core_l2_merge_accepts_second_request() {
-    let mut cfg = fast_config();
+    let mut cfg = GmemFlowConfig::zeroed();
     cfg.nodes.l2_mshr.queue_capacity = 1;
     let mut cluster = ClusterGmemGraph::new(cfg, 2, 1);
     let now = 0;
@@ -193,7 +164,7 @@ fn cross_core_l2_merge_accepts_second_request() {
 
 #[test]
 fn cross_core_l1_merge_accepts_second_request() {
-    let mut cfg = fast_config();
+    let mut cfg = GmemFlowConfig::zeroed();
     cfg.nodes.l1_mshr.queue_capacity = 1;
     let mut cluster = ClusterGmemGraph::new(cfg, 1, 2);
     let cycle = 0;
@@ -222,7 +193,7 @@ fn cross_core_l1_merge_accepts_second_request() {
 
 #[test]
 fn l0_flush_invalidates_only_l0() {
-    let cfg = fast_config();
+    let cfg = GmemFlowConfig::zeroed();
     let mut cluster = ClusterGmemGraph::new(cfg, 1, 1);
     let cycle = 0;
 
@@ -242,7 +213,7 @@ fn l0_flush_invalidates_only_l0() {
 
 #[test]
 fn l1_flush_invalidates_cluster_l1() {
-    let cfg = fast_config();
+    let cfg = GmemFlowConfig::zeroed();
     let mut cluster = ClusterGmemGraph::new(cfg, 1, 2);
     let cycle = 0;
 
@@ -262,7 +233,7 @@ fn l1_flush_invalidates_cluster_l1() {
 
 #[test]
 fn merge_completion_fanout_same_core() {
-    let mut cfg = fast_config();
+    let mut cfg = GmemFlowConfig::zeroed();
     cfg.nodes.l2_mshr.queue_capacity = 1;
     let mut cluster = ClusterGmemGraph::new(cfg, 1, 1);
     let now = 0;
@@ -280,7 +251,7 @@ fn merge_completion_fanout_same_core() {
 
 #[test]
 fn mshr_full_rejects_with_retry_cycle() {
-    let mut cfg = fast_config();
+    let mut cfg = GmemFlowConfig::zeroed();
     cfg.nodes.l2_mshr.queue_capacity = 1;
     cfg.nodes.l1_mshr.queue_capacity = 2;
     cfg.nodes.l0d_mshr.queue_capacity = 2;
@@ -297,7 +268,7 @@ fn mshr_full_rejects_with_retry_cycle() {
 
 #[test]
 fn address_zero_load_completes() {
-    let cfg = fast_config();
+    let cfg = GmemFlowConfig::zeroed();
     let mut cluster = ClusterGmemGraph::new(cfg, 1, 1);
     let mut req = GmemRequest::new(0, 16, 0xF, true);
     req.addr = 0;
@@ -308,7 +279,7 @@ fn address_zero_load_completes() {
 
 #[test]
 fn unaligned_address_handling_completes() {
-    let cfg = fast_config();
+    let cfg = GmemFlowConfig::zeroed();
     let mut cluster = ClusterGmemGraph::new(cfg, 1, 1);
     let mut req = GmemRequest::new(0, 16, 0xF, true);
     req.addr = 0x123;

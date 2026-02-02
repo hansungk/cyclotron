@@ -8,7 +8,7 @@ use super::cache::CacheTagArray;
 use super::graph_build::{build_cluster_graph, GmemFlowConfig};
 use super::mshr::{AdmissionBackpressure, MissLevel, MissMetadata, MshrAdmission, MshrTable};
 use super::policy::{bank_for, decide, line_addr, GmemPolicyConfig};
-use super::request::{extract_gmem_request, GmemCompletion, GmemIssue, GmemReject, GmemRejectReason, GmemRequest};
+use super::request::{extract_gmem_request, GmemCompletion, GmemIssue, GmemReject, GmemRejectReason, GmemRequest, GmemResult};
 use super::stats::GmemStats;
 
 pub struct ClusterGmemGraph {
@@ -41,16 +41,7 @@ struct ClusterCoreState {
 }
 
 impl ClusterGmemGraph {
-    fn build_vec<T, F>(count: usize, mut build: F) -> Vec<T>
-    where
-        F: FnMut() -> T,
-    {
-        let mut out = Vec::with_capacity(count);
-        for _ in 0..count {
-            out.push(build());
-        }
-        out
-    }
+    // helper functions were simplified to iterator-based initializers.
 
     pub fn new(config: GmemFlowConfig, num_clusters: usize, cores_per_cluster: usize) -> Self {
         let (graph, core_nodes) = build_cluster_graph(&config, num_clusters, cores_per_cluster);
@@ -78,8 +69,12 @@ impl ClusterGmemGraph {
         let l2_sets = policy.l2_sets.max(1);
         let l2_ways = policy.l2_ways.max(1);
 
-        let l0_tags = Self::build_vec(total_cores, || CacheTagArray::new(l0_sets, l0_ways));
-        let l1_tags = Self::build_vec(num_clusters, || CacheTagArray::new(l1_sets, l1_ways));
+        let l0_tags = (0..total_cores)
+            .map(|_| CacheTagArray::new(l0_sets, l0_ways))
+            .collect();
+        let l1_tags = (0..num_clusters)
+            .map(|_| CacheTagArray::new(l1_sets, l1_ways))
+            .collect();
 
         let l2_tags = CacheTagArray::new(l2_sets, l2_ways);
 
@@ -87,18 +82,17 @@ impl ClusterGmemGraph {
         let l1_mshr_capacity = nodes.l1_mshr.queue_capacity;
         let l2_mshr_capacity = nodes.l2_mshr.queue_capacity;
 
-        let l0_mshrs = Self::build_vec(total_cores, || MshrTable::new(l0_mshr_capacity));
-        let l1_mshrs = Self::build_vec(num_clusters, || {
-            Self::build_vec(l1_banks, || MshrTable::new(l1_mshr_capacity))
-        });
-        let l2_mshrs = Self::build_vec(l2_banks, || MshrTable::new(l2_mshr_capacity));
+        let l0_mshrs = (0..total_cores).map(|_| MshrTable::new(l0_mshr_capacity)).collect();
+        let l1_mshrs = (0..num_clusters)
+            .map(|_| (0..l1_banks).map(|_| MshrTable::new(l1_mshr_capacity)).collect())
+            .collect();
+        let l2_mshrs = (0..l2_banks).map(|_| MshrTable::new(l2_mshr_capacity)).collect();
 
-        let l0_mshr_admit =
-            Self::build_vec(total_cores, || MshrAdmission::new(nodes.l0d_mshr));
-        let l1_mshr_admit = Self::build_vec(num_clusters, || {
-            Self::build_vec(l1_banks, || MshrAdmission::new(nodes.l1_mshr))
-        });
-        let l2_mshr_admit = Self::build_vec(l2_banks, || MshrAdmission::new(nodes.l2_mshr));
+        let l0_mshr_admit = (0..total_cores).map(|_| MshrAdmission::new(nodes.l0d_mshr)).collect();
+        let l1_mshr_admit = (0..num_clusters)
+            .map(|_| (0..l1_banks).map(|_| MshrAdmission::new(nodes.l1_mshr)).collect())
+            .collect();
+        let l2_mshr_admit = (0..l2_banks).map(|_| MshrAdmission::new(nodes.l2_mshr)).collect();
 
         Self {
             graph,
@@ -124,10 +118,10 @@ impl ClusterGmemGraph {
         core_id: usize,
         now: Cycle,
         mut request: GmemRequest,
-    ) -> Result<GmemIssue, GmemReject> {
+    ) -> GmemResult<GmemIssue> {
         if core_id >= self.cores.len() {
             return Err(GmemReject {
-                request,
+                payload: request,
                 retry_at: now.saturating_add(1),
                 reason: GmemRejectReason::QueueFull,
             });
@@ -157,7 +151,7 @@ impl ClusterGmemGraph {
         if cluster_id >= self.l1_tags.len() {
             let retry_at = now.saturating_add(1);
             return Err(GmemReject {
-                request,
+                payload: request,
                 retry_at,
                 reason: GmemRejectReason::QueueFull,
             });
@@ -246,7 +240,7 @@ impl ClusterGmemGraph {
                 if !self.l0_mshrs[core_id].can_allocate(l0_line) {
                     self.cores[core_id].stats.record_queue_full_reject();
                     return Err(GmemReject {
-                        request,
+                        payload: request,
                         retry_at: now.saturating_add(1),
                         reason: GmemRejectReason::QueueFull,
                     });
@@ -259,7 +253,7 @@ impl ClusterGmemGraph {
                     Err(_) => {
                         self.cores[core_id].stats.record_queue_full_reject();
                         return Err(GmemReject {
-                            request,
+                            payload: request,
                             retry_at: now.saturating_add(1),
                             reason: GmemRejectReason::QueueFull,
                         });
@@ -273,7 +267,7 @@ impl ClusterGmemGraph {
                         Err(_) => {
                             self.cores[core_id].stats.record_queue_full_reject();
                             return Err(GmemReject {
-                                request,
+                                payload: request,
                                 retry_at: now.saturating_add(1),
                                 reason: GmemRejectReason::QueueFull,
                             });
@@ -304,7 +298,7 @@ impl ClusterGmemGraph {
                     );
                     self.cores[core_id].stats.record_queue_full_reject();
                     return Err(GmemReject {
-                        request,
+                        payload: request,
                         retry_at: now.saturating_add(1),
                         reason: GmemRejectReason::QueueFull,
                     });
@@ -325,7 +319,7 @@ impl ClusterGmemGraph {
                         );
                         self.cores[core_id].stats.record_queue_full_reject();
                         return Err(GmemReject {
-                            request,
+                            payload: request,
                             retry_at: now.saturating_add(1),
                             reason: GmemRejectReason::QueueFull,
                         });
@@ -339,7 +333,7 @@ impl ClusterGmemGraph {
                         Err(_) => {
                             self.cores[core_id].stats.record_queue_full_reject();
                             return Err(GmemReject {
-                                request,
+                                payload: request,
                                 retry_at: now.saturating_add(1),
                                 reason: GmemRejectReason::QueueFull,
                             });
@@ -357,7 +351,7 @@ impl ClusterGmemGraph {
                             );
                             self.cores[core_id].stats.record_queue_full_reject();
                             return Err(GmemReject {
-                                request,
+                                payload: request,
                                 retry_at: now.saturating_add(1),
                                 reason: GmemRejectReason::QueueFull,
                             });
@@ -389,7 +383,7 @@ impl ClusterGmemGraph {
                     );
                     self.cores[core_id].stats.record_queue_full_reject();
                     return Err(GmemReject {
-                        request,
+                        payload: request,
                         retry_at: now.saturating_add(1),
                         reason: GmemRejectReason::QueueFull,
                     });
@@ -410,7 +404,7 @@ impl ClusterGmemGraph {
                         );
                         self.cores[core_id].stats.record_queue_full_reject();
                         return Err(GmemReject {
-                            request,
+                            payload: request,
                             retry_at: now.saturating_add(1),
                             reason: GmemRejectReason::QueueFull,
                         });
@@ -500,7 +494,7 @@ impl ClusterGmemGraph {
         core_id: usize,
         now: Cycle,
         request: GmemRequest,
-    ) -> Result<GmemIssue, GmemReject> {
+    ) -> GmemResult<GmemIssue> {
         let request_id = request.id;
         let bytes = request.bytes;
         let payload = CoreFlowPayload::Gmem(request);
@@ -524,7 +518,7 @@ impl ClusterGmemGraph {
                     }
                     let request = extract_gmem_request(request);
                     Err(GmemReject {
-                        request,
+                        payload: request,
                         retry_at,
                         reason: GmemRejectReason::Busy,
                     })
@@ -535,7 +529,7 @@ impl ClusterGmemGraph {
                     let retry_at = now.saturating_add(1);
                     let request = extract_gmem_request(request);
                     Err(GmemReject {
-                        request,
+                        payload: request,
                         retry_at,
                         reason: GmemRejectReason::QueueFull,
                     })
@@ -555,7 +549,7 @@ impl ClusterGmemGraph {
             AdmissionBackpressure::Busy { retry_at } => {
                 stats.record_busy_reject();
                 GmemReject {
-                    request: request.clone(),
+                    payload: request.clone(),
                     retry_at,
                     reason: GmemRejectReason::Busy,
                 }
@@ -563,7 +557,7 @@ impl ClusterGmemGraph {
             AdmissionBackpressure::QueueFull { retry_at } => {
                 stats.record_queue_full_reject();
                 GmemReject {
-                    request: request.clone(),
+                    payload: request.clone(),
                     retry_at,
                     reason: GmemRejectReason::QueueFull,
                 }

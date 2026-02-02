@@ -16,5 +16,6 @@ pub use graph_build::{GmemFlowConfig, GmemLinkConfig, GmemNodeConfig, LinkConfig
 pub use policy::GmemPolicyConfig;
 pub use request::{
     GmemCompletion, GmemIssue, GmemReject, GmemRejectReason, GmemRequest, GmemRequestKind,
+    GmemResult,
 };
 pub use stats::GmemStats;

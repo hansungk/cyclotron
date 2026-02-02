@@ -2,6 +2,7 @@ use serde::Deserialize;
 
 use crate::timeflow::simple_queue::SimpleTimedQueue;
 use crate::timeflow::types::RejectReason;
+pub use crate::timeflow::types::RejectReason as OperandFetchRejectReason;
 use crate::timeq::{Cycle, ServerConfig, Ticket};
 
 #[derive(Debug, Clone)]
@@ -9,17 +10,9 @@ pub struct OperandFetchIssue {
     pub ticket: Ticket,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OperandFetchRejectReason {
-    QueueFull,
-    Busy,
-}
+// Alias to central RejectReason for OperandFetch.
 
-#[derive(Debug, Clone)]
-pub struct OperandFetchReject {
-    pub retry_at: Cycle,
-    pub reason: OperandFetchRejectReason,
-}
+pub type OperandFetchReject = crate::timeflow::types::Reject;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
@@ -62,13 +55,7 @@ impl OperandFetchQueue {
     ) -> Result<OperandFetchIssue, OperandFetchReject> {
         match self.queue.try_issue(now, (), bytes) {
             Ok(ticket) => Ok(OperandFetchIssue { ticket }),
-            Err(err) => Err(OperandFetchReject {
-                retry_at: err.retry_at,
-                reason: match err.reason {
-                    RejectReason::Busy => OperandFetchRejectReason::Busy,
-                    RejectReason::QueueFull => OperandFetchRejectReason::QueueFull,
-                },
-            }),
+            Err(err) => Err(OperandFetchReject { retry_at: err.retry_at, reason: err.reason }),
         }
     }
 

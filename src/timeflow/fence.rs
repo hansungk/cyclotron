@@ -4,6 +4,7 @@ use serde::Deserialize;
 
 use crate::timeflow::simple_queue::SimpleTimedQueue;
 use crate::timeflow::types::RejectReason;
+pub use crate::timeflow::types::RejectReason as FenceRejectReason;
 use crate::timeq::{Cycle, ServerConfig, Ticket};
 
 #[derive(Debug, Clone)]
@@ -17,17 +18,9 @@ pub struct FenceIssue {
     pub ticket: Ticket,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FenceRejectReason {
-    QueueFull,
-    Busy,
-}
+// Alias to central RejectReason for fences.
 
-#[derive(Debug, Clone)]
-pub struct FenceReject {
-    pub retry_at: Cycle,
-    pub reason: FenceRejectReason,
-}
+pub type FenceReject = crate::timeflow::types::Reject;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
@@ -79,13 +72,7 @@ impl FenceQueue {
 
         match self.queue.try_issue(now, request, 0) {
             Ok(ticket) => Ok(FenceIssue { ticket }),
-            Err(err) => Err(FenceReject {
-                retry_at: err.retry_at,
-                reason: match err.reason {
-                    RejectReason::Busy => FenceRejectReason::Busy,
-                    RejectReason::QueueFull => FenceRejectReason::QueueFull,
-                },
-            }),
+            Err(err) => Err(FenceReject { retry_at: err.retry_at, reason: err.reason }),
         }
     }
 
