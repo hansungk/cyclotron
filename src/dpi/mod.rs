@@ -481,15 +481,20 @@ pub unsafe fn cyclotron_backend_rs(
     // let writeback_rd_data = unsafe { std::slice::from_raw_parts_mut(writeback_rd_data_ptr, config.num_lanes) };
     let writeback_set_pc_valid = unsafe { writeback_set_pc_valid_ptr.as_mut().expect("pointer was null") };
     let writeback_set_pc = unsafe { writeback_set_pc_ptr.as_mut().expect("pointer was null") };
-    let writeback_set_tmask_valid = unsafe { writeback_set_tmask_valid_ptr.as_mut().expect("pointer was null") };
+    let writeback_set_tmask_valid =
+        unsafe { writeback_set_tmask_valid_ptr.as_mut().expect("pointer was null") };
     let writeback_set_tmask = unsafe { writeback_set_tmask_ptr.as_mut().expect("pointer was null") };
     let writeback_wspawn_valid = unsafe { writeback_wspawn_valid_ptr.as_mut().expect("pointer was null") };
     let writeback_wspawn_count = unsafe { writeback_wspawn_count_ptr.as_mut().expect("pointer was null") };
     let writeback_wspawn_pc = unsafe { writeback_wspawn_pc_ptr.as_mut().expect("pointer was null") };
     let writeback_ipdom_valid = unsafe { writeback_ipdom_valid_ptr.as_mut().expect("pointer was null") };
-    let writeback_ipdom_restored_mask =
-        unsafe { writeback_ipdom_restored_mask_ptr.as_mut().expect("pointer was null") };
-    let writeback_ipdom_else_mask = unsafe { writeback_ipdom_else_mask_ptr.as_mut().expect("pointer was null") };
+    let writeback_ipdom_restored_mask = unsafe {
+        writeback_ipdom_restored_mask_ptr
+            .as_mut()
+            .expect("pointer was null")
+    };
+    let writeback_ipdom_else_mask =
+        unsafe { writeback_ipdom_else_mask_ptr.as_mut().expect("pointer was null") };
     let writeback_ipdom_else_pc = unsafe { writeback_ipdom_else_pc_ptr.as_mut().expect("pointer was null") };
     let finished = unsafe { finished_ptr.as_mut().expect("pointer was null") };
 
@@ -562,7 +567,11 @@ pub unsafe fn cyclotron_backend_rs(
     *writeback_wspawn_count = writeback.sched_wb.wspawn_pc_count.unwrap_or((0, 0)).1;
     *writeback_wspawn_pc = writeback.sched_wb.wspawn_pc_count.unwrap_or((0, 0)).0;
     *writeback_ipdom_valid = writeback.sched_wb.ipdom_push.is_some() as u8;
-    *writeback_ipdom_restored_mask = writeback.sched_wb.ipdom_push.map(|x| x.restored_mask).unwrap_or(0);
+    *writeback_ipdom_restored_mask = writeback
+        .sched_wb
+        .ipdom_push
+        .map(|x| x.restored_mask)
+        .unwrap_or(0);
     *writeback_ipdom_else_mask = writeback.sched_wb.ipdom_push.map(|x| x.else_mask).unwrap_or(0);
     *writeback_ipdom_else_pc = writeback.sched_wb.ipdom_push.map(|x| x.else_pc).unwrap_or(0);
     *finished = writeback.sched_wb.tohost.is_some() as u8;
@@ -655,12 +664,16 @@ pub unsafe extern "C" fn cyclotron_difftest_reg_rs(
         };
         let compare_reg_data_and_exit = |rtl: &[u32], model: &[Option<u32>], name: &str| {
             let res = compare_vector_reg_data(rtl, model);
-            if let Err(e) = res {
-                println!(
-                    "DIFFTEST fail: {} data mismatch, pc:{:x}, warp:{}, lane:{}, rtl:{}, model:{}",
-                    name, pc, warp_id, e.lane, e.rtl, e.model
-                );
-                panic!("DIFFTEST fail");
+            match res {
+                Err(e) => {
+                    println!(
+                        "DIFFTEST fail: {} data mismatch, pc:{:x}, warp:{}, lane:{}, \
+                        rtl:{:x}, model:{:x}",
+                        name, pc, warp_id, e.lane, e.rtl, e.model
+                    );
+                    panic!("DIFFTEST fail");
+                }
+                _ => {}
             }
         };
 
@@ -694,6 +707,13 @@ pub unsafe extern "C" fn cyclotron_difftest_reg_rs(
             "DIFFTEST fail: pc mismatch: rtl reached instruction unseen by model, pc:{:x}, warp:{}",
             pc, warp_id
         );
+        println!("DIFFTEST: below is the content of model issue queue:");
+        for line in isq.iter_mut() {
+            println!(
+                "checked={}, pc={:x}, warp={:x}",
+                line.checked, line.inst.pc, line.inst.warp_id
+            );
+        }
         panic!("DIFFTEST fail");
     }
 
