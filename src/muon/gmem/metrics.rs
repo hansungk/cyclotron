@@ -69,6 +69,13 @@ pub struct GmemHitSummary {
     pub l2_hits: u64,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct GmemLevelSummary {
+    pub l0: GmemStats,
+    pub l1: GmemStats,
+    pub l2: GmemStats,
+}
+
 #[derive(Debug, Clone, Copy, Default, Serialize)]
 pub struct LatencySummary {
     pub gmem_count: u64,
@@ -119,6 +126,7 @@ pub struct CorePerfSummary {
     pub gmem_hits: GmemHitSummary,
     pub latencies: LatencySummary,
     pub gmem_stats: GmemStats,
+    pub gmem_level_stats: GmemLevelSummary,
     pub smem_stats: SmemStats,
     pub dma_completed: u64,
     pub tensor_completed: u64,

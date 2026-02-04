@@ -13,7 +13,7 @@ use crate::timeflow::{
 };
 use crate::timeq::Cycle;
 
-use super::{CorePerfSummary, CoreStats, CoreTimingModel, StallSummary};
+use super::{CorePerfSummary, CoreStats, CoreTimingModel, GmemLevelSummary, StallSummary};
 
 impl CoreTimingModel {
     pub fn new(
@@ -297,6 +297,16 @@ impl CoreTimingModel {
         let stats = self.stats();
         let gmem_stats = stats.gmem;
         let smem_stats_snapshot = stats.smem.clone();
+        let (l0_stats, l1_stats, l2_stats) = self
+            .cluster_gmem
+            .read()
+            .unwrap()
+            .hierarchy_stats_per_level();
+        let gmem_level_stats = GmemLevelSummary {
+            l0: l0_stats,
+            l1: l1_stats,
+            l2: l2_stats,
+        };
         CorePerfSummary {
             core_id: self.core_id,
             cluster_id: self.cluster_id,
@@ -313,6 +323,7 @@ impl CoreTimingModel {
             gmem_hits: self.gmem_hits,
             latencies: self.latencies,
             gmem_stats,
+            gmem_level_stats,
             smem_stats: smem_stats_snapshot.clone(),
             dma_completed: self.dma.completed(),
             tensor_completed: self.tensor.completed(),

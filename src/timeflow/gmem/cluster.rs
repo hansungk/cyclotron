@@ -14,6 +14,26 @@ use super::request::{
 };
 use super::stats::GmemStats;
 
+struct CacheLines {
+    l0_line: u64,
+    l1_line: u64,
+    l2_line: u64,
+    l1_bank: usize,
+    l2_bank: usize,
+}
+
+enum AllocationResult {
+    Merge {
+        ready_at: Cycle,
+        bytes: u32,
+    },
+    Continue {
+        l0_new: bool,
+        l1_new: bool,
+        l2_new: bool,
+    },
+}
+
 /// A unified Bank type that pairs an MSHR table, admission controller, and
 /// per-bank statistics. This will be used by the layered topology `CacheLayer`.
 pub struct Bank {
@@ -297,317 +317,48 @@ impl ClusterGmemGraph {
             });
         }
 
-        let policy = self.policy;
-        let l0_enabled = policy.l0_enabled;
-        let l0_line = if l0_enabled {
-            line_addr(request.addr, policy.l0_line_bytes)
-        } else {
-            0
-        };
-        let l1_line = line_addr(request.addr, policy.l1_line_bytes);
-        let l2_line = line_addr(request.addr, policy.l2_line_bytes);
-
-        request.line_addr = l2_line;
-        let l1_banks = self.l1_banks.max(1) as u64;
-        let l2_banks = self.hierarchy.l2.bank_count().max(1) as u64;
-        request.l1_bank = bank_for(l1_line, l1_banks, L1_BANK_SEED);
-        request.l2_bank = bank_for(l2_line, l2_banks, L2_BANK_SEED);
-
-        let l1_bank = request.l1_bank;
-        let l2_bank = request.l2_bank;
-
-        let l0_hit = if l0_enabled && core_id < self.hierarchy.l0.len() {
-            let hit = self.hierarchy.l0[core_id].probe(l0_line);
-            if self.hierarchy.l0[core_id].bank_count() > 0 {
-                let bytes = request.bytes;
-                self.hierarchy.l0[core_id].banks[0]
-                    .stats
-                    .record_access(bytes);
-                if hit {
-                    self.hierarchy.l0[core_id].banks[0].stats.record_hit(bytes);
-                }
-            }
-            hit
-        } else {
-            false
-        };
-        request.l0_hit = l0_hit;
-        if l0_hit {
-            request.l1_hit = false;
-            request.l2_hit = false;
-            request.l1_writeback = false;
-            request.l2_writeback = false;
-        } else {
-            let l1_hit = { self.hierarchy.l1[cluster_id].probe(l1_line) };
-            request.l1_hit = l1_hit;
-            // Record L1 access/hit on selected bank if present
-            if cluster_id < self.hierarchy.l1.len() {
-                let l1_layer = &mut self.hierarchy.l1[cluster_id];
-                if (l1_layer.bank_count() > 0) && ((l1_bank as usize) < l1_layer.bank_count()) {
-                    let bytes = request.bytes;
-                    l1_layer.banks[l1_bank as usize].stats.record_access(bytes);
-                    if l1_hit {
-                        l1_layer.banks[l1_bank as usize].stats.record_hit(bytes);
-                    }
-                }
-            }
-            if l1_hit {
-                request.l2_hit = false;
-            } else {
-                request.l2_hit = self.hierarchy.l2.probe(l2_line);
-                // Record L2 access/hit on selected bank
-                if (self.hierarchy.l2.bank_count() > 0)
-                    && ((l2_bank as usize) < self.hierarchy.l2.bank_count())
-                {
-                    let bytes = request.bytes;
-                    self.hierarchy.l2.banks[l2_bank as usize]
-                        .stats
-                        .record_access(bytes);
-                    if request.l2_hit {
-                        self.hierarchy.l2.banks[l2_bank as usize]
-                            .stats
-                            .record_hit(bytes);
-                    }
-                }
-            }
-
-            if !request.l1_hit {
-                let l1_key =
-                    l1_line ^ (cluster_id as u64).wrapping_mul(0xc2b2_ae3d_27d4_eb4f) ^ policy.seed;
-                request.l1_writeback =
-                    decide(policy.l1_writeback_rate, l1_key ^ 0xD4D4_D4D4_D4D4_D4D4);
-            } else {
-                request.l1_writeback = false;
-            }
-
-            if !request.l1_hit && !request.l2_hit {
-                let l2_key = l2_line ^ policy.seed;
-                request.l2_writeback =
-                    decide(policy.l2_writeback_rate, l2_key ^ 0xE5E5_E5E5_E5E5_E5E5);
-            } else {
-                request.l2_writeback = false;
-            }
-        }
-
-        let miss_level = if l0_enabled {
-            if request.l0_hit {
-                MissLevel::None
-            } else if request.l1_hit {
-                MissLevel::L0
-            } else if request.l2_hit {
-                MissLevel::L1
-            } else {
-                MissLevel::L2
-            }
-        } else if request.l1_hit {
-            MissLevel::None
-        } else if request.l2_hit {
-            MissLevel::L1
-        } else {
-            MissLevel::L2
-        };
-
+        let lines = self.compute_cache_lines(&mut request);
+        let miss_level = self.record_cache_accesses(core_id, cluster_id, &mut request, &lines);
         let meta = MissMetadata::from_request(&request);
-        let mut l0_new = false;
-        let mut l1_new = false;
-        let mut l2_new = false;
+        let allocation = self.allocate_cache_entries(
+            core_id,
+            cluster_id,
+            lines.l0_line,
+            lines.l1_line,
+            lines.l2_line,
+            lines.l1_bank,
+            lines.l2_bank,
+            miss_level,
+            meta,
+            now,
+            request.clone(),
+        )?;
 
-        match miss_level {
-            MissLevel::None => {}
-            MissLevel::L0 => {
-                if self.hierarchy.l0[core_id].has_entry(0, l0_line) {
-                    let bytes = request.bytes;
-                    let ready_at = self.hierarchy.l0[core_id]
-                        .merge_request(0, l0_line, request)
-                        .unwrap_or(now.saturating_add(1));
-                    return Ok(self.issue_merge(core_id, assigned_id, now, ready_at, bytes));
-                }
-
-                if !self.hierarchy.l0[core_id].can_allocate(0, l0_line) {
-                    // attribute queue-full reject to L0 bank
-                    if core_id < self.hierarchy.l0.len()
-                        && self.hierarchy.l0[core_id].bank_count() > 0
-                    {
-                        self.hierarchy.l0[core_id].banks[0]
-                            .stats
-                            .record_queue_full_reject();
-                    }
-                    self.cores[core_id].stats.record_queue_full_reject();
-                    return Err(GmemReject {
-                        payload: request,
-                        retry_at: now.saturating_add(1),
-                        reason: GmemRejectReason::QueueFull,
-                    });
-                }
-
-                l0_new = match self.hierarchy.l0[core_id].ensure_entry(0, l0_line, meta) {
-                    Ok(new_entry) => new_entry,
-                    Err(_) => {
-                        self.cores[core_id].stats.record_queue_full_reject();
-                        return Err(GmemReject {
-                            payload: request,
-                            retry_at: now.saturating_add(1),
-                            reason: GmemRejectReason::QueueFull,
-                        });
-                    }
-                };
+        let (l0_new, l1_new, l2_new) = match allocation {
+            AllocationResult::Merge { ready_at, bytes } => {
+                return Ok(self.issue_merge(core_id, assigned_id, now, ready_at, bytes));
             }
-            MissLevel::L1 => {
-                if l0_enabled {
-                    if !self.hierarchy.l0[core_id].has_entry(0, l0_line) {
-                        l0_new = match self.hierarchy.l0[core_id].ensure_entry(0, l0_line, meta) {
-                            Ok(new_entry) => new_entry,
-                            Err(_) => {
-                                self.cores[core_id].stats.record_queue_full_reject();
-                                return Err(GmemReject {
-                                    payload: request,
-                                    retry_at: now.saturating_add(1),
-                                    reason: GmemRejectReason::QueueFull,
-                                });
-                            }
-                        };
-                    }
-                }
-
-                if self.hierarchy.l1[cluster_id].has_entry(l1_bank, l1_line) {
-                    let bytes = request.bytes;
-                    let ready_at = self.hierarchy.l1[cluster_id]
-                        .merge_request(l1_bank, l1_line, request)
-                        .unwrap_or(now.saturating_add(1));
-                    if l0_enabled {
-                        self.hierarchy.l0[core_id].set_ready_at(0, l0_line, ready_at);
-                    }
-                    return Ok(self.issue_merge(core_id, assigned_id, now, ready_at, bytes));
-                }
-
-                if !self.hierarchy.l1[cluster_id].can_allocate(l1_bank, l1_line) {
-                    self.rollback_mshrs(
-                        core_id, cluster_id, l1_bank, l2_bank, l0_line, l1_line, l2_line, l0_new,
-                        l1_new, l2_new,
-                    );
-                    if cluster_id < self.hierarchy.l1.len()
-                        && (l1_bank as usize) < self.hierarchy.l1[cluster_id].bank_count()
-                    {
-                        self.hierarchy.l1[cluster_id].banks[l1_bank as usize]
-                            .stats
-                            .record_queue_full_reject();
-                    }
-                    self.cores[core_id].stats.record_queue_full_reject();
-                    return Err(GmemReject {
-                        payload: request,
-                        retry_at: now.saturating_add(1),
-                        reason: GmemRejectReason::QueueFull,
-                    });
-                }
-
-                l1_new = match self.hierarchy.l1[cluster_id].ensure_entry(l1_bank, l1_line, meta) {
-                    Ok(new_entry) => new_entry,
-                    Err(_) => {
-                        self.rollback_mshrs(
-                            core_id, cluster_id, l1_bank, l2_bank, l0_line, l1_line, l2_line,
-                            l0_new, l1_new, l2_new,
-                        );
-                        self.cores[core_id].stats.record_queue_full_reject();
-                        return Err(GmemReject {
-                            payload: request,
-                            retry_at: now.saturating_add(1),
-                            reason: GmemRejectReason::QueueFull,
-                        });
-                    }
-                };
-            }
-            MissLevel::L2 => {
-                if l0_enabled {
-                    if !self.hierarchy.l0[core_id].has_entry(0, l0_line) {
-                        l0_new = match self.hierarchy.l0[core_id].ensure_entry(0, l0_line, meta) {
-                            Ok(new_entry) => new_entry,
-                            Err(_) => {
-                                self.cores[core_id].stats.record_queue_full_reject();
-                                return Err(GmemReject {
-                                    payload: request,
-                                    retry_at: now.saturating_add(1),
-                                    reason: GmemRejectReason::QueueFull,
-                                });
-                            }
-                        };
-                    }
-                }
-
-                if !self.hierarchy.l1[cluster_id].has_entry(l1_bank, l1_line) {
-                    l1_new =
-                        match self.hierarchy.l1[cluster_id].ensure_entry(l1_bank, l1_line, meta) {
-                            Ok(new_entry) => new_entry,
-                            Err(_) => {
-                                self.rollback_mshrs(
-                                    core_id, cluster_id, l1_bank, l2_bank, l0_line, l1_line,
-                                    l2_line, l0_new, l1_new, l2_new,
-                                );
-                                self.cores[core_id].stats.record_queue_full_reject();
-                                return Err(GmemReject {
-                                    payload: request,
-                                    retry_at: now.saturating_add(1),
-                                    reason: GmemRejectReason::QueueFull,
-                                });
-                            }
-                        };
-                }
-
-                if self.hierarchy.l2.has_entry(l2_bank, l2_line) {
-                    let bytes = request.bytes;
-                    let ready_at = self
-                        .hierarchy
-                        .l2
-                        .merge_request(l2_bank, l2_line, request)
-                        .unwrap_or(now.saturating_add(1));
-                    self.hierarchy.l1[cluster_id].set_ready_at(l1_bank, l1_line, ready_at);
-                    if l0_enabled {
-                        self.hierarchy.l0[core_id].set_ready_at(0, l0_line, ready_at);
-                    }
-                    return Ok(self.issue_merge(core_id, assigned_id, now, ready_at, bytes));
-                }
-
-                if !self.hierarchy.l2.can_allocate(l2_bank, l2_line) {
-                    self.rollback_mshrs(
-                        core_id, cluster_id, l1_bank, l2_bank, l0_line, l1_line, l2_line, l0_new,
-                        l1_new, l2_new,
-                    );
-                    if (l2_bank as usize) < self.hierarchy.l2.bank_count() {
-                        self.hierarchy.l2.banks[l2_bank as usize]
-                            .stats
-                            .record_queue_full_reject();
-                    }
-                    self.cores[core_id].stats.record_queue_full_reject();
-                    return Err(GmemReject {
-                        payload: request,
-                        retry_at: now.saturating_add(1),
-                        reason: GmemRejectReason::QueueFull,
-                    });
-                }
-
-                l2_new = match self.hierarchy.l2.ensure_entry(l2_bank, l2_line, meta) {
-                    Ok(new_entry) => new_entry,
-                    Err(_) => {
-                        self.rollback_mshrs(
-                            core_id, cluster_id, l1_bank, l2_bank, l0_line, l1_line, l2_line,
-                            l0_new, l1_new, l2_new,
-                        );
-                        self.cores[core_id].stats.record_queue_full_reject();
-                        return Err(GmemReject {
-                            payload: request,
-                            retry_at: now.saturating_add(1),
-                            reason: GmemRejectReason::QueueFull,
-                        });
-                    }
-                };
-            }
-        }
+            AllocationResult::Continue {
+                l0_new,
+                l1_new,
+                l2_new,
+            } => (l0_new, l1_new, l2_new),
+        };
 
         let issue = match self.issue_to_graph(core_id, now, request) {
             Ok(issue) => issue,
             Err(err) => {
                 self.rollback_mshrs(
-                    core_id, cluster_id, l1_bank, l2_bank, l0_line, l1_line, l2_line, l0_new,
-                    l1_new, l2_new,
+                    core_id,
+                    cluster_id,
+                    lines.l1_bank,
+                    lines.l2_bank,
+                    lines.l0_line,
+                    lines.l1_line,
+                    lines.l2_line,
+                    l0_new,
+                    l1_new,
+                    l2_new,
                 );
                 return Err(err);
             }
@@ -617,22 +368,24 @@ impl ClusterGmemGraph {
         match miss_level {
             MissLevel::None => {}
             MissLevel::L0 => {
-                if l0_enabled {
-                    self.hierarchy.l0[core_id].set_ready_at(0, l0_line, ready_at);
+                if self.policy.l0_enabled {
+                    self.hierarchy.l0[core_id].set_ready_at(0, lines.l0_line, ready_at);
                 }
             }
             MissLevel::L1 => {
-                if l0_enabled {
-                    self.hierarchy.l0[core_id].set_ready_at(0, l0_line, ready_at);
+                if self.policy.l0_enabled {
+                    self.hierarchy.l0[core_id].set_ready_at(0, lines.l0_line, ready_at);
                 }
-                self.hierarchy.l1[cluster_id].set_ready_at(l1_bank, l1_line, ready_at);
+                self.hierarchy.l1[cluster_id].set_ready_at(lines.l1_bank, lines.l1_line, ready_at);
             }
             MissLevel::L2 => {
-                if l0_enabled {
-                    self.hierarchy.l0[core_id].set_ready_at(0, l0_line, ready_at);
+                if self.policy.l0_enabled {
+                    self.hierarchy.l0[core_id].set_ready_at(0, lines.l0_line, ready_at);
                 }
-                self.hierarchy.l1[cluster_id].set_ready_at(l1_bank, l1_line, ready_at);
-                self.hierarchy.l2.set_ready_at(l2_bank, l2_line, ready_at);
+                self.hierarchy.l1[cluster_id].set_ready_at(lines.l1_bank, lines.l1_line, ready_at);
+                self.hierarchy
+                    .l2
+                    .set_ready_at(lines.l2_bank, lines.l2_line, ready_at);
             }
         }
 
@@ -721,6 +474,358 @@ impl ClusterGmemGraph {
                     })
                 }
             },
+        }
+    }
+
+    fn compute_cache_lines(&self, request: &mut GmemRequest) -> CacheLines {
+        let policy = self.policy;
+        let l0_enabled = policy.l0_enabled;
+        let l0_line = if l0_enabled {
+            line_addr(request.addr, policy.l0_line_bytes)
+        } else {
+            0
+        };
+        let l1_line = line_addr(request.addr, policy.l1_line_bytes);
+        let l2_line = line_addr(request.addr, policy.l2_line_bytes);
+        request.line_addr = l2_line;
+        let l1_banks = self.l1_banks.max(1) as u64;
+        let l2_banks = self.hierarchy.l2.bank_count().max(1) as u64;
+        request.l1_bank = bank_for(l1_line, l1_banks, L1_BANK_SEED);
+        request.l2_bank = bank_for(l2_line, l2_banks, L2_BANK_SEED);
+        CacheLines {
+            l0_line,
+            l1_line,
+            l2_line,
+            l1_bank: request.l1_bank,
+            l2_bank: request.l2_bank,
+        }
+    }
+
+    fn record_cache_accesses(
+        &mut self,
+        core_id: usize,
+        cluster_id: usize,
+        request: &mut GmemRequest,
+        lines: &CacheLines,
+    ) -> MissLevel {
+        let policy = self.policy;
+        let l0_enabled = policy.l0_enabled;
+        let mut l0_hit = false;
+        if l0_enabled && core_id < self.hierarchy.l0.len() {
+            l0_hit = self.hierarchy.l0[core_id].probe(lines.l0_line);
+            if self.hierarchy.l0[core_id].bank_count() > 0 {
+                let bytes = request.bytes;
+                self.hierarchy.l0[core_id].banks[0]
+                    .stats
+                    .record_access(bytes);
+                if l0_hit {
+                    self.hierarchy.l0[core_id].banks[0].stats.record_hit(bytes);
+                }
+            }
+        }
+        request.l0_hit = l0_hit;
+
+        if l0_hit {
+            request.l1_hit = false;
+            request.l2_hit = false;
+            request.l1_writeback = false;
+            request.l2_writeback = false;
+        } else {
+            let l1_hit = { self.hierarchy.l1[cluster_id].probe(lines.l1_line) };
+            request.l1_hit = l1_hit;
+            if cluster_id < self.hierarchy.l1.len() {
+                let l1_layer = &mut self.hierarchy.l1[cluster_id];
+                if (l1_layer.bank_count() > 0) && (lines.l1_bank < l1_layer.bank_count()) {
+                    let bytes = request.bytes;
+                    l1_layer.banks[lines.l1_bank].stats.record_access(bytes);
+                    if l1_hit {
+                        l1_layer.banks[lines.l1_bank].stats.record_hit(bytes);
+                    }
+                }
+            }
+            if l1_hit {
+                request.l2_hit = false;
+            } else {
+                request.l2_hit = self.hierarchy.l2.probe(lines.l2_line);
+                if (self.hierarchy.l2.bank_count() > 0)
+                    && (lines.l2_bank < self.hierarchy.l2.bank_count())
+                {
+                    let bytes = request.bytes;
+                    self.hierarchy.l2.banks[lines.l2_bank]
+                        .stats
+                        .record_access(bytes);
+                    if request.l2_hit {
+                        self.hierarchy.l2.banks[lines.l2_bank]
+                            .stats
+                            .record_hit(bytes);
+                    }
+                }
+            }
+
+            if !request.l1_hit {
+                let l1_key = lines.l1_line
+                    ^ (cluster_id as u64).wrapping_mul(0xc2b2_ae3d_27d4_eb4f)
+                    ^ policy.seed;
+                request.l1_writeback =
+                    decide(policy.l1_writeback_rate, l1_key ^ 0xD4D4_D4D4_D4D4_D4D4);
+            } else {
+                request.l1_writeback = false;
+            }
+
+            if !request.l1_hit && !request.l2_hit {
+                let l2_key = lines.l2_line ^ policy.seed;
+                request.l2_writeback =
+                    decide(policy.l2_writeback_rate, l2_key ^ 0xE5E5_E5E5_E5E5_E5E5);
+            } else {
+                request.l2_writeback = false;
+            }
+        }
+
+        if l0_enabled {
+            if request.l0_hit {
+                MissLevel::None
+            } else if request.l1_hit {
+                MissLevel::L0
+            } else if request.l2_hit {
+                MissLevel::L1
+            } else {
+                MissLevel::L2
+            }
+        } else if request.l1_hit {
+            MissLevel::None
+        } else if request.l2_hit {
+            MissLevel::L1
+        } else {
+            MissLevel::L2
+        }
+    }
+
+    fn allocate_cache_entries(
+        &mut self,
+        core_id: usize,
+        cluster_id: usize,
+        l0_line: u64,
+        l1_line: u64,
+        l2_line: u64,
+        l1_bank: usize,
+        l2_bank: usize,
+        miss_level: MissLevel,
+        meta: MissMetadata,
+        now: Cycle,
+        request: GmemRequest,
+    ) -> GmemResult<AllocationResult> {
+        match miss_level {
+            MissLevel::None => Ok(AllocationResult::Continue {
+                l0_new: false,
+                l1_new: false,
+                l2_new: false,
+            }),
+            MissLevel::L0 => {
+                if self.hierarchy.l0[core_id].has_entry(0, l0_line) {
+                    let bytes = request.bytes;
+                    let ready_at = self.hierarchy.l0[core_id]
+                        .merge_request(0, l0_line, request)
+                        .unwrap_or(now.saturating_add(1));
+                    return Ok(AllocationResult::Merge { ready_at, bytes });
+                }
+
+                if !self.hierarchy.l0[core_id].can_allocate(0, l0_line) {
+                    if core_id < self.hierarchy.l0.len()
+                        && self.hierarchy.l0[core_id].bank_count() > 0
+                    {
+                        self.hierarchy.l0[core_id].banks[0]
+                            .stats
+                            .record_queue_full_reject();
+                    }
+                    self.cores[core_id].stats.record_queue_full_reject();
+                    return Err(GmemReject {
+                        payload: request,
+                        retry_at: now.saturating_add(1),
+                        reason: GmemRejectReason::QueueFull,
+                    });
+                }
+
+                let l0_new = match self.hierarchy.l0[core_id].ensure_entry(0, l0_line, meta) {
+                    Ok(new_entry) => new_entry,
+                    Err(_) => {
+                        self.cores[core_id].stats.record_queue_full_reject();
+                        return Err(GmemReject {
+                            payload: request,
+                            retry_at: now.saturating_add(1),
+                            reason: GmemRejectReason::QueueFull,
+                        });
+                    }
+                };
+                Ok(AllocationResult::Continue {
+                    l0_new,
+                    l1_new: false,
+                    l2_new: false,
+                })
+            }
+            MissLevel::L1 => {
+                let mut l0_new = false;
+                if self.policy.l0_enabled {
+                    if !self.hierarchy.l0[core_id].has_entry(0, l0_line) {
+                        l0_new = match self.hierarchy.l0[core_id].ensure_entry(0, l0_line, meta) {
+                            Ok(new_entry) => new_entry,
+                            Err(_) => {
+                                self.cores[core_id].stats.record_queue_full_reject();
+                                return Err(GmemReject {
+                                    payload: request,
+                                    retry_at: now.saturating_add(1),
+                                    reason: GmemRejectReason::QueueFull,
+                                });
+                            }
+                        };
+                    }
+                }
+
+                if self.hierarchy.l1[cluster_id].has_entry(l1_bank, l1_line) {
+                    let bytes = request.bytes;
+                    let ready_at = self.hierarchy.l1[cluster_id]
+                        .merge_request(l1_bank, l1_line, request)
+                        .unwrap_or(now.saturating_add(1));
+                    if self.policy.l0_enabled {
+                        self.hierarchy.l0[core_id].set_ready_at(0, l0_line, ready_at);
+                    }
+                    return Ok(AllocationResult::Merge { ready_at, bytes });
+                }
+
+                if !self.hierarchy.l1[cluster_id].can_allocate(l1_bank, l1_line) {
+                    self.rollback_mshrs(
+                        core_id, cluster_id, l1_bank, l2_bank, l0_line, l1_line, l2_line, l0_new,
+                        false, false,
+                    );
+                    if cluster_id < self.hierarchy.l1.len()
+                        && l1_bank < self.hierarchy.l1[cluster_id].bank_count()
+                    {
+                        self.hierarchy.l1[cluster_id].banks[l1_bank]
+                            .stats
+                            .record_queue_full_reject();
+                    }
+                    self.cores[core_id].stats.record_queue_full_reject();
+                    return Err(GmemReject {
+                        payload: request,
+                        retry_at: now.saturating_add(1),
+                        reason: GmemRejectReason::QueueFull,
+                    });
+                }
+
+                let l1_new =
+                    match self.hierarchy.l1[cluster_id].ensure_entry(l1_bank, l1_line, meta) {
+                        Ok(new_entry) => new_entry,
+                        Err(_) => {
+                            self.rollback_mshrs(
+                                core_id, cluster_id, l1_bank, l2_bank, l0_line, l1_line, l2_line,
+                                l0_new, true, false,
+                            );
+                            self.cores[core_id].stats.record_queue_full_reject();
+                            return Err(GmemReject {
+                                payload: request,
+                                retry_at: now.saturating_add(1),
+                                reason: GmemRejectReason::QueueFull,
+                            });
+                        }
+                    };
+
+                Ok(AllocationResult::Continue {
+                    l0_new,
+                    l1_new,
+                    l2_new: false,
+                })
+            }
+            MissLevel::L2 => {
+                let mut l0_new = false;
+                let mut l1_new = false;
+                if self.policy.l0_enabled {
+                    if !self.hierarchy.l0[core_id].has_entry(0, l0_line) {
+                        l0_new = match self.hierarchy.l0[core_id].ensure_entry(0, l0_line, meta) {
+                            Ok(new_entry) => new_entry,
+                            Err(_) => {
+                                self.cores[core_id].stats.record_queue_full_reject();
+                                return Err(GmemReject {
+                                    payload: request,
+                                    retry_at: now.saturating_add(1),
+                                    reason: GmemRejectReason::QueueFull,
+                                });
+                            }
+                        };
+                    }
+                }
+
+                if !self.hierarchy.l1[cluster_id].has_entry(l1_bank, l1_line) {
+                    l1_new =
+                        match self.hierarchy.l1[cluster_id].ensure_entry(l1_bank, l1_line, meta) {
+                            Ok(new_entry) => new_entry,
+                            Err(_) => {
+                                self.rollback_mshrs(
+                                    core_id, cluster_id, l1_bank, l2_bank, l0_line, l1_line,
+                                    l2_line, l0_new, true, false,
+                                );
+                                self.cores[core_id].stats.record_queue_full_reject();
+                                return Err(GmemReject {
+                                    payload: request,
+                                    retry_at: now.saturating_add(1),
+                                    reason: GmemRejectReason::QueueFull,
+                                });
+                            }
+                        };
+                }
+
+                if self.hierarchy.l2.has_entry(l2_bank, l2_line) {
+                    let bytes = request.bytes;
+                    let ready_at = self
+                        .hierarchy
+                        .l2
+                        .merge_request(l2_bank, l2_line, request)
+                        .unwrap_or(now.saturating_add(1));
+                    self.hierarchy.l1[cluster_id].set_ready_at(l1_bank, l1_line, ready_at);
+                    if self.policy.l0_enabled {
+                        self.hierarchy.l0[core_id].set_ready_at(0, l0_line, ready_at);
+                    }
+                    return Ok(AllocationResult::Merge { ready_at, bytes });
+                }
+
+                if !self.hierarchy.l2.can_allocate(l2_bank, l2_line) {
+                    self.rollback_mshrs(
+                        core_id, cluster_id, l1_bank, l2_bank, l0_line, l1_line, l2_line, l0_new,
+                        l1_new, false,
+                    );
+                    if l2_bank < self.hierarchy.l2.bank_count() {
+                        self.hierarchy.l2.banks[l2_bank]
+                            .stats
+                            .record_queue_full_reject();
+                    }
+                    self.cores[core_id].stats.record_queue_full_reject();
+                    return Err(GmemReject {
+                        payload: request,
+                        retry_at: now.saturating_add(1),
+                        reason: GmemRejectReason::QueueFull,
+                    });
+                }
+
+                let l2_new = match self.hierarchy.l2.ensure_entry(l2_bank, l2_line, meta) {
+                    Ok(new_entry) => new_entry,
+                    Err(_) => {
+                        self.rollback_mshrs(
+                            core_id, cluster_id, l1_bank, l2_bank, l0_line, l1_line, l2_line,
+                            l0_new, l1_new, true,
+                        );
+                        self.cores[core_id].stats.record_queue_full_reject();
+                        return Err(GmemReject {
+                            payload: request,
+                            retry_at: now.saturating_add(1),
+                            reason: GmemRejectReason::QueueFull,
+                        });
+                    }
+                };
+
+                Ok(AllocationResult::Continue {
+                    l0_new,
+                    l1_new,
+                    l2_new,
+                })
+            }
         }
     }
 
@@ -851,14 +956,14 @@ impl ClusterGmemGraph {
                 let cluster_id = request.cluster_id;
                 let l1_bank = request.l1_bank;
                 if cluster_id < self.hierarchy.l1.len()
-                    && (l1_bank as usize) < self.hierarchy.l1[cluster_id].bank_count()
+                    && l1_bank < self.hierarchy.l1[cluster_id].bank_count()
                 {
                     let merged =
                         self.hierarchy.l1[cluster_id].remove_entry_merged(l1_bank, l1_line);
                     // attribute completions to the L1 bank (primary + merged)
                     for req in std::iter::once(request.clone()).chain(merged.iter().cloned()) {
-                        if (l1_bank as usize) < self.hierarchy.l1[cluster_id].bank_count() {
-                            self.hierarchy.l1[cluster_id].banks[l1_bank as usize]
+                        if l1_bank < self.hierarchy.l1[cluster_id].bank_count() {
+                            self.hierarchy.l1[cluster_id].banks[l1_bank]
                                 .stats
                                 .record_completion(req.bytes, now);
                         }
@@ -880,12 +985,12 @@ impl ClusterGmemGraph {
             }
             MissLevel::L2 => {
                 let l2_bank = request.l2_bank;
-                if (l2_bank as usize) < self.hierarchy.l2.bank_count() {
+                if l2_bank < self.hierarchy.l2.bank_count() {
                     let merged = self.hierarchy.l2.remove_entry_merged(l2_bank, l2_line);
                     // attribute completions to the L2 bank (primary + merged)
                     for req in std::iter::once(request.clone()).chain(merged.iter().cloned()) {
-                        if (l2_bank as usize) < self.hierarchy.l2.bank_count() {
-                            self.hierarchy.l2.banks[l2_bank as usize]
+                        if l2_bank < self.hierarchy.l2.bank_count() {
+                            self.hierarchy.l2.banks[l2_bank]
                                 .stats
                                 .record_completion(req.bytes, now);
                         }
@@ -901,9 +1006,9 @@ impl ClusterGmemGraph {
                         if cluster_id < self.hierarchy.l1.len() {
                             let l1_line_req = line_addr(req.addr, policy.l1_line_bytes);
                             let l1_bank_req = req.l1_bank.min(self.l1_banks.saturating_sub(1));
-                            if (l1_bank_req as usize) < self.hierarchy.l1[cluster_id].bank_count() {
+                            if l1_bank_req < self.hierarchy.l1[cluster_id].bank_count() {
                                 let _ = self.hierarchy.l1[cluster_id]
-                                    .remove_entry_merged(l1_bank_req as usize, l1_line_req);
+                                    .remove_entry_merged(l1_bank_req, l1_line_req);
                             }
                         }
                     }
