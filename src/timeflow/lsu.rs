@@ -1,9 +1,12 @@
 use serde::{Deserialize, Serialize};
 
-use crate::timeflow::graph::{FlowGraph, Link};
-use crate::timeflow::server_node::ServerNode;
-use crate::timeflow::types::NodeId;
-use crate::timeflow::{gmem::GmemRequest, smem::SmemRequest};
+use crate::timeflow::{
+    gmem::GmemRequest,
+    graph::{FlowGraph, Link},
+    server_node::ServerNode,
+    smem::SmemRequest,
+    types::NodeId,
+};
 use crate::timeq::{
     normalize_retry, Backpressure, Cycle, ServerConfig, ServiceRequest, Ticket, TimedServer,
 };
@@ -75,16 +78,10 @@ impl LsuPayload {
         }
     }
 
-    pub(crate) fn id(&self) -> u64 {
-        match self {
-            LsuPayload::Gmem(req) => req.id,
-            LsuPayload::Smem(req) => req.id,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum LsuQueueKind {
+pub(crate) enum LsuQueueKind {
     GlobalLoad,
     GlobalStore,
     SharedLoad,
@@ -376,15 +373,14 @@ impl LsuSubgraph {
 
     pub fn clear_stats(&mut self) {
         self.stats = LsuStats::default();
+        // Reset resource usage counters to zero. These track ephemeral
+        // reservation counts and should be cleared when resetting stats.
+        self.address_in_use = 0;
+        self.store_in_use = 0;
+        self.load_in_use = 0;
     }
 
     pub fn release_issue_resources(&mut self, payload: &LsuPayload) {
-        if Self::needs_address(payload) {
-            self.address_in_use = self.address_in_use.saturating_sub(1);
-        }
-        if Self::needs_store_data(payload) {
-            self.store_in_use = self.store_in_use.saturating_sub(1);
-        }
         if payload.needs_address() {
             self.address_in_use = self.address_in_use.saturating_sub(1);
         }
@@ -412,7 +408,8 @@ impl LsuSubgraph {
 
     pub fn peek_ready(&mut self, now: Cycle) -> Option<LsuPayload> {
         self.graph.with_node_mut(self.issue_node, |node| {
-            node.peek_ready(now).map(|result| result.payload.clone())
+            node.peek_ready(now)
+                .map(|result| result.payload.clone())
         })
     }
 
@@ -504,294 +501,11 @@ impl LsuSubgraph {
         if Self::needs_address(payload) && self.address_in_use >= self.resources.address_entries {
             return false;
         }
-        if Self::needs_store_data(payload) && self.store_in_use >= self.resources.store_data_entries
-        {
+        if Self::needs_store_data(payload) && self.store_in_use >= self.resources.store_data_entries {
             return false;
         }
         true
     }
+
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::timeflow::gmem::GmemRequestKind;
-
-    fn default_issue_config() -> ServerConfig {
-        ServerConfig {
-            base_latency: 0,
-            bytes_per_cycle: 1024,
-            queue_capacity: 1,
-            completions_per_cycle: 1,
-            ..ServerConfig::default()
-        }
-    }
-
-    fn drain_issued(lsu: &mut LsuSubgraph, start: Cycle, end: Cycle) -> Vec<LsuPayload> {
-        let mut issued = Vec::new();
-        for cycle in start..end {
-            lsu.tick(cycle);
-            while lsu.peek_ready(cycle).is_some() {
-                let completion = lsu.take_ready(cycle).expect("ready should exist");
-                issued.push(completion.request);
-            }
-        }
-        issued
-    }
-
-    #[test]
-    fn lsu_rejects_when_per_warp_queue_full() {
-        let mut config = LsuFlowConfig::default();
-        config.issue = default_issue_config();
-        config.queues.global_ldq.queue_capacity = 1;
-        config.resources.address_entries = 1;
-
-        let mut lsu = LsuSubgraph::new(config, 1);
-        let req0 = GmemRequest::new(0, 16, 0xF, true);
-        let req1 = GmemRequest::new(0, 16, 0xF, true);
-
-        assert!(lsu.issue_gmem(0, req0).is_ok());
-        let err = lsu.issue_gmem(0, req1).expect_err("queue should be full");
-        assert_eq!(err.reason, LsuRejectReason::QueueFull);
-    }
-
-    #[test]
-    fn lsu_prioritizes_shared_over_global() {
-        let mut config = LsuFlowConfig::default();
-        config.issue = default_issue_config();
-        config.link_capacity = 1;
-
-        let mut lsu = LsuSubgraph::new(config, 1);
-        let gmem_req = GmemRequest::new(0, 16, 0xF, true);
-        let smem_req = SmemRequest::new(0, 16, 0xF, false, 0);
-
-        assert!(lsu.issue_gmem(0, gmem_req).is_ok());
-        assert!(lsu.issue_smem(0, smem_req).is_ok());
-
-        let issued = drain_issued(&mut lsu, 0, 10);
-
-        assert!(
-            matches!(issued.get(0), Some(LsuPayload::Smem(_))),
-            "expected shared request to issue before global"
-        );
-        assert!(
-            matches!(issued.get(1), Some(LsuPayload::Gmem(_))),
-            "expected global request after shared"
-        );
-    }
-
-    #[test]
-    fn lsu_prioritizes_load_over_store_within_space() {
-        let mut config = LsuFlowConfig::default();
-        config.issue = default_issue_config();
-        config.link_capacity = 1;
-
-        let mut lsu = LsuSubgraph::new(config, 1);
-        let mut load = GmemRequest::new(0, 16, 0xF, true);
-        let mut store = GmemRequest::new(0, 16, 0xF, false);
-        load.kind = GmemRequestKind::Load;
-        store.kind = GmemRequestKind::Store;
-
-        assert!(lsu.issue_gmem(0, load).is_ok());
-        assert!(lsu.issue_gmem(0, store).is_ok());
-
-        let issued = drain_issued(&mut lsu, 0, 10);
-
-        let first = issued
-            .into_iter()
-            .find_map(|payload| match payload {
-                LsuPayload::Gmem(req) => Some(req),
-                _ => None,
-            })
-            .expect("expected a gmem request");
-        assert!(first.is_load);
-    }
-
-    #[test]
-    fn per_warp_queues_independent() {
-        let mut config = LsuFlowConfig::default();
-        config.issue = default_issue_config();
-        config.queues.global_ldq.queue_capacity = 1;
-        config.resources.address_entries = 4;
-
-        let mut lsu = LsuSubgraph::new(config, 2);
-        let req0 = GmemRequest::new(0, 16, 0xF, true);
-        let req1 = GmemRequest::new(0, 16, 0xF, true);
-        assert!(lsu.issue_gmem(0, req0).is_ok());
-        assert!(lsu.issue_gmem(0, req1).is_err());
-
-        let req_other = GmemRequest::new(1, 16, 0xF, true);
-        assert!(lsu.issue_gmem(0, req_other).is_ok());
-    }
-
-    #[test]
-    fn address_entries_exactly_full() {
-        let mut config = LsuFlowConfig::default();
-        config.issue = default_issue_config();
-        config.queues.global_ldq.queue_capacity = 2;
-        config.resources.address_entries = 1;
-
-        let mut lsu = LsuSubgraph::new(config, 1);
-        let req0 = GmemRequest::new(0, 16, 0xF, true);
-        let req1 = GmemRequest::new(0, 16, 0xF, true);
-        assert!(lsu.issue_gmem(0, req0).is_ok());
-        let err = lsu.issue_gmem(0, req1).expect_err("address entries full");
-        assert_eq!(err.reason, LsuRejectReason::QueueFull);
-    }
-
-    #[test]
-    fn store_data_entries_exactly_full() {
-        let mut config = LsuFlowConfig::default();
-        config.issue = default_issue_config();
-        config.queues.global_stq.queue_capacity = 2;
-        config.resources.store_data_entries = 1;
-
-        let mut lsu = LsuSubgraph::new(config, 1);
-        let req0 = GmemRequest::new(0, 16, 0xF, false);
-        let req1 = GmemRequest::new(0, 16, 0xF, false);
-        assert!(lsu.issue_gmem(0, req0).is_ok());
-        let err = lsu.issue_gmem(0, req1).expect_err("store data full");
-        assert_eq!(err.reason, LsuRejectReason::QueueFull);
-    }
-
-    #[test]
-    fn load_blocked_by_pending_store_same_warp() {
-        let mut config = LsuFlowConfig::default();
-        config.issue = default_issue_config();
-        config.queues.global_ldq.queue_capacity = 2;
-        config.queues.global_stq.queue_capacity = 2;
-        config.resources.address_entries = 4;
-        config.resources.store_data_entries = 4;
-
-        let mut lsu = LsuSubgraph::new(config, 1);
-        let store = GmemRequest::new(0, 16, 0xF, false);
-        let load = GmemRequest::new(0, 16, 0xF, true);
-        assert!(lsu.issue_gmem(0, store).is_ok());
-        let err = lsu.issue_gmem(0, load).expect_err("load should be blocked");
-        assert_eq!(err.reason, LsuRejectReason::Busy);
-    }
-
-    #[test]
-    fn global_stq_exactly_full() {
-        let mut config = LsuFlowConfig::default();
-        config.issue = default_issue_config();
-        config.queues.global_stq.queue_capacity = 4;
-        config.resources.address_entries = 16;
-        config.resources.store_data_entries = 4;
-
-        let mut lsu = LsuSubgraph::new(config, 1);
-        for _ in 0..4 {
-            let req = GmemRequest::new(0, 16, 0xF, false);
-            assert!(lsu.issue_gmem(0, req).is_ok());
-        }
-        let req = GmemRequest::new(0, 16, 0xF, false);
-        let err = lsu.issue_gmem(0, req).expect_err("stq should be full");
-        assert_eq!(err.reason, LsuRejectReason::QueueFull);
-    }
-
-    #[test]
-    fn shared_ldq_exactly_full() {
-        let mut config = LsuFlowConfig::default();
-        config.issue = default_issue_config();
-        config.queues.shared_ldq.queue_capacity = 4;
-        config.resources.address_entries = 16;
-
-        let mut lsu = LsuSubgraph::new(config, 1);
-        for _ in 0..4 {
-            let req = SmemRequest::new(0, 16, 0xF, false, 0);
-            assert!(lsu.issue_smem(0, req).is_ok());
-        }
-        let req = SmemRequest::new(0, 16, 0xF, false, 0);
-        let err = lsu.issue_smem(0, req).expect_err("shared ldq full");
-        assert_eq!(err.reason, LsuRejectReason::QueueFull);
-    }
-
-    #[test]
-    fn shared_stq_exactly_full() {
-        let mut config = LsuFlowConfig::default();
-        config.issue = default_issue_config();
-        config.queues.shared_stq.queue_capacity = 2;
-        config.resources.address_entries = 16;
-        config.resources.store_data_entries = 2;
-
-        let mut lsu = LsuSubgraph::new(config, 1);
-        for _ in 0..2 {
-            let req = SmemRequest::new(0, 16, 0xF, true, 0);
-            assert!(lsu.issue_smem(0, req).is_ok());
-        }
-        let req = SmemRequest::new(0, 16, 0xF, true, 0);
-        let err = lsu.issue_smem(0, req).expect_err("shared stq full");
-        assert_eq!(err.reason, LsuRejectReason::QueueFull);
-    }
-
-    #[test]
-    fn load_data_entries_exactly_full() {
-        let mut config = LsuFlowConfig::default();
-        config.issue = default_issue_config();
-        config.resources.load_data_entries = 2;
-        let mut lsu = LsuSubgraph::new(config, 1);
-        let req = GmemRequest::new(0, 16, 0xF, true);
-        let payload = LsuPayload::Gmem(req);
-        assert!(lsu.reserve_load_data(&payload));
-        assert!(lsu.reserve_load_data(&payload));
-        assert!(!lsu.can_reserve_load_data(&payload));
-    }
-
-    #[test]
-    fn all_warps_all_queues_full() {
-        let mut config = LsuFlowConfig::default();
-        config.issue = default_issue_config();
-        config.queues.global_ldq.queue_capacity = 1;
-        config.queues.global_stq.queue_capacity = 1;
-        config.queues.shared_ldq.queue_capacity = 1;
-        config.queues.shared_stq.queue_capacity = 1;
-        config.resources.address_entries = 16;
-        config.resources.store_data_entries = 16;
-
-        let mut lsu = LsuSubgraph::new(config, 2);
-        for warp in 0..2 {
-            assert!(lsu
-                .issue_gmem(0, GmemRequest::new(warp, 4, 0xF, true))
-                .is_ok());
-            assert!(lsu
-                .issue_gmem(0, GmemRequest::new(warp, 4, 0xF, false))
-                .is_ok());
-            assert!(lsu
-                .issue_smem(0, SmemRequest::new(warp, 4, 0xF, false, 0))
-                .is_ok());
-            assert!(lsu
-                .issue_smem(0, SmemRequest::new(warp, 4, 0xF, true, 0))
-                .is_ok());
-        }
-        let err = lsu
-            .issue_gmem(0, GmemRequest::new(0, 4, 0xF, true))
-            .expect_err("queues should be full or busy");
-        assert!(
-            matches!(
-                err.reason,
-                LsuRejectReason::QueueFull | LsuRejectReason::Busy
-            ),
-            "unexpected reject reason: {:?}",
-            err.reason
-        );
-    }
-
-    #[test]
-    fn rapid_issue_complete_cycle() {
-        let mut config = LsuFlowConfig::default();
-        config.issue = default_issue_config();
-        config.link_capacity = 4;
-        let mut lsu = LsuSubgraph::new(config, 1);
-        let mut issued = 0u64;
-        for cycle in 0..200 {
-            let req = GmemRequest::new(0, 4, 0xF, true);
-            if lsu.issue_gmem(cycle, req).is_ok() {
-                issued += 1;
-            }
-            lsu.tick(cycle);
-            while lsu.take_ready(cycle).is_some() {}
-        }
-        assert!(issued > 0);
-        assert!(lsu.stats().completed > 0);
-    }
-}

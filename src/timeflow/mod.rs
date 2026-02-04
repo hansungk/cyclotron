@@ -13,6 +13,7 @@ pub mod simple_queue;
 pub mod smem;
 pub mod tensor;
 pub mod types;
+pub mod unit_tests;
 pub mod warp_scheduler;
 pub mod writeback;
 

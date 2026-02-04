@@ -1,8 +1,7 @@
 use std::collections::VecDeque;
 
 use crate::muon::scheduler::Scheduler;
-use crate::timeflow::lsu::LsuPayload;
-use crate::timeflow::{FenceRequest, GmemReject, SmemIssue, SmemReject, WritebackPayload};
+use crate::timeflow::{lsu::LsuPayload, FenceRequest, GmemReject, SmemIssue, SmemReject, WritebackPayload};
 use crate::timeq::Cycle;
 
 use super::{CoreTimingModel, PendingClusterIssue};

@@ -1,8 +1,10 @@
 use serde::Deserialize;
 
-use crate::timeflow::graph::{FlowGraph, Link};
-use crate::timeflow::server_node::ServerNode;
-use crate::timeflow::types::{CoreFlowPayload, NodeId};
+use crate::timeflow::{
+    graph::{FlowGraph, Link},
+    server_node::ServerNode,
+    types::{CoreFlowPayload, NodeId},
+};
 use crate::timeq::{ServerConfig, TimedServer};
 
 use super::policy::GmemPolicyConfig;

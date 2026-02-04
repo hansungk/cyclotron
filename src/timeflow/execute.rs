@@ -53,8 +53,7 @@ impl Default for ExecutePipelineConfig {
     }
 }
 
-/// Logical units that share execute pipelines. Clients should pick the variant that best
-/// matches the instruction being executed.
+
 #[derive(Debug, Clone, Copy)]
 pub enum ExecUnitKind {
     Int,
@@ -84,7 +83,6 @@ impl ExecutePipeline {
     }
 
     pub fn tick(&mut self, now: Cycle) {
-        // TimedServer doesn't have a standalone "tick"; we drain completed work each cycle.
         self.alu.service_ready(now, |_| {});
         self.int_mul.service_ready(now, |_| {});
         self.int_div.service_ready(now, |_| {});

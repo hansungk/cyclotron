@@ -1,8 +1,8 @@
-mod cache;
+pub mod cache;
 mod cluster;
 mod graph_build;
-mod mshr;
-mod policy;
+pub mod mshr;
+pub mod policy;
 mod request;
 mod stats;
 

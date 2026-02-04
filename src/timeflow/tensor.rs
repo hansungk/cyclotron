@@ -4,10 +4,6 @@ use crate::timeflow::simple_queue::SimpleTimedQueue;
 pub use crate::timeflow::types::RejectReason as TensorRejectReason;
 use crate::timeq::{Cycle, ServerConfig, Ticket};
 
-// TensorIssue represented directly by `Ticket` to reduce wrapper boilerplate.
-
-// Alias to central RejectReason for Tensor.
-
 pub type TensorReject = crate::timeflow::types::Reject;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -117,7 +113,6 @@ impl TensorQueue {
 #[cfg(test)]
 mod tests {
     use super::{TensorConfig, TensorQueue};
-
     #[test]
     fn tensor_queue_completes() {
         let mut cfg = TensorConfig::default();
@@ -130,48 +125,5 @@ mod tests {
         assert_eq!(tensor.completed(), 0);
         tensor.tick(ticket.ready_at());
         assert_eq!(tensor.completed(), 1);
-    }
-
-    #[test]
-    fn disabled_tensor_immediate() {
-        let mut cfg = TensorConfig::default();
-        cfg.enabled = false;
-        let mut tensor = TensorQueue::new(cfg);
-        let ticket = tensor.try_issue(5, 128).expect("issue");
-        assert_eq!(ticket.ready_at(), 5);
-    }
-
-    #[test]
-    fn queue_full_rejects() {
-        let mut cfg = TensorConfig::default();
-        cfg.enabled = true;
-        cfg.queue.queue_capacity = 1;
-        let mut tensor = TensorQueue::new(cfg);
-        assert!(tensor.try_issue(0, 64).is_ok());
-        let err = tensor.try_issue(0, 64).expect_err("queue full");
-        assert_eq!(super::TensorRejectReason::QueueFull, err.reason);
-    }
-
-    #[test]
-    fn zero_byte_operation_uses_base_latency() {
-        let mut cfg = TensorConfig::default();
-        cfg.enabled = true;
-        cfg.queue.base_latency = 4;
-        cfg.queue.bytes_per_cycle = 8;
-        let mut tensor = TensorQueue::new(cfg);
-        let ticket = tensor.try_issue(10, 0).unwrap();
-        assert_eq!(14, ticket.ready_at());
-    }
-
-    #[test]
-    fn tensor_large_operation_bandwidth_limited() {
-        let mut cfg = TensorConfig::default();
-        cfg.enabled = true;
-        cfg.queue.base_latency = 3;
-        cfg.queue.bytes_per_cycle = 8;
-        let mut tensor = TensorQueue::new(cfg);
-
-        let ticket = tensor.try_issue(0, 64).unwrap();
-        assert_eq!(11, ticket.ready_at());
     }
 }

@@ -1,7 +1,6 @@
 use std::collections::VecDeque;
 
-use crate::timeflow::graph::FlowGraph;
-use crate::timeflow::types::{CoreFlowPayload, NodeId};
+use crate::timeflow::{graph::FlowGraph, types::{CoreFlowPayload, NodeId}};
 use crate::timeq::{Backpressure, Cycle, ServiceRequest, Ticket};
 
 use super::cache::CacheTagArray;
