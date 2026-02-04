@@ -235,8 +235,6 @@ impl LsuSubgraph {
             });
         }
 
-        // Match RTL memReqArbiter priority:
-        // shared loads, shared stores, global loads, global stores (warp 0..N each).
         for (warp, nodes) in queues.iter().enumerate() {
             graph.connect(
                 nodes.shared_ldq,
@@ -373,8 +371,6 @@ impl LsuSubgraph {
 
     pub fn clear_stats(&mut self) {
         self.stats = LsuStats::default();
-        // Reset resource usage counters to zero. These track ephemeral
-        // reservation counts and should be cleared when resetting stats.
         self.address_in_use = 0;
         self.store_in_use = 0;
         self.load_in_use = 0;

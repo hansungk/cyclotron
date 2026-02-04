@@ -314,9 +314,6 @@ impl Default for GmemFlowConfig {
 }
 
 impl GmemFlowConfig {
-    /// Test helper: a compact, high-throughput config used by unit tests.
-    /// Keeps the same initialization behavior as the previous local
-    /// `fast_config()` used in tests.
     pub fn zeroed() -> Self {
         let mut cfg = Self::default();
         for node in [

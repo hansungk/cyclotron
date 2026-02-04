@@ -545,6 +545,7 @@ impl ExecuteUnit {
             // sets thread mask to rs1[NT-1:0]
             0b000_0000000u16 => InstDef("vx_tmc",   SFUType::TMC),
             // spawns rs1 warps, except the executing warp, and set their pc's to rs2
+            // (offsets relative to start_pc are treated as start_pc + offset).
             0b001_0000000u16 => InstDef("vx_wspawn",SFUType::WSPAWN),
             // collect rs1[0] for then mask. divergent if mask not all 0 or 1. write divergence back. set tmc, push else mask to ipdom
             0b010_0000000u16 => InstDef("vx_split", SFUType::SPLIT),

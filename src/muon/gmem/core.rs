@@ -328,8 +328,6 @@ impl CoreTimingModel {
             self.tensor_util.busy_sum = self.tensor_util.busy_sum.saturating_add(1);
         }
 
-        // Execute pipeline utilization is sampled as "busy this cycle" based on outstanding
-        // requests in each TimedServer.
         use crate::timeflow::ExecUnitKind;
         if self.graph.execute_is_busy(ExecUnitKind::Int) {
             self.execute_util.int_busy_sum = self.execute_util.int_busy_sum.saturating_add(1);
@@ -348,7 +346,7 @@ impl CoreTimingModel {
         if self.graph.execute_is_busy(ExecUnitKind::Sfu) {
             self.execute_util.sfu_busy_sum = self.execute_util.sfu_busy_sum.saturating_add(1);
         }
-        // sample instantaneous utilization counters
+
         let sample = self.graph.sample_smem_utilization();
         self.smem_util.lane_busy_sum = self
             .smem_util
@@ -361,12 +359,8 @@ impl CoreTimingModel {
         self.smem_util.lane_total = sample.lane_total as u64;
         self.smem_util.bank_total = sample.bank_total as u64;
 
-        // record per-bank busy samples and conflict attempts accumulated inside the
-        // timeflow SMEM subgraph (bank_attempts / bank_conflicts maintained there).
         self.graph.record_smem_sample();
 
-        // Periodically log aggregated SMEM stats so users can observe utilization
-        // and bank conflict rate without opening CSVs. Use configured period.
         let period = self.smem_config.smem_log_period.max(1);
         if self.log_stats && now % period == 0 {
             let cycles = self.smem_util.cycles.max(1) as f64;

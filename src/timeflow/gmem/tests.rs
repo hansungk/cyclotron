@@ -3,8 +3,6 @@ use crate::timeq::Cycle;
 
 const MAX_CYCLES: u64 = 200;
 
-// `fast_config()` removed — use `GmemFlowConfig::zeroed()` directly.
-
 fn make_load(addr: u64, cluster_id: usize) -> GmemRequest {
     let mut req = GmemRequest::new(0, 16, 0xF, true);
     req.addr = addr;

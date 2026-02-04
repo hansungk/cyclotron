@@ -33,8 +33,6 @@ enum AllocationResult {
     },
 }
 
-/// A unified Bank type that pairs an MSHR table, admission controller, and
-/// per-bank statistics. This will be used by the layered topology `CacheLayer`.
 pub struct Bank {
     pub mshr: MshrTable,
     pub stats: GmemStats,
@@ -49,9 +47,6 @@ impl Bank {
     }
 }
 
-/// A CacheLayer owns a `CacheTagArray` and one or more `Bank`s. This models the
-/// hardware concept of a cache layer (tags + data/MSHR banks) and centralizes
-/// tag + bank access logic.
 pub struct CacheLayer {
     pub tags: CacheTagArray,
     pub banks: Vec<Bank>,
@@ -68,7 +63,6 @@ impl CacheLayer {
     }
 }
 
-/// A hierarchical container for the layered cache topology.
 pub struct GmemHierarchy {
     pub l0: Vec<CacheLayer>,
     pub l1: Vec<CacheLayer>,
@@ -80,7 +74,6 @@ impl GmemHierarchy {
         Self { l0, l1, l2 }
     }
 
-    /// Aggregate stats across all layers into a single `GmemStats`.
     pub fn aggregate_stats(&self) -> GmemStats {
         let mut s = GmemStats::default();
         for layer in &self.l0 {
@@ -93,7 +86,6 @@ impl GmemHierarchy {
         s
     }
 
-    /// Return per-level aggregated stats: (l0_all, l1_all, l2)
     pub fn per_level_stats(&self) -> (GmemStats, GmemStats, GmemStats) {
         let mut l0 = GmemStats::default();
         for layer in &self.l0 {
@@ -167,7 +159,6 @@ impl CacheLayer {
             .unwrap_or_default()
     }
 
-    /// Aggregate stats for this cache layer by summing per-bank stats.
     pub fn stats(&self) -> GmemStats {
         let mut s = GmemStats::default();
         for b in &self.banks {
@@ -181,7 +172,6 @@ pub struct ClusterGmemGraph {
     graph: FlowGraph<CoreFlowPayload>,
     cores: Vec<ClusterCoreState>,
     policy: GmemPolicyConfig,
-    // Tags and bank groups replaced by `hierarchy`.
     l1_banks: usize,
     hierarchy: GmemHierarchy,
     last_tick: Cycle,
@@ -199,8 +189,6 @@ struct ClusterCoreState {
 }
 
 impl ClusterGmemGraph {
-    // helper functions were simplified to iterator-based initializers.
-
     pub fn new(config: GmemFlowConfig, num_clusters: usize, cores_per_cluster: usize) -> Self {
         let (graph, core_nodes) = build_cluster_graph(&config, num_clusters, cores_per_cluster);
         let levels = &config.levels;
@@ -238,7 +226,6 @@ impl ClusterGmemGraph {
         let l1_mshr_capacity = l1_level.mshr.queue_capacity;
         let l2_mshr_capacity = l2_level.mshr.queue_capacity;
 
-        // Build the hierarchical cache topology (fresh tag arrays for now).
         let l0_layers = if policy.l0_enabled {
             (0..total_cores)
                 .map(|_| CacheLayer::new(CacheTagArray::new(l0_sets, l0_ways), 1, l0_mshr_capacity))
@@ -959,7 +946,7 @@ impl ClusterGmemGraph {
                 {
                     let merged =
                         self.hierarchy.l1[cluster_id].remove_entry_merged(l1_bank, l1_line);
-                    // attribute completions to the L1 bank (primary + merged)
+
                     for req in std::iter::once(request.clone()).chain(merged.iter().cloned()) {
                         if l1_bank < self.hierarchy.l1[cluster_id].bank_count() {
                             self.hierarchy.l1[cluster_id].banks[l1_bank]
@@ -967,7 +954,7 @@ impl ClusterGmemGraph {
                                 .record_completion(req.bytes, now);
                         }
                     }
-                    // Remove corresponding L0 placeholders
+
                     if l0_enabled {
                         for req in std::iter::once(request.clone()).chain(merged.iter().cloned()) {
                             if req.core_id < self.hierarchy.l0.len() {
@@ -986,7 +973,7 @@ impl ClusterGmemGraph {
                 let l2_bank = request.l2_bank;
                 if l2_bank < self.hierarchy.l2.bank_count() {
                     let merged = self.hierarchy.l2.remove_entry_merged(l2_bank, l2_line);
-                    // attribute completions to the L2 bank (primary + merged)
+
                     for req in std::iter::once(request.clone()).chain(merged.iter().cloned()) {
                         if l2_bank < self.hierarchy.l2.bank_count() {
                             self.hierarchy.l2.banks[l2_bank]
@@ -994,7 +981,7 @@ impl ClusterGmemGraph {
                                 .record_completion(req.bytes, now);
                         }
                     }
-                    // Remove corresponding placeholders in L1 and L0
+
                     for req in std::iter::once(request.clone()).chain(merged.iter().cloned()) {
                         if l0_enabled && req.core_id < self.hierarchy.l0.len() {
                             let l0_line_req = line_addr(req.addr, policy.l0_line_bytes);
@@ -1071,17 +1058,14 @@ impl ClusterGmemGraph {
         }
     }
 
-    /// Aggregate stats across the hierarchical cache (all layers).
     pub fn hierarchy_stats(&self) -> GmemStats {
         self.hierarchy.aggregate_stats()
     }
 
-    /// Return per-level aggregated stats: (l0_all, l1_all, l2)
     pub fn hierarchy_stats_per_level(&self) -> (GmemStats, GmemStats, GmemStats) {
         self.hierarchy.per_level_stats()
     }
 
-    /// Return per-cluster (L1) stats as a vector where index = cluster id.
     pub fn l1_cluster_stats(&self) -> Vec<GmemStats> {
         self.hierarchy
             .l1
@@ -1090,17 +1074,14 @@ impl ClusterGmemGraph {
             .collect()
     }
 
-    /// Return per-bank stats for L2 as a vector.
     pub fn l2_bank_stats(&self) -> Vec<GmemStats> {
         self.hierarchy.l2.banks.iter().map(|b| b.stats).collect()
     }
 
-    /// Aggregate L2 stats across banks.
     pub fn l2_stats(&self) -> GmemStats {
         self.hierarchy.l2.stats()
     }
 
-    /// Return per-level hit rates (l0, l1, l2) as (0.0..1.0).
     pub fn hierarchy_hit_rates(&self) -> (f64, f64, f64) {
         let (l0, l1, l2) = self.hierarchy.per_level_stats();
         let l0_rate = if l0.accesses() == 0 {

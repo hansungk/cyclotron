@@ -72,7 +72,7 @@ pub struct CoreGraph {
     cluster_gmem: Option<Arc<RwLock<ClusterGmemGraph>>>,
 }
 
-// Small macro to implement repeated indexed accessors for subgraphs.
+// Small macro to implement repeated indexed accessors for subgraphs
 macro_rules! impl_indexed_accessor {
     ($ref_name:ident, $mut_name:ident, $with_name:ident, $idx_field:ident, $variant:path, $ty:ty, $panic_msg:expr) => {
         fn $ref_name(&self) -> &$ty {
@@ -120,7 +120,6 @@ impl CoreGraph {
         let fence = FenceQueue::new(config.io.fence);
         let barrier = BarrierManager::new(config.io.barrier, num_warps);
 
-        // Subgraph ordering matters for tick-front; keep it aligned with the historical tick order.
         let mut subgraphs = Vec::with_capacity(11);
         let smem_index = subgraphs.len();
         subgraphs.push(CoreSubgraph::Smem(smem));
@@ -169,10 +168,6 @@ impl CoreGraph {
         self.with_smem_mut(|smem, graph| smem.issue(graph, now, request))
     }
 
-    /// Tick standalone timing units that are not attached to the central `FlowGraph` (yet).
-    ///
-    /// Ordering matters: we keep this aligned with the historical tick order inside
-    /// `CoreTimingModel::tick` to avoid subtle same-cycle behavior changes.
     pub fn tick_front(&mut self, now: Cycle) {
         for subgraph in &mut self.subgraphs {
             subgraph.tick_phase(TickPhase::Front, now);
@@ -182,10 +177,6 @@ impl CoreGraph {
         }
     }
 
-    /// Tick the central `FlowGraph` and allow graph-attached subgraphs to collect completions.
-    ///
-    /// This is intentionally separate from `tick_front()` so callers can preserve same-cycle
-    /// completion behavior for requests that are issued into the graph on `now`.
     pub fn tick_graph(&mut self, now: Cycle) {
         self.graph.tick(now);
         for subgraph in &mut self.subgraphs {
@@ -193,7 +184,6 @@ impl CoreGraph {
         }
     }
 
-    /// Tick standalone units that must run after enqueuing completion-driven work (writeback/fence).
     pub fn tick_back(&mut self, now: Cycle) {
         for subgraph in &mut self.subgraphs {
             subgraph.tick_phase(TickPhase::Back, now);
@@ -462,7 +452,6 @@ impl CoreGraph {
         self.with_smem_mut(|smem, graph| smem.sample_utilization(graph))
     }
 
-    /// Record one SMEM sample cycle into SMEM statistics (busy samples per bank).
     pub fn record_smem_sample(&mut self) {
         self.with_smem_mut(|smem, graph| smem.sample_and_accumulate(graph));
     }

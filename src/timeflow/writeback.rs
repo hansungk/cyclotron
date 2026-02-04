@@ -20,8 +20,6 @@ pub struct WritebackIssue {
     pub ticket: Ticket,
 }
 
-// Alias to central RejectReason for consistency across timeflow modules.
-
 pub type WritebackReject = crate::timeflow::types::Reject;
 
 #[derive(Debug, Clone, Deserialize)]

@@ -4,7 +4,6 @@ use crate::timeflow::simple_queue::SimpleTimedQueue;
 pub use crate::timeflow::types::RejectReason as OperandFetchRejectReason;
 use crate::timeq::ServerConfig;
 
-// Alias to the central Reject type used by queues.
 pub type OperandFetchReject = crate::timeflow::types::Reject;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -30,7 +29,6 @@ impl Default for OperandFetchConfig {
     }
 }
 
-// Collapse the thin wrapper: expose the underlying SimpleTimedQueue<()> directly.
 pub type OperandFetchQueue = SimpleTimedQueue<()>;
 
 #[cfg(test)]

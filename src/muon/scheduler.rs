@@ -160,15 +160,39 @@ impl Scheduler {
                 }
             }
             SFUType::WSPAWN => {
-                let start_pc = rs2[first_lid];
-                let count = rs1[first_lid];
-                info!("wspawn {} warps @pc={:08x}", rs1[first_lid], start_pc);
-                for i in 0..count as usize {
-                    self.base.state.pc[i] = start_pc;
-                    if !self.base.state.active_warps.bit(i) {
+                let mut start_pc = rs2[first_lid];
+                if self.conf().start_pc != 0 && start_pc < self.conf().start_pc {
+                    start_pc = start_pc.wrapping_add(self.conf().start_pc);
+                    info!(
+                        "wspawn pc treated as offset, base {:08x} -> {:08x}",
+                        self.conf().start_pc, start_pc
+                    );
+                }
+                let requested = rs1[first_lid];
+                let max_warps = self.conf().num_warps as u32;
+                let count = requested.min(max_warps);
+                let additional = count.saturating_sub(1);
+                if count != requested {
+                    info!("wspawn count clamped from {} to {}", requested, count);
+                }
+                info!("wspawn {} warps @pc={:08x}", count, start_pc);
+                if additional > 0 {
+                    let mut spawned = 0u32;
+                    for i in 0..max_warps as usize {
+                        if i == wid {
+                            continue;
+                        }
+                        if self.base.state.active_warps.bit(i) {
+                            continue;
+                        }
+                        self.base.state.pc[i] = start_pc;
                         self.base.state.thread_masks[i] = u32::MAX;
+                        self.base.state.active_warps.mut_bit(i, true);
+                        spawned += 1;
+                        if spawned >= additional {
+                            break;
+                        }
                     }
-                    self.base.state.active_warps.mut_bit(i, true);
                 }
                 info!("new active warps: {:b}", self.base.state.active_warps);
                 SchedulerWriteback {

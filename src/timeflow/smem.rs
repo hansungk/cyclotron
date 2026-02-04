@@ -97,7 +97,7 @@ pub struct SmemFlowConfig {
     pub word_bytes: u32,
     pub serialize_cores: bool,
     pub link_capacity: usize,
-    // How often (in cycles) to emit SMEM aggregated logs / CSV rows. Default: 1000.
+    // How often (in cycles) to emit SMEM aggregated logs
     pub smem_log_period: Cycle,
 }
 
@@ -317,8 +317,6 @@ impl SmemSubgraph {
         }
     }
 
-    /// Sample per-bank and per-port busy state and accumulate into statistics.
-    /// Call this once per cycle to build utilization counters.
     pub fn sample_and_accumulate(&mut self, graph: &mut FlowGraph<CoreFlowPayload>) {
         self.stats.sample_cycles = self.stats.sample_cycles.saturating_add(1);
         let mut is_busy = |node_id| graph.with_node_mut(node_id, |nd| nd.outstanding() > 0);

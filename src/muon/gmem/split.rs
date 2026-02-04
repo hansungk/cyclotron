@@ -90,7 +90,6 @@ impl CoreTimingModel {
             if lane_addrs.is_empty() {
                 return None;
             }
-            // Fast path: use bitmasks when bank/subbank counts are small.
             let nb = num_banks as usize;
             let ns = num_subbanks as usize;
             if nb <= 64 && ns <= 64 {
@@ -113,7 +112,6 @@ impl CoreTimingModel {
                     conflict_lanes,
                 });
             } else {
-                // Fallback: use HashSet for arbitrary sizes to preserve correctness.
                 let mut banks = std::collections::HashSet::new();
                 let mut subbanks = std::collections::HashSet::new();
                 for &addr in lane_addrs {

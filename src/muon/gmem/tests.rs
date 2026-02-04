@@ -78,7 +78,6 @@ fn make_model_with_execute(
     let mut cfg = CoreGraphConfig::default();
     cfg.compute.execute = execute;
 
-    // Keep memory configs small but valid; GMEM is provided via the cluster graph.
     let logger = Arc::new(Logger::silent());
     let cluster_gmem = Arc::new(std::sync::RwLock::new(ClusterGmemGraph::new(
         cfg.memory.gmem.clone(),
@@ -169,8 +168,6 @@ fn gmem_coalescing_adds_multiple_pending_entries() {
         .issue_gmem_request(now, 0, request, &mut scheduler)
         .expect("coalesced request should accept");
 
-    // With L0 disabled, coalescing should occur at the L1 line size (default 32B),
-    // so 0 and 32 map to distinct lines and produce two pending splits.
     assert_eq!(model.outstanding_gmem(), 2);
 
     let max_cycles = 1000;
@@ -218,7 +215,6 @@ fn gmem_coalescing_uses_l0_line_when_enabled() {
         .issue_gmem_request(now, 0, request, &mut scheduler)
         .expect("coalesced request should accept");
 
-    // With L0 enabled and 64B lines, 0 and 32 coalesce into one request/split.
     assert_eq!(model.outstanding_gmem(), 1);
 }
 
@@ -245,13 +241,11 @@ fn execute_pipeline_stalls_until_ready() {
         .expect_err("execute should stall when latency > 0");
     assert_eq!(now + 3, wait_until);
 
-    // Not ready yet => still stalls.
     model.tick(now + 1, &mut scheduler);
     assert!(model
         .issue_execute(now + 1, 0, &inst, 32, &mut scheduler)
         .is_err());
 
-    // At ready => completes and allows execution.
     model.tick(wait_until, &mut scheduler);
     assert!(model
         .issue_execute(wait_until, 0, &inst, 32, &mut scheduler)
@@ -280,7 +274,6 @@ fn execute_utilization_counts_busy_cycles() {
         .issue_execute(now, 0, &inst, 32, &mut scheduler)
         .expect_err("execute should stall");
 
-    // Drive until completion; utilization should have recorded at least one busy sample.
     for cycle in now..=wait_until {
         model.tick(cycle, &mut scheduler);
     }

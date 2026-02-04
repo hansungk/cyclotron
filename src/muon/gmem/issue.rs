@@ -36,7 +36,7 @@ impl CoreTimingModel {
         self.maybe_convert_mmio_flush(&mut request);
         if request.kind.is_mem() {
             if let Some(lane_addrs) = request.lane_addrs.as_ref() {
-                // Coalesce at the first cache level's line size.
+                // coalesce at the first cache level's line size.
                 let line_bytes = if self.gmem_policy.l0_enabled {
                     self.gmem_policy.l0_line_bytes.max(1)
                 } else {
@@ -254,12 +254,10 @@ impl CoreTimingModel {
             None => return Ok(Ticket::new(now, now, active_lanes.max(1))),
         };
 
-        // If we already issued this warp's execute request, just wait for it.
         if let Some(ready_at) = self.pending_execute[warp] {
             if now >= ready_at {
                 self.pending_execute[warp] = None;
                 self.trace_event(now, "exec_complete", warp, None, active_lanes, None);
-                // Clearing execute pending may allow the scheduler to un-stall.
                 self.update_scheduler_state(warp, scheduler);
                 return Ok(Ticket::new(now, now, active_lanes.max(1)));
             }
@@ -446,7 +444,6 @@ impl CoreTimingModel {
 }
 
 fn exec_unit_for(inst: &IssuedInst) -> Option<ExecUnitKind> {
-    // Do not double-count memory ops: their bottlenecks are modeled via LSU/GMEM/SMEM.
     if inst.opcode == Opcode::LOAD
         || inst.opcode == Opcode::STORE
         || inst.opcode == Opcode::MISC_MEM
@@ -458,7 +455,6 @@ fn exec_unit_for(inst: &IssuedInst) -> Option<ExecUnitKind> {
 
     match inst.opcode {
         Opcode::SYSTEM => {
-            // f3 == 0 is the SFU/tohost path in the functional model.
             if inst.f3 == 0 {
                 Some(ExecUnitKind::Sfu)
             } else {
@@ -471,7 +467,6 @@ fn exec_unit_for(inst: &IssuedInst) -> Option<ExecUnitKind> {
             Some(ExecUnitKind::Fp)
         }
         Opcode::OP => {
-            // RV32M: f7==1 selects mul/div/rem variants.
             if inst.f7 == 0b0000001 {
                 match inst.f3 {
                     0b000 | 0b001 | 0b010 | 0b011 => Some(ExecUnitKind::IntMul),

@@ -37,10 +37,6 @@ impl Default for GmemPolicyConfig {
             l1_ways: 4,
             l2_sets: 512,
             l2_ways: 8,
-            // See radiance/src/main/scala/radiance/muon/MuonTile.scala:
-            // L0i flush is at peripheralAddr; L0d flush is at peripheralAddr + 0x100.
-            // Radiance memory map allocates 0x200 bytes per core for these registers,
-            // so L0d flush MMIO is base=0x0008_0300 stride=0x200.
             l0_flush_mmio_base: 0x0008_0300,
             l0_flush_mmio_stride: 0x200,
             l0_flush_mmio_size: 0x100,
@@ -53,10 +49,6 @@ impl Default for GmemPolicyConfig {
 }
 
 impl GmemPolicyConfig {
-    /// Ensure the config has sensible, non-zero values for fields
-    /// that must be positive. This centralizes validation so callers
-    /// can choose to fail fast on bad configs instead of scattering
-    /// `.max(1)` defensive clamping across the codebase.
     pub fn ensure_valid(&self) {
         assert!(self.l0_line_bytes > 0, "l0_line_bytes must be > 0");
         assert!(self.l1_line_bytes > 0, "l1_line_bytes must be > 0");
