@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use crate::timeflow::types::{LinkId, NodeId};
 use crate::timeq::{Backpressure, Cycle, ServiceRequest, ServiceResult, Ticket, normalize_retry};
+use crate::sim::perf_log;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LinkBackpressure {
@@ -355,6 +356,29 @@ impl<T: Send + Sync + 'static> FlowGraph<T> {
                         }
                         Backpressure::QueueFull { .. } => normalize_retry(now, now),
                     };
+
+                    if let Some(logger) = perf_log::graph_logger() {
+                        let (reason, available_at, capacity) = match &bp {
+                            Backpressure::Busy { available_at, .. } => {
+                                ("busy".to_string(), Some(*available_at), None)
+                            }
+                            Backpressure::QueueFull { capacity, .. } => {
+                                ("queue_full".to_string(), None, Some(*capacity))
+                            }
+                        };
+                        let record = perf_log::GraphBackpressureRecord {
+                            cycle: now,
+                            edge: self.edges[edge_id]._name.clone(),
+                            src: self.nodes[self.edges[edge_id].src].name.clone(),
+                            dst: self.nodes[self.edges[edge_id].dst].name.clone(),
+                            reason,
+                            retry_at,
+                            available_at,
+                            capacity,
+                            size_bytes: ticket.size_bytes(),
+                        };
+                        logger.write_json(&record);
+                    }
 
                     let request = bp.into_request();
                     let restored = LinkEntry::from_parts(request, ticket);

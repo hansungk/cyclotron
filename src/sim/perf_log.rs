@@ -112,6 +112,19 @@ pub struct StatsRecord {
     pub summary: CorePerfSummary,
 }
 
+#[derive(Debug, Serialize)]
+pub struct GraphBackpressureRecord {
+    pub cycle: Cycle,
+    pub edge: String,
+    pub src: String,
+    pub dst: String,
+    pub reason: String,
+    pub retry_at: Cycle,
+    pub available_at: Option<Cycle>,
+    pub capacity: Option<usize>,
+    pub size_bytes: u32,
+}
+
 pub struct StatsLog {
     writer: Mutex<BufWriter<File>>,
 }
@@ -124,9 +137,18 @@ impl StatsLog {
             }
         }
     }
+
+    pub(crate) fn write_json<T: Serialize>(&self, record: &T) {
+        if let Ok(mut guard) = self.writer.lock() {
+            if let Ok(payload) = serde_json::to_string(record) {
+                let _ = writeln!(guard, "{payload}");
+            }
+        }
+    }
 }
 
 static STATS_LOGGER: OnceLock<Option<Arc<StatsLog>>> = OnceLock::new();
+static GRAPH_LOGGER: OnceLock<Option<Arc<StatsLog>>> = OnceLock::new();
 
 fn create_stats_logger() -> Option<Arc<StatsLog>> {
     perf_run_dir().and_then(|run_dir| {
@@ -141,6 +163,31 @@ fn create_stats_logger() -> Option<Arc<StatsLog>> {
 
 pub fn stats_logger() -> Option<Arc<StatsLog>> {
     STATS_LOGGER.get_or_init(|| create_stats_logger()).clone()
+}
+
+fn create_graph_logger() -> Option<Arc<StatsLog>> {
+    let enabled = env::var("CYCLOTRON_GRAPH_LOG")
+        .ok()
+        .map(|val| {
+            let lowered = val.to_ascii_lowercase();
+            lowered == "1" || lowered == "true" || lowered == "yes"
+        })
+        .unwrap_or(false);
+    if !enabled {
+        return None;
+    }
+    perf_run_dir().and_then(|run_dir| {
+        let path = run_dir.join("graph_backpressure.jsonl");
+        File::create(path).ok().map(|file| {
+            Arc::new(StatsLog {
+                writer: Mutex::new(BufWriter::new(file)),
+            })
+        })
+    })
+}
+
+pub fn graph_logger() -> Option<Arc<StatsLog>> {
+    GRAPH_LOGGER.get_or_init(|| create_graph_logger()).clone()
 }
 
 pub fn aggregate_summaries(per_core: &[CorePerfSummary]) -> AggregatePerfSummary {
