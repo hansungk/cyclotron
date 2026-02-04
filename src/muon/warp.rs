@@ -194,8 +194,8 @@ impl Warp {
         }
     }
 
-    /// A backend EX-only library interface that accepts a single-warp issued instruction and
-    /// returns a writeback bundle.
+    /// An EX-only library interface that accepts a single-warp issued
+    /// instruction and returns a writeback bundle.
     pub fn execute(
         &mut self,
         issued: IssuedInst,
@@ -212,19 +212,6 @@ impl Warp {
             issued, core_id, self.wid, tmask, rf, csrf, scheduler, neutrino, &self.gmem, smem,
         );
         writeback
-    }
-
-    /// Fast-path that fuses frontend/backend for every warp instead of two-stage schedule/ibuf
-    /// iteration.
-    pub fn process(
-        &mut self,
-        schedule: Schedule,
-        scheduler: &mut Scheduler,
-        neutrino: &mut Neutrino,
-        shared_mem: &mut FlatMemory,
-    ) -> Result<(), ExecErr> {
-        let ibuf = self.frontend(schedule);
-        self.backend(ibuf, scheduler, neutrino, shared_mem).map(|_| ())
     }
 
     pub fn writeback(wb: &Writeback, rf: &mut [RegFile]) {

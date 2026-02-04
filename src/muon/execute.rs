@@ -517,9 +517,9 @@ impl ExecuteUnit {
             0b000_0000000u16 => InstDef("vx_tmc",   SFUType::TMC),
             // spawns rs1 warps, except the executing warp, and set their pc's to rs2
             0b001_0000000u16 => InstDef("vx_wspawn",SFUType::WSPAWN),
-            // collect rs1[0] for then mask. divergent if mask not all 0 or 1. write divergence back. set tmc, push else mask to ipdom
+            // collect rs1[0] for then mask. set tmc, push else mask to ipdom. skip pushing else mask when non-divergent
             0b010_0000000u16 => InstDef("vx_split", SFUType::SPLIT),
-            // rs1[0] indicates divergence from split. pop ipdom and set tmc if divergent
+            // pop ipdom and set tmc
             0b011_0000000u16 => InstDef("vx_join",  SFUType::JOIN),
             // rs1 indicates barrier id, rs2 indicates num warps participating in each core
             0b100_0000000u16 => InstDef("vx_bar",   SFUType::BAR),
