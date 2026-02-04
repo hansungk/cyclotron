@@ -3,9 +3,8 @@ use std::sync::Arc;
 
 use crate::sim::log::Logger;
 use crate::timeflow::{
-    BarrierManager, ClusterGmemGraph, CoreGraph, DmaQueue, ExecutePipeline, FenceQueue,
-    FenceRequest, GmemPolicyConfig, GmemRequest, IcacheSubgraph, LsuSubgraph, OperandFetchQueue,
-    SmemFlowConfig, SmemRequest, TensorQueue, WarpIssueScheduler, WritebackPayload, WritebackQueue,
+    CoreGraph, FenceRequest, GmemPolicyConfig, GmemRequest, SmemFlowConfig, SmemRequest,
+    WarpIssueScheduler, WritebackPayload,
 };
 use crate::timeq::Cycle;
 
@@ -23,22 +22,13 @@ pub use metrics::*;
 
 pub struct CoreTimingModel {
     graph: CoreGraph,
-    lsu: LsuSubgraph,
-    icache: IcacheSubgraph,
-    operand_fetch: OperandFetchQueue,
-    writeback: WritebackQueue,
     pending_writeback: VecDeque<WritebackPayload>,
     pending_dma: VecDeque<u32>,
     pending_tensor: VecDeque<u32>,
     issue_scheduler: WarpIssueScheduler,
-    barrier: BarrierManager,
     barrier_inflight: Vec<bool>,
-    fence: FenceQueue,
     pending_fence: VecDeque<FenceRequest>,
     fence_inflight: Vec<Option<u64>>,
-    dma: DmaQueue,
-    tensor: TensorQueue,
-    execute_pipeline: ExecutePipeline,
     icache_inflight: Vec<Option<IcacheInflight>>,
     pending_cluster_gmem: VecDeque<PendingClusterIssue<GmemRequest>>,
     pending_cluster_smem: VecDeque<PendingClusterIssue<SmemRequest>>,
@@ -47,7 +37,6 @@ pub struct CoreTimingModel {
     pending_execute: Vec<Option<Cycle>>,
     gmem_issue_cycle: HashMap<u64, Cycle>,
     smem_issue_cycle: HashMap<u64, Cycle>,
-    cluster_gmem: Arc<std::sync::RwLock<ClusterGmemGraph>>,
     core_id: usize,
     cluster_id: usize,
     gmem_policy: GmemPolicyConfig,

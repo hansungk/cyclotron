@@ -100,6 +100,8 @@ pub struct AggregatePerfSummary {
     pub latencies: crate::muon::gmem::LatencySummary,
     pub gmem_stats: crate::timeflow::GmemStats,
     pub smem_stats: crate::timeflow::SmemStats,
+    pub icache_stats: crate::timeflow::IcacheStats,
+    pub lsu_stats: crate::timeflow::LsuStats,
     pub dma_completed: u64,
     pub tensor_completed: u64,
 }
@@ -350,6 +352,61 @@ pub fn aggregate_summaries(per_core: &[CorePerfSummary]) -> AggregatePerfSummary
             (None, Some(b)) => Some(b),
             (a, None) => a,
         };
+
+        total.icache_stats.issued = total
+            .icache_stats
+            .issued
+            .saturating_add(core.icache_stats.issued);
+        total.icache_stats.completed = total
+            .icache_stats
+            .completed
+            .saturating_add(core.icache_stats.completed);
+        total.icache_stats.hits = total
+            .icache_stats
+            .hits
+            .saturating_add(core.icache_stats.hits);
+        total.icache_stats.misses = total
+            .icache_stats
+            .misses
+            .saturating_add(core.icache_stats.misses);
+        total.icache_stats.queue_full_rejects = total
+            .icache_stats
+            .queue_full_rejects
+            .saturating_add(core.icache_stats.queue_full_rejects);
+        total.icache_stats.busy_rejects = total
+            .icache_stats
+            .busy_rejects
+            .saturating_add(core.icache_stats.busy_rejects);
+        total.icache_stats.bytes_issued = total
+            .icache_stats
+            .bytes_issued
+            .saturating_add(core.icache_stats.bytes_issued);
+        total.icache_stats.bytes_completed = total
+            .icache_stats
+            .bytes_completed
+            .saturating_add(core.icache_stats.bytes_completed);
+        total.icache_stats.last_completion_cycle = match (
+            total.icache_stats.last_completion_cycle,
+            core.icache_stats.last_completion_cycle,
+        ) {
+            (Some(a), Some(b)) => Some(a.max(b)),
+            (None, Some(b)) => Some(b),
+            (a, None) => a,
+        };
+
+        total.lsu_stats.issued = total.lsu_stats.issued.saturating_add(core.lsu_stats.issued);
+        total.lsu_stats.completed = total
+            .lsu_stats
+            .completed
+            .saturating_add(core.lsu_stats.completed);
+        total.lsu_stats.queue_full_rejects = total
+            .lsu_stats
+            .queue_full_rejects
+            .saturating_add(core.lsu_stats.queue_full_rejects);
+        total.lsu_stats.busy_rejects = total
+            .lsu_stats
+            .busy_rejects
+            .saturating_add(core.lsu_stats.busy_rejects);
 
         total.dma_completed = total.dma_completed.saturating_add(core.dma_completed);
         total.tensor_completed = total.tensor_completed.saturating_add(core.tensor_completed);

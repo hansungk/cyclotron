@@ -1,11 +1,11 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::timeflow::simple_queue::SimpleTimedQueue;
 use crate::timeflow::types::RejectReason;
 pub use crate::timeflow::types::RejectReason as IcacheRejectReason;
 use crate::timeq::{Cycle, ServerConfig, Ticket};
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, Serialize)]
 pub struct IcacheStats {
     pub issued: u64,
     pub completed: u64,
@@ -181,6 +181,10 @@ impl IcacheSubgraph {
 
     pub fn stats(&self) -> IcacheStats {
         self.stats
+    }
+
+    pub fn clear_stats(&mut self) {
+        self.stats = IcacheStats::default();
     }
 }
 

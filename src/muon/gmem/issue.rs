@@ -56,8 +56,8 @@ impl CoreTimingModel {
         request.lane_addrs = None;
         let issue_bytes = request.bytes;
         let request_id = request.id;
-        let dma_trigger = !request.is_load && self.dma.matches_mmio(request.addr);
-        let tensor_trigger = !request.is_load && self.tensor.matches_mmio(request.addr);
+        let dma_trigger = !request.is_load && self.graph.dma_matches_mmio(request.addr);
+        let tensor_trigger = !request.is_load && self.graph.tensor_matches_mmio(request.addr);
         if request_id >= self.next_gmem_id {
             self.next_gmem_id = request_id.saturating_add(1);
         }
@@ -67,13 +67,13 @@ impl CoreTimingModel {
             .map(|lines| lines.len().max(1))
             .unwrap_or(1);
         let is_flush = request.kind.is_flush_l0() || request.kind.is_flush_l1();
-        if let Err(reject) = self.operand_fetch.try_issue(now, (), request.bytes) {
+        if let Err(reject) = self.graph.operand_fetch_try_issue(now, request.bytes) {
             let wait_until = reject.retry_at.max(now.saturating_add(1));
             scheduler.set_resource_wait_until(warp, Some(wait_until));
             scheduler.replay_instruction(warp);
             return Err(wait_until);
         }
-        let issue_result = self.lsu.issue_gmem(now, request);
+        let issue_result = self.graph.lsu_issue_gmem(now, request);
         match issue_result {
             Ok(LsuIssue { ticket }) => {
                 let ready_at = ticket.ready_at();
@@ -158,13 +158,13 @@ impl CoreTimingModel {
         let split_count = self.split_smem_request(&request).len().max(1);
         let conflict_sample = self.compute_smem_conflict(&request);
         let issue_bytes = request.bytes;
-        if let Err(reject) = self.operand_fetch.try_issue(now, (), request.bytes) {
+        if let Err(reject) = self.graph.operand_fetch_try_issue(now, request.bytes) {
             let wait_until = reject.retry_at.max(now.saturating_add(1));
             scheduler.set_resource_wait_until(warp, Some(wait_until));
             scheduler.replay_instruction(warp);
             return Err(wait_until);
         }
-        let issue_result = self.lsu.issue_smem(now, request);
+        let issue_result = self.graph.lsu_issue_smem(now, request);
         match issue_result {
             Ok(LsuIssue { ticket }) => {
                 let ready_at = ticket.ready_at();
@@ -221,14 +221,14 @@ impl CoreTimingModel {
     }
 
     pub fn issue_dma(&mut self, now: Cycle, bytes: u32) -> Result<Ticket, Cycle> {
-        match self.dma.try_issue(now, bytes) {
+        match self.graph.dma_try_issue(now, bytes) {
             Ok(ticket) => Ok(ticket),
             Err(reject) => Err(reject.retry_at),
         }
     }
 
     pub fn issue_tensor(&mut self, now: Cycle, bytes: u32) -> Result<Ticket, Cycle> {
-        match self.tensor.try_issue(now, bytes) {
+        match self.graph.tensor_try_issue(now, bytes) {
             Ok(ticket) => Ok(ticket),
             Err(reject) => Err(reject.retry_at),
         }
@@ -243,15 +243,15 @@ impl CoreTimingModel {
         scheduler: &mut Scheduler,
     ) -> Result<Ticket, Cycle> {
         if warp >= self.pending_execute.len() {
-            return Ok(Ticket::synthetic(now, now, active_lanes.max(1)));
+            return Ok(Ticket::new(now, now, active_lanes.max(1)));
         }
         if active_lanes == 0 {
-            return Ok(Ticket::synthetic(now, now, 0));
+            return Ok(Ticket::new(now, now, 0));
         }
 
         let kind = match exec_unit_for(issued) {
             Some(kind) => kind,
-            None => return Ok(Ticket::synthetic(now, now, active_lanes.max(1))),
+            None => return Ok(Ticket::new(now, now, active_lanes.max(1))),
         };
 
         // If we already issued this warp's execute request, just wait for it.
@@ -261,14 +261,14 @@ impl CoreTimingModel {
                 self.trace_event(now, "exec_complete", warp, None, active_lanes, None);
                 // Clearing execute pending may allow the scheduler to un-stall.
                 self.update_scheduler_state(warp, scheduler);
-                return Ok(Ticket::synthetic(now, now, active_lanes.max(1)));
+                return Ok(Ticket::new(now, now, active_lanes.max(1)));
             }
             scheduler.set_resource_wait_until(warp, Some(ready_at));
             scheduler.replay_instruction(warp);
             return Err(ready_at);
         }
 
-        match self.execute_pipeline.issue(now, kind, active_lanes) {
+        match self.graph.execute_issue(now, kind, active_lanes) {
             Ok(ticket) => {
                 let ready_at = ticket.ready_at();
                 if ready_at > now {
@@ -287,7 +287,7 @@ impl CoreTimingModel {
                         (normalize_retry(now, available_at), "busy")
                     }
                     Backpressure::QueueFull { .. } => (
-                        normalize_retry(now, self.execute_pipeline.suggest_retry(kind)),
+                        normalize_retry(now, self.graph.execute_suggest_retry(kind)),
                         "queue_full",
                     ),
                 };
@@ -308,10 +308,10 @@ impl CoreTimingModel {
     }
 
     pub fn notify_csr_write(&mut self, now: Cycle, csr_addr: u32) {
-        if self.dma.matches_csr(csr_addr) {
+        if self.graph.dma_matches_csr(csr_addr) {
             self.enqueue_dma(now, 4);
         }
-        if self.tensor.matches_csr(csr_addr) {
+        if self.graph.tensor_matches_csr(csr_addr) {
             self.enqueue_tensor(now, 4);
         }
     }
@@ -323,10 +323,10 @@ impl CoreTimingModel {
         barrier_id: u32,
         scheduler: &mut Scheduler,
     ) {
-        if !self.barrier.is_enabled() {
+        if !self.graph.barrier_is_enabled() {
             return;
         }
-        let _ = self.barrier.arrive(now, warp, barrier_id);
+        let _ = self.graph.barrier_arrive(now, warp, barrier_id);
         if let Some(slot) = self.barrier_inflight.get_mut(warp) {
             *slot = true;
         }
@@ -400,7 +400,7 @@ impl CoreTimingModel {
             self.next_icache_id = request.id.saturating_add(1);
         }
 
-        match self.icache.issue(now, request) {
+        match self.graph.issue_icache(now, request) {
             Ok(IcacheIssue { ticket }) => {
                 let ready_at = ticket.ready_at();
                 if ready_at <= now {

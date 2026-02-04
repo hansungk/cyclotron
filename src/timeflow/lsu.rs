@@ -1,4 +1,4 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::timeflow::graph::{FlowGraph, Link};
 use crate::timeflow::server_node::ServerNode;
@@ -91,7 +91,7 @@ enum LsuQueueKind {
     SharedStore,
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, Serialize)]
 pub struct LsuStats {
     pub issued: u64,
     pub completed: u64,
@@ -372,6 +372,10 @@ impl LsuSubgraph {
 
     pub fn stats(&self) -> LsuStats {
         self.stats
+    }
+
+    pub fn clear_stats(&mut self) {
+        self.stats = LsuStats::default();
     }
 
     pub fn release_issue_resources(&mut self, payload: &LsuPayload) {

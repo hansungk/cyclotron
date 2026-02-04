@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 
 use crate::timeflow::types::{LinkId, NodeId};
-use crate::timeq::{Backpressure, Cycle, ServiceRequest, ServiceResult, Ticket};
+use crate::timeq::{Backpressure, Cycle, ServiceRequest, ServiceResult, Ticket, normalize_retry};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LinkBackpressure {
@@ -348,21 +348,21 @@ impl<T: Send + Sync + 'static> FlowGraph<T> {
                         self.edges[edge_id].stats.last_delivery_cycle = Some(now);
                         self.edges[edge_id].next_retry_cycle = now;
                     }
-                    Err(bp) => {
-                        let min_retry = now.saturating_add(1);
-                        let retry_at = match &bp {
-                            Backpressure::Busy { available_at, .. } => *available_at,
-                            Backpressure::QueueFull { .. } => min_retry,
-                        };
+                Err(bp) => {
+                    let retry_at = match &bp {
+                        Backpressure::Busy { available_at, .. } => {
+                            normalize_retry(now, *available_at)
+                        }
+                        Backpressure::QueueFull { .. } => normalize_retry(now, now),
+                    };
 
-                        let request = bp.into_request();
-                        let restored = LinkEntry::from_parts(request, ticket);
-                        self.edges[edge_id].buffer.push_front(restored);
-                        self.edges[edge_id].stats.downstream_backpressure += 1;
-                        self.edges[edge_id].next_retry_cycle =
-                            if retry_at <= now { min_retry } else { retry_at };
-                        break;
-                    }
+                    let request = bp.into_request();
+                    let restored = LinkEntry::from_parts(request, ticket);
+                    self.edges[edge_id].buffer.push_front(restored);
+                    self.edges[edge_id].stats.downstream_backpressure += 1;
+                    self.edges[edge_id].next_retry_cycle = retry_at;
+                    break;
+                }
                 }
             }
         }

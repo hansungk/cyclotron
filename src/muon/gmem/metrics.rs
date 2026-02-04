@@ -1,11 +1,13 @@
 use serde::Serialize;
 
-use crate::timeflow::{GmemStats, SmemStats};
+use crate::timeflow::{GmemStats, IcacheStats, LsuStats, SmemStats};
 
 #[derive(Debug, Clone, Default)]
 pub struct CoreStats {
     pub gmem: GmemStats,
     pub smem: SmemStats,
+    pub icache: IcacheStats,
+    pub lsu: LsuStats,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize)]
@@ -128,6 +130,8 @@ pub struct CorePerfSummary {
     pub gmem_stats: GmemStats,
     pub gmem_level_stats: GmemLevelSummary,
     pub smem_stats: SmemStats,
+    pub icache_stats: IcacheStats,
+    pub lsu_stats: LsuStats,
     pub dma_completed: u64,
     pub tensor_completed: u64,
     pub stall_summary: StallSummary,

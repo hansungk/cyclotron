@@ -10,7 +10,7 @@ use super::{CoreTimingModel, PendingClusterIssue};
 impl CoreTimingModel {
     pub(super) fn drive_lsu_issues(&mut self, now: Cycle) {
         loop {
-            let payload = match self.lsu.peek_ready(now) {
+            let payload = match self.graph.lsu_peek_ready(now) {
                 Some(payload) => payload,
                 None => break,
             };
@@ -36,8 +36,8 @@ impl CoreTimingModel {
                 }
             }
 
-            if let Some(completion) = self.lsu.take_ready(now) {
-                self.lsu.release_issue_resources(&completion.request);
+            if let Some(completion) = self.graph.lsu_take_ready(now) {
+                self.graph.lsu_release_issue_resources(&completion.request);
             }
         }
     }
@@ -61,8 +61,8 @@ impl CoreTimingModel {
             }
 
             if !self
-                .lsu
-                .can_reserve_load_data(&LsuPayload::Gmem(entry.request.clone()))
+                .graph
+                .lsu_can_reserve_load_data(&LsuPayload::Gmem(entry.request.clone()))
             {
                 pending.push_back(PendingClusterIssue {
                     request: entry.request,
@@ -71,13 +71,14 @@ impl CoreTimingModel {
                 continue;
             }
 
-            let issue = {
-                let mut cluster = self.cluster_gmem.write().unwrap();
-                cluster.issue(self.core_id, now, entry.request.clone())
-            };
+            let issue = self
+                .graph
+                .cluster_gmem_issue(self.core_id, now, entry.request.clone());
             match issue {
                 Ok(_) => {
-                    let _ = self.lsu.reserve_load_data(&LsuPayload::Gmem(entry.request));
+                    let _ = self
+                        .graph
+                        .lsu_reserve_load_data(&LsuPayload::Gmem(entry.request));
                 }
                 Err(GmemReject {
                     payload: request,
@@ -111,8 +112,8 @@ impl CoreTimingModel {
             }
 
             if !self
-                .lsu
-                .can_reserve_load_data(&LsuPayload::Smem(entry.request.clone()))
+                .graph
+                .lsu_can_reserve_load_data(&LsuPayload::Smem(entry.request.clone()))
             {
                 pending.push_back(PendingClusterIssue {
                     request: entry.request,
@@ -123,7 +124,9 @@ impl CoreTimingModel {
 
             match self.graph.issue_smem(now, entry.request.clone()) {
                 Ok(SmemIssue { .. }) => {
-                    let _ = self.lsu.reserve_load_data(&LsuPayload::Smem(entry.request));
+                    let _ = self
+                        .graph
+                        .lsu_reserve_load_data(&LsuPayload::Smem(entry.request));
                 }
                 Err(SmemReject {
                     payload: request,
@@ -141,7 +144,11 @@ impl CoreTimingModel {
     pub(super) fn drain_pending_writeback(&mut self, now: Cycle) {
         let mut remaining = VecDeque::new();
         while let Some(payload) = self.pending_writeback.pop_front() {
-            if self.writeback.try_issue(now, payload.clone()).is_err() {
+            if self
+                .graph
+                .writeback_try_issue(now, payload.clone())
+                .is_err()
+            {
                 remaining.push_back(payload);
                 remaining.extend(self.pending_writeback.drain(..));
                 break;
@@ -151,7 +158,11 @@ impl CoreTimingModel {
     }
 
     pub(super) fn enqueue_writeback(&mut self, now: Cycle, payload: WritebackPayload) {
-        if self.writeback.try_issue(now, payload.clone()).is_err() {
+        if self
+            .graph
+            .writeback_try_issue(now, payload.clone())
+            .is_err()
+        {
             self.pending_writeback.push_back(payload);
         }
     }
@@ -159,7 +170,7 @@ impl CoreTimingModel {
     pub(super) fn drain_pending_fence(&mut self, now: Cycle) {
         let mut remaining = VecDeque::new();
         while let Some(request) = self.pending_fence.pop_front() {
-            if self.fence.try_issue(now, request.clone()).is_err() {
+            if self.graph.fence_try_issue(now, request.clone()).is_err() {
                 remaining.push_back(request);
                 remaining.extend(self.pending_fence.drain(..));
                 break;
@@ -169,7 +180,7 @@ impl CoreTimingModel {
     }
 
     pub(super) fn enqueue_fence(&mut self, now: Cycle, request: FenceRequest) {
-        if self.fence.try_issue(now, request.clone()).is_err() {
+        if self.graph.fence_try_issue(now, request.clone()).is_err() {
             self.pending_fence.push_back(request);
         }
     }
@@ -177,7 +188,7 @@ impl CoreTimingModel {
     pub(super) fn drain_pending_dma(&mut self, now: Cycle) {
         let mut remaining = VecDeque::new();
         while let Some(bytes) = self.pending_dma.pop_front() {
-            if self.dma.try_issue(now, bytes).is_err() {
+            if self.graph.dma_try_issue(now, bytes).is_err() {
                 remaining.push_back(bytes);
                 remaining.extend(self.pending_dma.drain(..));
                 break;
@@ -187,7 +198,7 @@ impl CoreTimingModel {
     }
 
     pub(super) fn enqueue_dma(&mut self, now: Cycle, bytes: u32) {
-        if self.dma.try_issue(now, bytes).is_err() {
+        if self.graph.dma_try_issue(now, bytes).is_err() {
             self.pending_dma.push_back(bytes);
         }
     }
@@ -195,7 +206,7 @@ impl CoreTimingModel {
     pub(super) fn drain_pending_tensor(&mut self, now: Cycle) {
         let mut remaining = VecDeque::new();
         while let Some(bytes) = self.pending_tensor.pop_front() {
-            if self.tensor.try_issue(now, bytes).is_err() {
+            if self.graph.tensor_try_issue(now, bytes).is_err() {
                 remaining.push_back(bytes);
                 remaining.extend(self.pending_tensor.drain(..));
                 break;
@@ -205,7 +216,7 @@ impl CoreTimingModel {
     }
 
     pub(super) fn enqueue_tensor(&mut self, now: Cycle, bytes: u32) {
-        if self.tensor.try_issue(now, bytes).is_err() {
+        if self.graph.tensor_try_issue(now, bytes).is_err() {
             self.pending_tensor.push_back(bytes);
         }
     }
@@ -233,7 +244,7 @@ impl CoreTimingModel {
         request_id: u64,
         scheduler: &mut Scheduler,
     ) {
-        if !self.fence.is_enabled() {
+        if !self.graph.fence_is_enabled() {
             return;
         }
         if let Some(slot) = self.fence_inflight.get_mut(warp) {

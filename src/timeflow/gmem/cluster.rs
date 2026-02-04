@@ -838,7 +838,7 @@ impl ClusterGmemGraph {
         bytes: u32,
     ) -> GmemIssue {
         self.record_issue_stats(core_id, request_id, bytes);
-        let ticket = Ticket::synthetic(issued_at, ready_at, bytes);
+        let ticket = Ticket::new(issued_at, ready_at, bytes);
         GmemIssue { request_id, ticket }
     }
 

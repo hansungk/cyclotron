@@ -111,8 +111,8 @@ impl CoreTimingModel {
         }
         self.record_gmem_completion(now, &completion);
         self.maybe_clear_gmem_issue_cycle(completed_id);
-        self.lsu
-            .release_load_data(&LsuPayload::Gmem(completion.request.clone()));
+        self.graph
+            .lsu_release_load_data(&LsuPayload::Gmem(completion.request.clone()));
         self.trace_event(
             now,
             "gmem_complete",
@@ -140,8 +140,8 @@ impl CoreTimingModel {
         }
         self.record_smem_completion(now, &completion);
         self.maybe_clear_smem_issue_cycle(completed_id);
-        self.lsu
-            .release_load_data(&LsuPayload::Smem(completion.request.clone()));
+        self.graph
+            .lsu_release_load_data(&LsuPayload::Smem(completion.request.clone()));
         self.trace_event(
             now,
             "smem_complete",

@@ -65,7 +65,7 @@ impl FenceQueue {
         if !self.queue.is_enabled() {
             self.ready.push_back(request);
             return Ok(FenceIssue {
-                ticket: Ticket::synthetic(now, now, 0),
+                ticket: Ticket::new(now, now, 0),
             });
         }
 

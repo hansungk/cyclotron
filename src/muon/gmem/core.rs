@@ -6,11 +6,7 @@ use crate::info;
 use crate::muon::scheduler::Scheduler;
 use crate::sim::log::Logger;
 use crate::sim::perf_log;
-use crate::timeflow::{
-    BarrierManager, ClusterGmemGraph, CoreGraph, CoreGraphConfig, DmaQueue, ExecutePipeline,
-    FenceQueue, IcacheSubgraph, LsuSubgraph, OperandFetchQueue, TensorQueue, WarpIssueScheduler,
-    WritebackQueue,
-};
+use crate::timeflow::{ClusterGmemGraph, CoreGraph, CoreGraphConfig, WarpIssueScheduler};
 use crate::timeq::Cycle;
 
 use super::{CorePerfSummary, CoreStats, CoreTimingModel, GmemLevelSummary, StallSummary};
@@ -51,20 +47,8 @@ impl CoreTimingModel {
         logger: Arc<Logger>,
         log_stats: bool,
     ) -> Self {
-        let lsu = LsuSubgraph::new(config.memory.lsu.clone(), num_warps);
-        let gmem_policy = config.memory.gmem.policy;
+        let gmem_policy = config.memory.gmem.policy.clone();
         let smem_config = config.memory.smem.clone();
-        let icache = IcacheSubgraph::new(config.memory.icache.clone());
-        let operand_fetch = OperandFetchQueue::new(
-            config.memory.operand_fetch.enabled,
-            config.memory.operand_fetch.queue,
-        );
-        let writeback = WritebackQueue::new(config.memory.writeback.clone());
-        let barrier = BarrierManager::new(config.io.barrier.clone(), num_warps);
-        let fence = FenceQueue::new(config.io.fence.clone());
-        let dma = DmaQueue::new(config.io.dma.clone());
-        let tensor = TensorQueue::new(config.compute.tensor.clone());
-        let execute_pipeline = ExecutePipeline::new(config.compute.execute.clone());
         let issue_scheduler = WarpIssueScheduler::new(config.compute.scheduler.clone());
         let mut scheduler_stats = super::SchedulerSummary::default();
         scheduler_stats.issue_width = config.compute.scheduler.issue_width.max(1) as u64;
@@ -75,23 +59,14 @@ impl CoreTimingModel {
             .max(1);
 
         Self {
-            graph: CoreGraph::new(config),
-            lsu,
-            icache,
-            operand_fetch,
-            writeback,
+            graph: CoreGraph::new(config, num_warps, Some(cluster_gmem)),
             pending_writeback: VecDeque::new(),
             pending_dma: VecDeque::new(),
             pending_tensor: VecDeque::new(),
             issue_scheduler,
-            barrier,
             barrier_inflight: vec![false; num_warps],
-            fence,
             pending_fence: VecDeque::new(),
             fence_inflight: vec![None; num_warps],
-            dma,
-            tensor,
-            execute_pipeline,
             icache_inflight: vec![None; num_warps],
             pending_cluster_gmem: VecDeque::new(),
             pending_cluster_smem: VecDeque::new(),
@@ -100,7 +75,6 @@ impl CoreTimingModel {
             pending_execute: vec![None; num_warps],
             gmem_issue_cycle: std::collections::HashMap::new(),
             smem_issue_cycle: std::collections::HashMap::new(),
-            cluster_gmem,
             core_id,
             cluster_id,
             gmem_policy,
@@ -130,13 +104,8 @@ impl CoreTimingModel {
     }
 
     pub fn tick(&mut self, now: Cycle, scheduler: &mut Scheduler) {
-        self.icache.tick(now);
-        self.lsu.tick(now);
-        self.operand_fetch.tick(now, |_| {});
-        self.dma.tick(now);
-        self.tensor.tick(now);
-        self.execute_pipeline.tick(now);
-        if let Some(released) = self.barrier.tick(now) {
+        self.graph.tick_front(now);
+        if let Some(released) = self.graph.barrier_tick(now) {
             for warp in released {
                 if let Some(slot) = self.barrier_inflight.get_mut(warp) {
                     *slot = false;
@@ -148,29 +117,16 @@ impl CoreTimingModel {
         self.issue_pending_cluster_gmem(now);
         self.issue_pending_cluster_smem(now);
 
-        let prev_gmem = self
-            .cluster_gmem
-            .read()
-            .unwrap()
-            .stats(self.core_id)
-            .completed();
+        let prev_gmem = self.graph.cluster_gmem_stats(self.core_id).completed();
         let prev_smem = self.graph.smem_stats().completed;
         let mut gmem_completions = Vec::new();
         let mut gmem_stats_snapshot = None;
-        {
-            let mut cluster = self.cluster_gmem.write().unwrap();
-            cluster.tick(now);
-
-            while let Some(completion) = cluster.pop_completion(self.core_id) {
-                gmem_completions.push(completion);
-            }
-
-            if self.log_stats {
-                gmem_stats_snapshot = Some(cluster.stats(self.core_id));
-            }
+        gmem_completions.extend(self.graph.collect_cluster_gmem_completions(self.core_id));
+        if self.log_stats {
+            gmem_stats_snapshot = Some(self.graph.cluster_gmem_stats(self.core_id));
         }
 
-        self.graph.tick(now);
+        self.graph.tick_graph(now);
         let mut smem_completions = Vec::new();
         while let Some(completion) = self.graph.pop_smem_completion() {
             smem_completions.push(completion);
@@ -202,10 +158,9 @@ impl CoreTimingModel {
             self.enqueue_writeback(now, crate::timeflow::WritebackPayload::Smem(completion));
         }
 
-        self.writeback.tick(now);
-        self.fence.tick(now);
+        self.graph.tick_back(now);
 
-        while let Some(payload) = self.writeback.pop_ready() {
+        while let Some(payload) = self.graph.writeback_pop_ready() {
             match payload {
                 crate::timeflow::WritebackPayload::Gmem(completion) => {
                     self.handle_gmem_completion(now, completion, scheduler);
@@ -216,7 +171,7 @@ impl CoreTimingModel {
             }
         }
 
-        while let Some(fence_req) = self.fence.pop_ready() {
+        while let Some(fence_req) = self.graph.fence_pop_ready() {
             if let Some(slot) = self.fence_inflight.get_mut(fence_req.warp) {
                 if slot.map(|id| id == fence_req.request_id).unwrap_or(false) {
                     *slot = None;
@@ -286,10 +241,12 @@ impl CoreTimingModel {
     }
 
     pub fn stats(&self) -> CoreStats {
-        let gmem_stats = self.cluster_gmem.read().unwrap().stats(self.core_id);
+        let gmem_stats = self.graph.cluster_gmem_stats(self.core_id);
         CoreStats {
             gmem: gmem_stats,
             smem: self.graph.smem_stats(),
+            icache: self.graph.icache_stats(),
+            lsu: self.graph.lsu_stats(),
         }
     }
 
@@ -297,11 +254,9 @@ impl CoreTimingModel {
         let stats = self.stats();
         let gmem_stats = stats.gmem;
         let smem_stats_snapshot = stats.smem.clone();
-        let (l0_stats, l1_stats, l2_stats) = self
-            .cluster_gmem
-            .read()
-            .unwrap()
-            .hierarchy_stats_per_level();
+        let icache_stats_snapshot = stats.icache;
+        let lsu_stats_snapshot = stats.lsu;
+        let (l0_stats, l1_stats, l2_stats) = self.graph.cluster_gmem_hierarchy_stats_per_level();
         let gmem_level_stats = GmemLevelSummary {
             l0: l0_stats,
             l1: l1_stats,
@@ -313,11 +268,11 @@ impl CoreTimingModel {
             scheduler: self.scheduler_stats,
             smem_util: self.smem_util,
             execute_util: self.execute_util,
-            dma_bytes_issued: self.dma.bytes_issued(),
-            dma_bytes_completed: self.dma.bytes_completed(),
+            dma_bytes_issued: self.graph.dma_bytes_issued(),
+            dma_bytes_completed: self.graph.dma_bytes_completed(),
             dma_util: self.dma_util,
-            tensor_bytes_issued: self.tensor.bytes_issued(),
-            tensor_bytes_completed: self.tensor.bytes_completed(),
+            tensor_bytes_issued: self.graph.tensor_bytes_issued(),
+            tensor_bytes_completed: self.graph.tensor_bytes_completed(),
             tensor_util: self.tensor_util,
             smem_conflicts: self.smem_conflicts_summary,
             gmem_hits: self.gmem_hits,
@@ -325,8 +280,10 @@ impl CoreTimingModel {
             gmem_stats,
             gmem_level_stats,
             smem_stats: smem_stats_snapshot.clone(),
-            dma_completed: self.dma.completed(),
-            tensor_completed: self.tensor.completed(),
+            icache_stats: icache_stats_snapshot,
+            lsu_stats: lsu_stats_snapshot,
+            dma_completed: self.graph.dma_completed(),
+            tensor_completed: self.graph.tensor_completed(),
             stall_summary: StallSummary {
                 gmem_queue_full: gmem_stats.queue_full_rejects(),
                 gmem_busy: gmem_stats.busy_rejects(),
@@ -339,8 +296,10 @@ impl CoreTimingModel {
     }
 
     pub fn clear_stats(&mut self) {
-        self.cluster_gmem.write().unwrap().clear_stats(self.core_id);
+        self.graph.cluster_gmem_clear_stats(self.core_id);
         self.graph.clear_smem_stats();
+        self.graph.clear_icache_stats();
+        self.graph.clear_lsu_stats();
         self.last_logged_gmem_completed = 0;
         self.last_logged_smem_completed = 0;
         self.execute_util = super::ExecuteUtilSummary::default();
@@ -361,32 +320,32 @@ impl CoreTimingModel {
         self.smem_util.cycles = self.smem_util.cycles.saturating_add(1);
         self.execute_util.cycles = self.execute_util.cycles.saturating_add(1);
         self.dma_util.cycles = self.dma_util.cycles.saturating_add(1);
-        if self.dma.is_busy() {
+        if self.graph.dma_is_busy() {
             self.dma_util.busy_sum = self.dma_util.busy_sum.saturating_add(1);
         }
         self.tensor_util.cycles = self.tensor_util.cycles.saturating_add(1);
-        if self.tensor.is_busy() {
+        if self.graph.tensor_is_busy() {
             self.tensor_util.busy_sum = self.tensor_util.busy_sum.saturating_add(1);
         }
 
         // Execute pipeline utilization is sampled as "busy this cycle" based on outstanding
         // requests in each TimedServer.
         use crate::timeflow::ExecUnitKind;
-        if self.execute_pipeline.is_busy(ExecUnitKind::Int) {
+        if self.graph.execute_is_busy(ExecUnitKind::Int) {
             self.execute_util.int_busy_sum = self.execute_util.int_busy_sum.saturating_add(1);
         }
-        if self.execute_pipeline.is_busy(ExecUnitKind::IntMul) {
+        if self.graph.execute_is_busy(ExecUnitKind::IntMul) {
             self.execute_util.int_mul_busy_sum =
                 self.execute_util.int_mul_busy_sum.saturating_add(1);
         }
-        if self.execute_pipeline.is_busy(ExecUnitKind::IntDiv) {
+        if self.graph.execute_is_busy(ExecUnitKind::IntDiv) {
             self.execute_util.int_div_busy_sum =
                 self.execute_util.int_div_busy_sum.saturating_add(1);
         }
-        if self.execute_pipeline.is_busy(ExecUnitKind::Fp) {
+        if self.graph.execute_is_busy(ExecUnitKind::Fp) {
             self.execute_util.fp_busy_sum = self.execute_util.fp_busy_sum.saturating_add(1);
         }
-        if self.execute_pipeline.is_busy(ExecUnitKind::Sfu) {
+        if self.graph.execute_is_busy(ExecUnitKind::Sfu) {
             self.execute_util.sfu_busy_sum = self.execute_util.sfu_busy_sum.saturating_add(1);
         }
         // sample instantaneous utilization counters
@@ -467,11 +426,11 @@ impl CoreTimingModel {
     }
 
     pub fn dma_completed(&self) -> u64 {
-        self.dma.completed()
+        self.graph.dma_completed()
     }
 
     pub fn tensor_completed(&self) -> u64 {
-        self.tensor.completed()
+        self.graph.tensor_completed()
     }
 
     pub(super) fn trace_event(

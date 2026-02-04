@@ -16,14 +16,12 @@ pub enum RejectReason {
     Busy,
 }
 
-/// Central reject type used across timeflow modules.
 #[derive(Debug, Clone)]
 pub struct Reject {
     pub retry_at: Cycle,
     pub reason: RejectReason,
 }
 
-/// Central reject-with-payload helper.
 #[derive(Debug, Clone)]
 pub struct RejectWith<T> {
     pub retry_at: Cycle,
@@ -47,7 +45,6 @@ impl Reject {
     }
 }
 
-/// Trait to unify access to common memory-request metadata used by LSU/links.
 pub trait HasMemoryMetadata {
     fn id(&self) -> u64;
     fn bytes(&self) -> u32;

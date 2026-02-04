@@ -23,7 +23,7 @@ impl<T> SimpleTimedQueue<T> {
 
     pub fn try_issue(&mut self, now: Cycle, payload: T, bytes: u32) -> Result<Ticket, Reject> {
         if !self.enabled {
-            return Ok(Ticket::synthetic(now, now, bytes));
+            return Ok(Ticket::new(now, now, bytes));
         }
 
         let request = ServiceRequest::new(payload, bytes);
@@ -47,7 +47,7 @@ impl<T> SimpleTimedQueue<T> {
         bytes: u32,
     ) -> Result<Ticket, RejectWith<T>> {
         if !self.enabled {
-            return Ok(Ticket::synthetic(now, now, bytes));
+            return Ok(Ticket::new(now, now, bytes));
         }
 
         let request = ServiceRequest::new(payload, bytes);
