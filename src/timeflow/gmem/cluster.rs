@@ -6,7 +6,7 @@ use crate::timeq::{Backpressure, Cycle, ServiceRequest, Ticket};
 
 use super::cache::CacheTagArray;
 use super::graph_build::{build_cluster_graph, GmemFlowConfig};
-use super::mshr::{AdmissionBackpressure, MissLevel, MissMetadata, MshrAdmission, MshrTable};
+use super::mshr::{MissLevel, MissMetadata, MshrTable};
 use super::policy::{bank_for, decide, line_addr, GmemPolicyConfig};
 use super::request::{
     extract_gmem_request, GmemCompletion, GmemIssue, GmemReject, GmemRejectReason, GmemRequest,
@@ -18,21 +18,15 @@ use super::stats::GmemStats;
 /// per-bank statistics. This will be used by the layered topology `CacheLayer`.
 pub struct Bank {
     pub mshr: MshrTable,
-    pub admit: MshrAdmission,
     pub stats: GmemStats,
 }
 
 impl Bank {
-    pub fn new(mshr_capacity: usize, admit_config: crate::timeq::ServerConfig) -> Self {
+    pub fn new(mshr_capacity: usize) -> Self {
         Self {
             mshr: MshrTable::new(mshr_capacity),
-            admit: MshrAdmission::new(admit_config),
             stats: GmemStats::default(),
         }
-    }
-
-    pub fn tick(&mut self, now: Cycle) {
-        self.admit.tick(now);
     }
 }
 
@@ -45,26 +39,13 @@ pub struct CacheLayer {
 }
 
 impl CacheLayer {
-    pub fn new(
-        tags: CacheTagArray,
-        num_banks: usize,
-        mshr_capacity: usize,
-        admit_config: crate::timeq::ServerConfig,
-    ) -> Self {
-        let banks = (0..num_banks)
-            .map(|_| Bank::new(mshr_capacity, admit_config))
-            .collect();
+    pub fn new(tags: CacheTagArray, num_banks: usize, mshr_capacity: usize) -> Self {
+        let banks = (0..num_banks).map(|_| Bank::new(mshr_capacity)).collect();
         Self { tags, banks }
     }
 
     pub fn bank_count(&self) -> usize {
         self.banks.len()
-    }
-
-    pub fn tick(&mut self, now: Cycle) {
-        for b in &mut self.banks {
-            b.tick(now);
-        }
     }
 }
 
@@ -132,13 +113,6 @@ impl CacheLayer {
             return false;
         }
         self.banks[bank_idx].mshr.can_allocate(line)
-    }
-
-    pub fn try_admit(&mut self, bank_idx: usize, now: Cycle) -> Result<u64, AdmissionBackpressure> {
-        if bank_idx >= self.bank_count() {
-            return Err(AdmissionBackpressure::QueueFull { retry_at: now });
-        }
-        self.banks[bank_idx].admit.try_admit(now)
     }
 
     pub fn ensure_entry(
@@ -210,9 +184,16 @@ impl ClusterGmemGraph {
 
     pub fn new(config: GmemFlowConfig, num_clusters: usize, cores_per_cluster: usize) -> Self {
         let (graph, core_nodes) = build_cluster_graph(&config, num_clusters, cores_per_cluster);
-        let nodes = &config.nodes;
-        let l1_banks = config.policy.l1_banks.max(1);
-        let l2_banks = config.policy.l2_banks.max(1);
+        let levels = &config.levels;
+        assert!(
+            levels.len() >= 3,
+            "gmem.levels must define l0/l1/l2 entries"
+        );
+        let l0_level = &levels[0];
+        let l1_level = &levels[1];
+        let l2_level = &levels[2];
+        let l1_banks = l1_level.banks.max(1);
+        let l2_banks = l2_level.banks.max(1);
 
         let total_cores = num_clusters.saturating_mul(cores_per_cluster);
         let mut cores = Vec::with_capacity(total_cores);
@@ -234,21 +215,14 @@ impl ClusterGmemGraph {
         let l2_sets = policy.l2_sets.max(1);
         let l2_ways = policy.l2_ways.max(1);
 
-        let l0_mshr_capacity = nodes.l0d_mshr.queue_capacity;
-        let l1_mshr_capacity = nodes.l1_mshr.queue_capacity;
-        let l2_mshr_capacity = nodes.l2_mshr.queue_capacity;
+        let l0_mshr_capacity = l0_level.mshr.queue_capacity;
+        let l1_mshr_capacity = l1_level.mshr.queue_capacity;
+        let l2_mshr_capacity = l2_level.mshr.queue_capacity;
 
         // Build the hierarchical cache topology (fresh tag arrays for now).
         let l0_layers = if policy.l0_enabled {
             (0..total_cores)
-                .map(|_| {
-                    CacheLayer::new(
-                        CacheTagArray::new(l0_sets, l0_ways),
-                        1,
-                        l0_mshr_capacity,
-                        nodes.l0d_mshr,
-                    )
-                })
+                .map(|_| CacheLayer::new(CacheTagArray::new(l0_sets, l0_ways), 1, l0_mshr_capacity))
                 .collect()
         } else {
             Vec::new()
@@ -259,7 +233,6 @@ impl ClusterGmemGraph {
                     CacheTagArray::new(l1_sets, l1_ways),
                     l1_banks,
                     l1_mshr_capacity,
-                    nodes.l1_mshr,
                 )
             })
             .collect();
@@ -267,7 +240,6 @@ impl ClusterGmemGraph {
             CacheTagArray::new(l2_sets, l2_ways),
             l2_banks,
             l2_mshr_capacity,
-            nodes.l2_mshr,
         );
         let hierarchy = GmemHierarchy::new(l0_layers, l1_layers, l2_layer);
 
@@ -468,27 +440,6 @@ impl ClusterGmemGraph {
                     });
                 }
 
-                if let Err(bp) = self.hierarchy.l0[core_id].try_admit(0, now) {
-                    // Attribute admission backpressure to L0 bank stats
-                    if core_id < self.hierarchy.l0.len()
-                        && self.hierarchy.l0[core_id].bank_count() > 0
-                    {
-                        match bp {
-                            AdmissionBackpressure::Busy { .. } => {
-                                self.hierarchy.l0[core_id].banks[0]
-                                    .stats
-                                    .record_busy_reject();
-                            }
-                            AdmissionBackpressure::QueueFull { .. } => {
-                                self.hierarchy.l0[core_id].banks[0]
-                                    .stats
-                                    .record_queue_full_reject();
-                            }
-                        }
-                    }
-                    return Err(self.reject_for_admission(core_id, &request, bp));
-                }
-
                 l0_new = match self.hierarchy.l0[core_id].ensure_entry(0, l0_line, meta) {
                     Ok(new_entry) => new_entry,
                     Err(_) => {
@@ -547,31 +498,6 @@ impl ClusterGmemGraph {
                         retry_at: now.saturating_add(1),
                         reason: GmemRejectReason::QueueFull,
                     });
-                }
-
-                if let Err(bp) = self.hierarchy.l1[cluster_id].try_admit(l1_bank, now) {
-                    // attribute admission backpressure to the L1 bank
-                    if cluster_id < self.hierarchy.l1.len()
-                        && (l1_bank as usize) < self.hierarchy.l1[cluster_id].bank_count()
-                    {
-                        match bp {
-                            AdmissionBackpressure::Busy { .. } => {
-                                self.hierarchy.l1[cluster_id].banks[l1_bank as usize]
-                                    .stats
-                                    .record_busy_reject();
-                            }
-                            AdmissionBackpressure::QueueFull { .. } => {
-                                self.hierarchy.l1[cluster_id].banks[l1_bank as usize]
-                                    .stats
-                                    .record_queue_full_reject();
-                            }
-                        }
-                    }
-                    self.rollback_mshrs(
-                        core_id, cluster_id, l1_bank, l2_bank, l0_line, l1_line, l2_line, l0_new,
-                        l1_new, l2_new,
-                    );
-                    return Err(self.reject_for_admission(core_id, &request, bp));
                 }
 
                 l1_new = match self.hierarchy.l1[cluster_id].ensure_entry(l1_bank, l1_line, meta) {
@@ -658,28 +584,6 @@ impl ClusterGmemGraph {
                     });
                 }
 
-                if let Err(bp) = self.hierarchy.l2.try_admit(l2_bank, now) {
-                    if (l2_bank as usize) < self.hierarchy.l2.bank_count() {
-                        match bp {
-                            AdmissionBackpressure::Busy { .. } => {
-                                self.hierarchy.l2.banks[l2_bank as usize]
-                                    .stats
-                                    .record_busy_reject();
-                            }
-                            AdmissionBackpressure::QueueFull { .. } => {
-                                self.hierarchy.l2.banks[l2_bank as usize]
-                                    .stats
-                                    .record_queue_full_reject();
-                            }
-                        }
-                    }
-                    self.rollback_mshrs(
-                        core_id, cluster_id, l1_bank, l2_bank, l0_line, l1_line, l2_line, l0_new,
-                        l1_new, l2_new,
-                    );
-                    return Err(self.reject_for_admission(core_id, &request, bp));
-                }
-
                 l2_new = match self.hierarchy.l2.ensure_entry(l2_bank, l2_line, meta) {
                     Ok(new_entry) => new_entry,
                     Err(_) => {
@@ -740,17 +644,6 @@ impl ClusterGmemGraph {
             return;
         }
         self.last_tick = now;
-
-        // Tick admission controllers via the hierarchical CacheLayer API.
-        if self.policy.l0_enabled {
-            for layer in &mut self.hierarchy.l0 {
-                layer.tick(now);
-            }
-        }
-        for layer in &mut self.hierarchy.l1 {
-            layer.tick(now);
-        }
-        self.hierarchy.l2.tick(now);
 
         self.graph.tick(now);
 
@@ -828,33 +721,6 @@ impl ClusterGmemGraph {
                     })
                 }
             },
-        }
-    }
-
-    fn reject_for_admission(
-        &mut self,
-        core_id: usize,
-        request: &GmemRequest,
-        bp: AdmissionBackpressure,
-    ) -> GmemReject {
-        let stats = &mut self.cores[core_id].stats;
-        match bp {
-            AdmissionBackpressure::Busy { retry_at } => {
-                stats.record_busy_reject();
-                GmemReject {
-                    payload: request.clone(),
-                    retry_at,
-                    reason: GmemRejectReason::Busy,
-                }
-            }
-            AdmissionBackpressure::QueueFull { retry_at } => {
-                stats.record_queue_full_reject();
-                GmemReject {
-                    payload: request.clone(),
-                    retry_at,
-                    reason: GmemRejectReason::QueueFull,
-                }
-            }
         }
     }
 

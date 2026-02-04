@@ -151,7 +151,6 @@ pub(crate) struct SmemSubgraph {
     bank_read_nodes: Vec<NodeId>,
     bank_write_nodes: Vec<NodeId>,
     dual_port: bool,
-    subbank_nodes: Vec<Vec<NodeId>>,
     pub(crate) completions: VecDeque<SmemCompletion>,
     next_id: u64,
     pub(crate) stats: SmemStats,
@@ -210,7 +209,6 @@ impl SmemSubgraph {
         let mut bank_nodes = Vec::with_capacity(num_banks);
         let mut bank_read_nodes = Vec::with_capacity(num_banks);
         let mut bank_write_nodes = Vec::with_capacity(num_banks);
-        let mut subbank_nodes = Vec::with_capacity(num_banks);
         for bank_idx in 0..num_banks {
             let bank_mod = bank_idx;
             for &lane_node in &lane_nodes {
@@ -297,7 +295,6 @@ impl SmemSubgraph {
                 }
                 bank_nodes.push(node);
             }
-            subbank_nodes.push(bank_subbanks);
         }
 
         let mut stats = SmemStats::default();
@@ -312,7 +309,6 @@ impl SmemSubgraph {
             bank_read_nodes,
             bank_write_nodes,
             dual_port: config.dual_port,
-            subbank_nodes,
             completions: VecDeque::new(),
             next_id: 0,
             stats,

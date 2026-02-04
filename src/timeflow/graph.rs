@@ -130,6 +130,7 @@ struct Edge<T> {
     buffer: Link<T>,
     src: NodeId,
     dst: NodeId,
+    output_idx: usize,
     stats: EdgeStats,
     next_retry_cycle: Cycle,
     predicate: Option<EdgePredicate<T>>,
@@ -141,6 +142,7 @@ impl<T> Edge<T> {
         buffer: Link<T>,
         src: NodeId,
         dst: NodeId,
+        output_idx: usize,
         predicate: Option<EdgePredicate<T>>,
     ) -> Self {
         Self {
@@ -148,6 +150,7 @@ impl<T> Edge<T> {
             buffer,
             src,
             dst,
+            output_idx,
             stats: EdgeStats::default(),
             next_retry_cycle: 0,
             predicate,
@@ -173,6 +176,7 @@ struct GraphNode<T> {
     node: Box<dyn TimedNode<T>>,
     outputs: Vec<LinkId>,
     inputs: Vec<LinkId>,
+    route_fn: Option<Arc<dyn Fn(&T) -> usize + Send + Sync>>,
 }
 
 impl<T> GraphNode<T> {
@@ -182,6 +186,7 @@ impl<T> GraphNode<T> {
             node,
             outputs: Vec::new(),
             inputs: Vec::new(),
+            route_fn: None,
         }
     }
 }
@@ -221,8 +226,10 @@ impl<T: Send + Sync + 'static> FlowGraph<T> {
         assert!(src < self.nodes.len(), "invalid src node");
         assert!(dst < self.nodes.len(), "invalid dst node");
         let id = self.edges.len();
-        self.edges
-            .push(Edge::new(link_name, buffer, src, dst, predicate));
+        let output_idx = self.nodes[src].outputs.len();
+        self.edges.push(Edge::new(
+            link_name, buffer, src, dst, output_idx, predicate,
+        ));
         self.nodes[src].outputs.push(id);
         self.nodes[dst].inputs.push(id);
         id
@@ -249,6 +256,16 @@ impl<T: Send + Sync + 'static> FlowGraph<T> {
         self.connect_internal(src, dst, link_name, buffer, Some(Arc::new(predicate)))
     }
 
+    pub fn set_route_fn(
+        &mut self,
+        node_id: NodeId,
+        route_fn: impl Fn(&T) -> usize + Send + Sync + 'static,
+    ) {
+        if let Some(node) = self.nodes.get_mut(node_id) {
+            node.route_fn = Some(Arc::new(route_fn));
+        }
+    }
+
     pub fn try_put(
         &mut self,
         node_id: NodeId,
@@ -270,11 +287,19 @@ impl<T: Send + Sync + 'static> FlowGraph<T> {
                     let src_node = &mut self.nodes[src];
                     match src_node.node.peek_ready(now) {
                         Some(result) => {
-                            let predicate_pass = self.edges[edge_id]
-                                .predicate
+                            let routed_idx = src_node
+                                .route_fn
                                 .as_ref()
-                                .map(|pred| pred(&result.payload))
-                                .unwrap_or(true);
+                                .map(|route| route(&result.payload));
+                            let predicate_pass = if let Some(route_idx) = routed_idx {
+                                route_idx == self.edges[edge_id].output_idx
+                            } else {
+                                self.edges[edge_id]
+                                    .predicate
+                                    .as_ref()
+                                    .map(|pred| pred(&result.payload))
+                                    .unwrap_or(true)
+                            };
                             (result.ticket.size_bytes(), predicate_pass)
                         }
                         None => break,
@@ -458,6 +483,78 @@ mod tests {
                 ServiceRequest::new(
                     Payload {
                         bank: 1,
+                        value: "B",
+                    },
+                    4,
+                ),
+            )
+            .unwrap();
+
+        for cycle in 0..10 {
+            graph.tick(cycle);
+        }
+
+        graph.with_node_mut(sink0, |node| {
+            let result = node.take_ready(10).expect("sink0 result");
+            assert_eq!("A", result.payload.value);
+        });
+        graph.with_node_mut(sink1, |node| {
+            let result = node.take_ready(10).expect("sink1 result");
+            assert_eq!("B", result.payload.value);
+        });
+    }
+
+    #[test]
+    fn route_fn_selects_output_by_index() {
+        #[derive(Clone, Debug)]
+        struct Payload {
+            route: usize,
+            value: &'static str,
+        }
+
+        let mut graph: FlowGraph<Payload> = FlowGraph::new();
+        let src = graph.add_node(ServerNode::new(
+            "src",
+            TimedServer::new(ServerConfig {
+                base_latency: 0,
+                bytes_per_cycle: 4,
+                queue_capacity: 8,
+                ..ServerConfig::default()
+            }),
+        ));
+        let sink0 = graph.add_node(ServerNode::new(
+            "sink0",
+            TimedServer::new(ServerConfig::default()),
+        ));
+        let sink1 = graph.add_node(ServerNode::new(
+            "sink1",
+            TimedServer::new(ServerConfig::default()),
+        ));
+
+        graph.connect(src, sink0, "src->0", Link::new(4));
+        graph.connect(src, sink1, "src->1", Link::new(4));
+        graph.set_route_fn(src, |payload: &Payload| payload.route);
+
+        graph
+            .try_put(
+                src,
+                0,
+                ServiceRequest::new(
+                    Payload {
+                        route: 0,
+                        value: "A",
+                    },
+                    4,
+                ),
+            )
+            .unwrap();
+        graph
+            .try_put(
+                src,
+                1,
+                ServiceRequest::new(
+                    Payload {
+                        route: 1,
                         value: "B",
                     },
                     4,

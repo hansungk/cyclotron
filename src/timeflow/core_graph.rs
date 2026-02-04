@@ -147,11 +147,6 @@ impl CoreGraph {
     pub fn record_smem_sample(&mut self) {
         self.smem.sample_and_accumulate(&mut self.graph);
     }
-
-    /// Minimal adapter: provide mutable access to the SMEM subgraph.
-    pub(crate) fn smem_subgraph_mut(&mut self) -> &mut SmemSubgraph {
-        &mut self.smem
-    }
 }
 
 #[cfg(test)]

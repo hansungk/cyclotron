@@ -4,9 +4,6 @@ use serde::Deserialize;
 #[serde(default)]
 pub struct GmemPolicyConfig {
     pub l0_enabled: bool,
-    pub l0_hit_rate: f64,
-    pub l1_hit_rate: f64,
-    pub l2_hit_rate: f64,
     pub l1_writeback_rate: f64,
     pub l2_writeback_rate: f64,
     pub l0_line_bytes: u32,
@@ -21,8 +18,6 @@ pub struct GmemPolicyConfig {
     pub l0_flush_mmio_base: u64,
     pub l0_flush_mmio_stride: u64,
     pub l0_flush_mmio_size: u64,
-    pub l1_banks: usize,
-    pub l2_banks: usize,
     pub flush_bytes: u32,
     pub seed: u64,
 }
@@ -31,9 +26,6 @@ impl Default for GmemPolicyConfig {
     fn default() -> Self {
         let s = Self {
             l0_enabled: true,
-            l0_hit_rate: 0.4,
-            l1_hit_rate: 0.7,
-            l2_hit_rate: 0.9,
             l1_writeback_rate: 0.1,
             l2_writeback_rate: 0.1,
             l0_line_bytes: 64,
@@ -52,8 +44,6 @@ impl Default for GmemPolicyConfig {
             l0_flush_mmio_base: 0x0008_0300,
             l0_flush_mmio_stride: 0x200,
             l0_flush_mmio_size: 0x100,
-            l1_banks: 2,
-            l2_banks: 1,
             flush_bytes: 4096,
             seed: 0,
         };

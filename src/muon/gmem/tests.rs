@@ -18,7 +18,7 @@ fn make_scheduler(num_warps: usize) -> Scheduler {
 fn make_model_with_lsu(num_warps: usize, lsu_depth: usize) -> CoreTimingModel {
     let mut gmem = GmemFlowConfig::default();
     gmem.nodes.coalescer.queue_capacity = 1;
-    gmem.nodes.l0d_tag.queue_capacity = 1;
+    gmem.levels[0].tag.queue_capacity = 1;
     gmem.nodes.dram.queue_capacity = 1;
     gmem.links.default.entries = 1;
     let smem = SmemFlowConfig {

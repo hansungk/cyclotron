@@ -31,5 +31,6 @@ include = [
   "config/timing/fence.toml",
   "config/timing/dma.toml",
   "config/timing/tensor.toml",
+  "config/timing/execute.toml",
   "config/timing/isa_fast.toml",
 ]

@@ -6,31 +6,6 @@ pub(crate) struct CacheTagArray {
     lru: Vec<Vec<usize>>,
 }
 
-#[derive(Debug)]
-pub(crate) struct CacheLevel {
-    tags: CacheTagArray,
-}
-
-impl CacheLevel {
-    pub(crate) fn new(sets: usize, ways: usize) -> Self {
-        Self {
-            tags: CacheTagArray::new(sets, ways),
-        }
-    }
-
-    pub(crate) fn probe(&mut self, line_addr: u64) -> bool {
-        self.tags.probe(line_addr)
-    }
-
-    pub(crate) fn fill(&mut self, line_addr: u64) {
-        self.tags.fill(line_addr)
-    }
-
-    pub(crate) fn invalidate_all(&mut self) {
-        self.tags.invalidate_all()
-    }
-}
-
 impl CacheTagArray {
     fn build_lru(sets: usize, ways: usize) -> Vec<Vec<usize>> {
         let mut lru = Vec::with_capacity(sets);

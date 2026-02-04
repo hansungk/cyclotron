@@ -1,6 +1,4 @@
-use crate::timeq::{
-    normalize_retry, Backpressure, Cycle, ServerConfig, ServiceRequest, TimedServer,
-};
+use crate::timeq::Cycle;
 
 use super::request::GmemRequest;
 
@@ -137,50 +135,6 @@ impl MshrTable {
             .iter()
             .position(|entry| entry.line_addr == line_addr)?;
         Some(self.entries.swap_remove(idx))
-    }
-}
-
-pub(crate) struct MshrAdmission {
-    server: TimedServer<()>,
-}
-
-pub(crate) enum AdmissionBackpressure {
-    Busy { retry_at: Cycle },
-    QueueFull { retry_at: Cycle },
-}
-
-impl MshrAdmission {
-    pub(crate) fn new(config: ServerConfig) -> Self {
-        let mut cfg = config;
-        cfg.base_latency = 0;
-        cfg.completions_per_cycle = u32::MAX;
-        Self {
-            server: TimedServer::new(cfg),
-        }
-    }
-
-    pub(crate) fn try_admit(&mut self, now: Cycle) -> Result<Cycle, AdmissionBackpressure> {
-        let request = ServiceRequest::new((), 0);
-        match self.server.try_enqueue(now, request) {
-            Ok(ticket) => Ok(ticket.ready_at()),
-            Err(Backpressure::Busy { available_at, .. }) => Err(AdmissionBackpressure::Busy {
-                retry_at: normalize_retry(now, available_at),
-            }),
-            Err(Backpressure::QueueFull { .. }) => {
-                let retry_at = self
-                    .server
-                    .oldest_ticket()
-                    .map(|ticket| ticket.ready_at())
-                    .unwrap_or_else(|| self.server.available_at());
-                Err(AdmissionBackpressure::QueueFull {
-                    retry_at: normalize_retry(now, retry_at),
-                })
-            }
-        }
-    }
-
-    pub(crate) fn tick(&mut self, now: Cycle) {
-        self.server.service_ready(now, |_| {});
     }
 }
 
