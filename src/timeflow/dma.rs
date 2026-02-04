@@ -1,14 +1,10 @@
 use serde::Deserialize;
 
 use crate::timeflow::simple_queue::SimpleTimedQueue;
-use crate::timeflow::types::RejectReason;
 pub use crate::timeflow::types::RejectReason as DmaRejectReason;
 use crate::timeq::{Cycle, ServerConfig, Ticket};
 
-#[derive(Debug, Clone)]
-pub struct DmaIssue {
-    pub ticket: Ticket,
-}
+// DmaIssue is represented directly by `Ticket` to reduce wrapper boilerplate.
 
 // Alias DmaRejectReason to the central RejectReason.
 
@@ -49,6 +45,8 @@ pub struct DmaQueue {
     mmio_base: u64,
     mmio_size: u64,
     csr_addrs: Vec<u32>,
+    bytes_issued: u64,
+    bytes_completed: u64,
 }
 
 impl DmaQueue {
@@ -59,20 +57,41 @@ impl DmaQueue {
             mmio_base: config.mmio_base,
             mmio_size: config.mmio_size,
             csr_addrs: config.csr_addrs,
+            bytes_issued: 0,
+            bytes_completed: 0,
         }
     }
 
-    pub fn try_issue(&mut self, now: Cycle, bytes: u32) -> Result<DmaIssue, DmaReject> {
-        match self.queue.try_issue(now, (), bytes) {
-            Ok(ticket) => Ok(DmaIssue { ticket }),
-            Err(err) => Err(DmaReject { retry_at: err.retry_at, reason: err.reason }),
+    pub fn try_issue(&mut self, now: Cycle, bytes: u32) -> Result<Ticket, DmaReject> {
+        let res = self.queue.try_issue(now, (), bytes);
+        if res.is_ok() {
+            self.bytes_issued = self.bytes_issued.saturating_add(bytes as u64);
+        }
+        match res {
+            Ok(ticket) => Ok(ticket),
+            Err(err) => Err(DmaReject::new(err.retry_at, err.reason)),
         }
     }
 
     pub fn tick(&mut self, now: Cycle) {
-        self.queue.tick(now, |_| {
+        self.queue.tick_with_service_result(now, |result| {
             self.completed = self.completed.saturating_add(1);
+            self.bytes_completed = self
+                .bytes_completed
+                .saturating_add(result.ticket.size_bytes() as u64);
         });
+    }
+
+    pub fn bytes_issued(&self) -> u64 {
+        self.bytes_issued
+    }
+
+    pub fn bytes_completed(&self) -> u64 {
+        self.bytes_completed
+    }
+
+    pub fn is_busy(&self) -> bool {
+        self.queue.is_busy()
     }
 
     pub fn completed(&self) -> u64 {
@@ -106,7 +125,7 @@ mod tests {
         cfg.queue.base_latency = 1;
         let mut dma = DmaQueue::new(cfg);
 
-        let ticket = dma.try_issue(0, 128).expect("issue").ticket;
+        let ticket = dma.try_issue(0, 128).expect("issue");
         dma.tick(ticket.ready_at().saturating_sub(1));
         assert_eq!(dma.completed(), 0);
         dma.tick(ticket.ready_at());
@@ -118,7 +137,7 @@ mod tests {
         let mut cfg = DmaConfig::default();
         cfg.enabled = false;
         let mut dma = DmaQueue::new(cfg);
-        let ticket = dma.try_issue(5, 64).expect("issue").ticket;
+        let ticket = dma.try_issue(5, 64).expect("issue");
         assert_eq!(ticket.ready_at(), 5);
     }
 
@@ -140,7 +159,7 @@ mod tests {
         cfg.queue.base_latency = 3;
         cfg.queue.bytes_per_cycle = 4;
         let mut dma = DmaQueue::new(cfg);
-        let ticket = dma.try_issue(10, 0).unwrap().ticket;
+        let ticket = dma.try_issue(10, 0).unwrap();
         assert_eq!(13, ticket.ready_at());
     }
 
@@ -152,7 +171,7 @@ mod tests {
         cfg.queue.bytes_per_cycle = 8;
         let mut dma = DmaQueue::new(cfg);
 
-        let ticket = dma.try_issue(0, 64).unwrap().ticket;
+        let ticket = dma.try_issue(0, 64).unwrap();
         assert_eq!(10, ticket.ready_at());
     }
 
@@ -164,7 +183,7 @@ mod tests {
         cfg.queue.bytes_per_cycle = 1;
         let mut dma = DmaQueue::new(cfg);
 
-        let ticket = dma.try_issue(0, u32::MAX).unwrap().ticket;
+        let ticket = dma.try_issue(0, u32::MAX).unwrap();
         assert_eq!(u32::MAX as u64 + 1, ticket.ready_at());
     }
 }

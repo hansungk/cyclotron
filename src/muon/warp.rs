@@ -208,7 +208,7 @@ impl Warp {
         if decoded.opcode == Opcode::MISC_MEM {
             let active_lanes = tmask.count_ones();
             if active_lanes > 0 {
-                let mut flush_req = if decoded.f3 == 1 {
+                let flush_req = if decoded.f3 == 1 {
                     GmemRequest::new_flush_l0(self.wid, 1)
                 } else {
                     GmemRequest::new_flush_l1(self.wid, 1)
@@ -224,7 +224,7 @@ impl Warp {
 
         if decoded.opcode == Opcode::SYSTEM && decoded.f3 != 0 {
             let is_write = match decoded.f3 {
-                1 | 5 => true,              // csrrw / csrrwi
+                1 | 5 => true,                  // csrrw / csrrwi
                 2 | 3 => decoded.rs1_addr != 0, // csrrs / csrrc
                 6 | 7 => decoded.csr_imm != 0,  // csrrsi / csrrci
                 _ => false,
@@ -249,6 +249,14 @@ impl Warp {
         // operand collection
         let rf = self.base.state.reg_file.as_slice();
         let issued = ExecuteUnit::collect(&uop, rf);
+
+        let active_lanes = tmask.count_ones();
+        if timing_model
+            .issue_execute(now, self.wid, &issued, active_lanes, scheduler)
+            .is_err()
+        {
+            return Ok(None);
+        }
 
         // execute
         let writeback = catch_unwind(AssertUnwindSafe(|| {
@@ -369,11 +377,7 @@ impl Warp {
         let total_bytes = bytes_per_lane.saturating_mul(active_lanes);
         let mut request =
             GmemRequest::new(self.wid, total_bytes.max(1), tmask, opcode == Opcode::LOAD);
-        request.addr = lane_addrs
-            .iter()
-            .copied()
-            .min()
-            .unwrap_or(0);
+        request.addr = lane_addrs.iter().copied().min().unwrap_or(0);
         request.lane_addrs = Some(lane_addrs);
 
         timing_model

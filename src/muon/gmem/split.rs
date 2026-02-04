@@ -6,7 +6,11 @@ impl CoreTimingModel {
         if !request.kind.is_mem() {
             return vec![request.clone()];
         }
-        let line_bytes = self.gmem_policy.l0_line_bytes.max(1) as u64;
+        let line_bytes = if self.gmem_policy.l0_enabled {
+            self.gmem_policy.l0_line_bytes.max(1)
+        } else {
+            self.gmem_policy.l1_line_bytes.max(1)
+        } as u64;
         let lines = request
             .coalesced_lines
             .clone()
@@ -73,7 +77,10 @@ impl CoreTimingModel {
         vec![child]
     }
 
-    pub(super) fn compute_smem_conflict(&self, request: &SmemRequest) -> Option<SmemConflictSample> {
+    pub(super) fn compute_smem_conflict(
+        &self,
+        request: &SmemRequest,
+    ) -> Option<SmemConflictSample> {
         let active = request.active_lanes.max(1);
         let num_banks = self.smem_config.num_banks.max(1) as u64;
         let num_subbanks = self.smem_config.num_subbanks.max(1) as u64;

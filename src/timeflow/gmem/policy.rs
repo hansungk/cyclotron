@@ -3,6 +3,7 @@ use serde::Deserialize;
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(default)]
 pub struct GmemPolicyConfig {
+    pub l0_enabled: bool,
     pub l0_hit_rate: f64,
     pub l1_hit_rate: f64,
     pub l2_hit_rate: f64,
@@ -29,6 +30,7 @@ pub struct GmemPolicyConfig {
 impl Default for GmemPolicyConfig {
     fn default() -> Self {
         let s = Self {
+            l0_enabled: true,
             l0_hit_rate: 0.4,
             l1_hit_rate: 0.7,
             l2_hit_rate: 0.9,
@@ -36,15 +38,19 @@ impl Default for GmemPolicyConfig {
             l2_writeback_rate: 0.1,
             l0_line_bytes: 64,
             l1_line_bytes: 32,
-            l2_line_bytes: 128,
+            l2_line_bytes: 32,
             l0_sets: 512,
             l0_ways: 1,
             l1_sets: 512,
             l1_ways: 4,
             l2_sets: 512,
             l2_ways: 8,
-            l0_flush_mmio_base: 0x0008_0200,
-            l0_flush_mmio_stride: 0x100,
+            // See radiance/src/main/scala/radiance/muon/MuonTile.scala:
+            // L0i flush is at peripheralAddr; L0d flush is at peripheralAddr + 0x100.
+            // Radiance memory map allocates 0x200 bytes per core for these registers,
+            // so L0d flush MMIO is base=0x0008_0300 stride=0x200.
+            l0_flush_mmio_base: 0x0008_0300,
+            l0_flush_mmio_stride: 0x200,
             l0_flush_mmio_size: 0x100,
             l1_banks: 2,
             l2_banks: 1,

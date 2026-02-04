@@ -145,7 +145,6 @@ pub struct GmemIssue {
 // Centralize the reject reason to `types::RejectReason` to avoid duplicate enums.
 pub use crate::timeflow::types::RejectReason as GmemRejectReason;
 
-
 /// Reject type for GMEM operations: includes the rejected request as payload.
 pub type GmemReject = crate::timeflow::types::RejectWith<GmemRequest>;
 

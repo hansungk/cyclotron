@@ -4,6 +4,12 @@ use std::collections::VecDeque;
 
 pub type Cycle = u64;
 
+/// Normalize a suggested retry cycle by ensuring it's strictly in the future
+/// (at least `now + 1`). Providers should call this when they have a
+/// suggested `available_at` to produce a `retry_at` for callers.
+pub fn normalize_retry(now: Cycle, suggested: Cycle) -> Cycle {
+    suggested.max(now.saturating_add(1))
+}
 // Helper to read the current cycle from any Cyclotron module
 pub fn module_now<M: IsModule>(module: &M) -> Cycle {
     module.base_ref().cycle

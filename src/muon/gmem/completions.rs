@@ -6,22 +6,23 @@ use crate::timeq::Cycle;
 use super::{CoreTimingModel, SmemConflictSample};
 
 impl CoreTimingModel {
-    fn record_gmem_completion(
-        &mut self,
-        now: Cycle,
-        completion: &crate::timeflow::GmemCompletion,
-    ) {
+    fn record_gmem_completion(&mut self, now: Cycle, completion: &crate::timeflow::GmemCompletion) {
         if completion.request.kind.is_mem() {
-            self.gmem_hits.l0_accesses = self.gmem_hits.l0_accesses.saturating_add(1);
-            if completion.request.l0_hit {
-                self.gmem_hits.l0_hits = self.gmem_hits.l0_hits.saturating_add(1);
-            } else {
+            let mut l1_considered = true;
+            if self.gmem_policy.l0_enabled {
+                self.gmem_hits.l0_accesses = self.gmem_hits.l0_accesses.saturating_add(1);
+                if completion.request.l0_hit {
+                    self.gmem_hits.l0_hits = self.gmem_hits.l0_hits.saturating_add(1);
+                    l1_considered = false;
+                }
+            }
+
+            if l1_considered {
                 self.gmem_hits.l1_accesses = self.gmem_hits.l1_accesses.saturating_add(1);
                 if completion.request.l1_hit {
                     self.gmem_hits.l1_hits = self.gmem_hits.l1_hits.saturating_add(1);
                 } else {
-                    self.gmem_hits.l2_accesses =
-                        self.gmem_hits.l2_accesses.saturating_add(1);
+                    self.gmem_hits.l2_accesses = self.gmem_hits.l2_accesses.saturating_add(1);
                     if completion.request.l2_hit {
                         self.gmem_hits.l2_hits = self.gmem_hits.l2_hits.saturating_add(1);
                     }
@@ -31,45 +32,18 @@ impl CoreTimingModel {
 
         if let Some(issue_at) = self.gmem_issue_cycle.get(&completion.request.id).copied() {
             let latency = now.saturating_sub(issue_at);
+            self.gmem_latency_hist.record(latency);
             self.latencies.gmem_count = self.latencies.gmem_count.saturating_add(1);
             self.latencies.gmem_sum = self.latencies.gmem_sum.saturating_add(latency);
-            if let Some(log) = self.mem_latency.as_mut() {
-                log.write_gmem(
-                    now,
-                    self.core_id,
-                    completion.request.warp,
-                    completion.request.id,
-                    completion.request.bytes,
-                    issue_at,
-                    latency,
-                    completion.request.l0_hit,
-                    completion.request.l1_hit,
-                    completion.request.l2_hit,
-                );
-            }
         }
     }
 
-    fn record_smem_completion(
-        &mut self,
-        now: Cycle,
-        completion: &crate::timeflow::SmemCompletion,
-    ) {
+    fn record_smem_completion(&mut self, now: Cycle, completion: &crate::timeflow::SmemCompletion) {
         if let Some(issue_at) = self.smem_issue_cycle.get(&completion.request.id).copied() {
             let latency = now.saturating_sub(issue_at);
+            self.smem_latency_hist.record(latency);
             self.latencies.smem_count = self.latencies.smem_count.saturating_add(1);
             self.latencies.smem_sum = self.latencies.smem_sum.saturating_add(latency);
-            if let Some(log) = self.mem_latency.as_mut() {
-                log.write_smem(
-                    now,
-                    self.core_id,
-                    completion.request.warp,
-                    completion.request.id,
-                    completion.request.bytes,
-                    issue_at,
-                    latency,
-                );
-            }
         }
     }
 
@@ -121,18 +95,7 @@ impl CoreTimingModel {
             .unique_subbanks
             .saturating_add(sample.unique_subbanks as u64);
 
-        if let Some(log) = self.smem_conflicts.as_mut() {
-            log.write_row(
-                now,
-                self.core_id,
-                warp,
-                request_id,
-                sample.active_lanes,
-                sample.unique_banks,
-                sample.unique_subbanks,
-                sample.conflict_lanes,
-            );
-        }
+        let _ = (now, warp, request_id);
     }
 
     pub(super) fn handle_gmem_completion(
@@ -160,10 +123,7 @@ impl CoreTimingModel {
         );
         info!(
             self.logger,
-            "[gmem] warp {} completed request {} done@{}",
-            warp,
-            completed_id,
-            now
+            "[gmem] warp {} completed request {} done@{}", warp, completed_id, now
         );
     }
 
@@ -192,10 +152,7 @@ impl CoreTimingModel {
         );
         info!(
             self.logger,
-            "[smem] warp {} completed request {} done@{}",
-            warp,
-            completed_id,
-            now
+            "[smem] warp {} completed request {} done@{}", warp, completed_id, now
         );
     }
 }

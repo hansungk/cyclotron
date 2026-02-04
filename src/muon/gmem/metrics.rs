@@ -27,6 +27,30 @@ pub struct SmemUtilSummary {
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize)]
+pub struct ExecuteUtilSummary {
+    pub cycles: u64,
+    pub int_busy_sum: u64,
+    pub int_mul_busy_sum: u64,
+    pub int_div_busy_sum: u64,
+    pub fp_busy_sum: u64,
+    pub sfu_busy_sum: u64,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize)]
+pub struct BasicUtilSummary {
+    pub cycles: u64,
+    pub busy_sum: u64,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize)]
+pub struct StallSummary {
+    pub gmem_queue_full: u64,
+    pub gmem_busy: u64,
+    pub smem_queue_full: u64,
+    pub smem_busy: u64,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize)]
 pub struct SmemConflictSummary {
     pub instructions: u64,
     pub active_lanes: u64,
@@ -53,12 +77,44 @@ pub struct LatencySummary {
     pub smem_sum: u64,
 }
 
+#[derive(Debug, Clone, Copy, Default, Serialize)]
+pub struct LatencyHistogram {
+    pub buckets: [u64; 6],
+}
+
+impl LatencyHistogram {
+    pub fn record(&mut self, latency: u64) {
+        let idx = match latency {
+            0..=3 => 0,
+            4..=7 => 1,
+            8..=15 => 2,
+            16..=31 => 3,
+            32..=63 => 4,
+            _ => 5,
+        };
+        self.buckets[idx] = self.buckets[idx].saturating_add(1);
+    }
+
+    pub fn accumulate(&mut self, other: &LatencyHistogram) {
+        for (dst, src) in self.buckets.iter_mut().zip(other.buckets.iter()) {
+            *dst = dst.saturating_add(*src);
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct CorePerfSummary {
     pub core_id: usize,
     pub cluster_id: usize,
     pub scheduler: SchedulerSummary,
     pub smem_util: SmemUtilSummary,
+    pub execute_util: ExecuteUtilSummary,
+    pub dma_bytes_issued: u64,
+    pub dma_bytes_completed: u64,
+    pub dma_util: BasicUtilSummary,
+    pub tensor_bytes_issued: u64,
+    pub tensor_bytes_completed: u64,
+    pub tensor_util: BasicUtilSummary,
     pub smem_conflicts: SmemConflictSummary,
     pub gmem_hits: GmemHitSummary,
     pub latencies: LatencySummary,
@@ -66,4 +122,7 @@ pub struct CorePerfSummary {
     pub smem_stats: SmemStats,
     pub dma_completed: u64,
     pub tensor_completed: u64,
+    pub stall_summary: StallSummary,
+    pub gmem_latency_hist: LatencyHistogram,
+    pub smem_latency_hist: LatencyHistogram,
 }

@@ -18,13 +18,17 @@ fn make_load(addr: u64, cluster_id: usize) -> GmemRequest {
 fn issue_flush_l0(cluster: &mut ClusterGmemGraph, core_id: usize, cycle: Cycle, cluster_id: usize) {
     let mut flush = GmemRequest::new_flush_l0(core_id, 1);
     flush.cluster_id = cluster_id;
-    cluster.issue(core_id, cycle, flush).expect("flush l0 should accept");
+    cluster
+        .issue(core_id, cycle, flush)
+        .expect("flush l0 should accept");
 }
 
 fn issue_flush_l1(cluster: &mut ClusterGmemGraph, core_id: usize, cycle: Cycle, cluster_id: usize) {
     let mut flush = GmemRequest::new_flush_l1(core_id, 1);
     flush.cluster_id = cluster_id;
-    cluster.issue(core_id, cycle, flush).expect("flush l1 should accept");
+    cluster
+        .issue(core_id, cycle, flush)
+        .expect("flush l1 should accept");
 }
 
 fn drive_subgraph(
@@ -154,7 +158,9 @@ fn cross_core_l2_merge_accepts_second_request() {
     let req0 = make_load(0x1000, 0);
     let req1 = make_load(0x1000, 1);
     let issue0 = cluster.issue(0, now, req0).expect("first request accepts");
-    let issue1 = cluster.issue(1, now, req1).expect("second request merges at L2");
+    let issue1 = cluster
+        .issue(1, now, req1)
+        .expect("second request merges at L2");
     assert_eq!(issue0.ticket.ready_at(), issue1.ticket.ready_at());
 
     let comp0 = assert_completes!(&mut cluster, 0, now, MAX_CYCLES);
@@ -165,6 +171,7 @@ fn cross_core_l2_merge_accepts_second_request() {
 #[test]
 fn cross_core_l1_merge_accepts_second_request() {
     let mut cfg = GmemFlowConfig::zeroed();
+    cfg.policy.l0_enabled = true;
     cfg.nodes.l1_mshr.queue_capacity = 1;
     let mut cluster = ClusterGmemGraph::new(cfg, 1, 2);
     let cycle = 0;
@@ -182,8 +189,12 @@ fn cross_core_l1_merge_accepts_second_request() {
 
     let req0 = make_load(0x2000, 0);
     let req1 = make_load(0x2000, 0);
-    let issue0 = cluster.issue(0, cycle, req0).expect("first post-flush load");
-    let issue1 = cluster.issue(1, cycle, req1).expect("second load merges at L1");
+    let issue0 = cluster
+        .issue(0, cycle, req0)
+        .expect("first post-flush load");
+    let issue1 = cluster
+        .issue(1, cycle, req1)
+        .expect("second load merges at L1");
     assert_eq!(issue0.ticket.ready_at(), issue1.ticket.ready_at());
 
     let comp0 = assert_completes!(&mut cluster, 0, cycle, MAX_CYCLES);
@@ -193,7 +204,8 @@ fn cross_core_l1_merge_accepts_second_request() {
 
 #[test]
 fn l0_flush_invalidates_only_l0() {
-    let cfg = GmemFlowConfig::zeroed();
+    let mut cfg = GmemFlowConfig::zeroed();
+    cfg.policy.l0_enabled = true;
     let mut cluster = ClusterGmemGraph::new(cfg, 1, 1);
     let cycle = 0;
 
@@ -209,6 +221,24 @@ fn l0_flush_invalidates_only_l0() {
     let comp = assert_completes!(&mut cluster, 0, cycle, MAX_CYCLES);
     assert!(!comp.request.l0_hit, "expected L0 miss after flush");
     assert!(comp.request.l1_hit, "expected L1 hit after L0 flush");
+}
+
+#[test]
+fn l0_disabled_bypasses_l0_and_hits_l1() {
+    let mut cfg = GmemFlowConfig::zeroed();
+    cfg.policy.l0_enabled = false;
+    let mut cluster = ClusterGmemGraph::new(cfg, 1, 1);
+    let cycle = 0;
+
+    let req0 = make_load(0x3000, 0);
+    cluster.issue(0, cycle, req0).unwrap();
+    assert_completes!(&mut cluster, 0, cycle, MAX_CYCLES);
+
+    let req1 = make_load(0x3004, 0);
+    cluster.issue(0, cycle, req1).unwrap();
+    let comp = assert_completes!(&mut cluster, 0, cycle, MAX_CYCLES);
+    assert!(!comp.request.l0_hit, "expected L0 disabled -> no L0 hits");
+    assert!(comp.request.l1_hit, "expected L1 hit when L0 disabled");
 }
 
 #[test]
@@ -261,7 +291,9 @@ fn mshr_full_rejects_with_retry_cycle() {
     let req0 = make_load(0x6000, 0);
     cluster.issue(0, now, req0).unwrap();
     let req1 = make_load(0x8000, 0);
-    let err = cluster.issue(0, now, req1).expect_err("MSHR should be full");
+    let err = cluster
+        .issue(0, now, req1)
+        .expect_err("MSHR should be full");
     assert_eq!(GmemRejectReason::QueueFull, err.reason);
     assert!(err.retry_at > now);
 }

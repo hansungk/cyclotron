@@ -614,9 +614,7 @@ mod tests {
             TimedServer::new(ServerConfig::default()),
         ));
         graph.connect_filtered(src, dst, "src->dst", Link::new(2), |_| false);
-        graph
-            .try_put(src, 0, ServiceRequest::new(7u32, 4))
-            .unwrap();
+        graph.try_put(src, 0, ServiceRequest::new(7u32, 4)).unwrap();
         for cycle in 0..5 {
             graph.tick(cycle);
         }
@@ -691,12 +689,8 @@ mod tests {
         graph.connect(src0, sink, "src0->sink", Link::new(4));
         graph.connect(src1, sink, "src1->sink", Link::new(4));
 
-        graph
-            .try_put(src0, 0, ServiceRequest::new("a", 1))
-            .unwrap();
-        graph
-            .try_put(src1, 0, ServiceRequest::new("b", 1))
-            .unwrap();
+        graph.try_put(src0, 0, ServiceRequest::new("a", 1)).unwrap();
+        graph.try_put(src1, 0, ServiceRequest::new("b", 1)).unwrap();
         for cycle in 0..5 {
             graph.tick(cycle);
         }
@@ -727,7 +721,12 @@ mod tests {
             nodes.push(node);
         }
         for i in 0..99 {
-            graph.connect(nodes[i], nodes[i + 1], format!("n{i}->n{}", i + 1), Link::new(2));
+            graph.connect(
+                nodes[i],
+                nodes[i + 1],
+                format!("n{i}->n{}", i + 1),
+                Link::new(2),
+            );
         }
 
         graph
@@ -837,5 +836,11 @@ mod tests {
         let stats = graph.edge_stats(0);
         assert!(stats.downstream_backpressure > 0);
         assert!(stats.last_delivery_cycle.is_none());
+    }
+}
+
+impl<T: Send + Sync + 'static> Default for FlowGraph<T> {
+    fn default() -> Self {
+        Self::new()
     }
 }

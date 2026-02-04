@@ -33,12 +33,40 @@ pub struct RejectWith<T> {
 
 impl<T> RejectWith<T> {
     pub fn new(payload: T, retry_at: Cycle, reason: RejectReason) -> Self {
-        Self { payload, retry_at, reason }
+        Self {
+            payload,
+            retry_at,
+            reason,
+        }
     }
 }
 
 impl Reject {
     pub fn new(retry_at: Cycle, reason: RejectReason) -> Self {
         Self { retry_at, reason }
+    }
+}
+
+/// Trait to unify access to common memory-request metadata used by LSU/links.
+pub trait HasMemoryMetadata {
+    fn id(&self) -> u64;
+    fn bytes(&self) -> u32;
+}
+
+impl HasMemoryMetadata for GmemRequest {
+    fn id(&self) -> u64 {
+        self.id
+    }
+    fn bytes(&self) -> u32 {
+        self.bytes
+    }
+}
+
+impl HasMemoryMetadata for SmemRequest {
+    fn id(&self) -> u64 {
+        self.id
+    }
+    fn bytes(&self) -> u32 {
+        self.bytes
     }
 }

@@ -2,10 +2,13 @@ use std::collections::VecDeque;
 
 use crate::timeflow::graph::FlowGraph;
 use crate::timeflow::types::{CoreFlowPayload, NodeId};
-use crate::timeq::{Backpressure, Cycle, ServiceRequest};
+use crate::timeq::{normalize_retry, Backpressure, Cycle, ServiceRequest};
 
 use super::graph_build::{build_core_graph, GmemFlowConfig};
-use super::request::{extract_gmem_request, GmemCompletion, GmemIssue, GmemReject, GmemRejectReason, GmemRequest, GmemResult};
+use super::request::{
+    extract_gmem_request, GmemCompletion, GmemIssue, GmemReject, GmemRejectReason, GmemRequest,
+    GmemResult,
+};
 use super::stats::GmemStats;
 
 pub(crate) struct GmemSubgraph {
@@ -62,10 +65,7 @@ impl GmemSubgraph {
                     available_at,
                 } => {
                     self.stats.record_busy_reject();
-                    let mut retry_at = available_at;
-                    if retry_at <= now {
-                        retry_at = now.saturating_add(1);
-                    }
+                    let retry_at = normalize_retry(now, available_at);
                     let request = extract_gmem_request(request);
                     Err(GmemReject {
                         payload: request,

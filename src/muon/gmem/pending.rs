@@ -1,10 +1,8 @@
 use std::collections::VecDeque;
 
 use crate::muon::scheduler::Scheduler;
-use crate::timeflow::{
-    FenceRequest, GmemReject, SmemIssue, SmemReject, WritebackPayload,
-};
 use crate::timeflow::lsu::LsuPayload;
+use crate::timeflow::{FenceRequest, GmemReject, SmemIssue, SmemReject, WritebackPayload};
 use crate::timeq::Cycle;
 
 use super::{CoreTimingModel, PendingClusterIssue};
@@ -62,7 +60,10 @@ impl CoreTimingModel {
                 continue;
             }
 
-            if !self.lsu.can_reserve_load_data(&LsuPayload::Gmem(entry.request.clone())) {
+            if !self
+                .lsu
+                .can_reserve_load_data(&LsuPayload::Gmem(entry.request.clone()))
+            {
                 pending.push_back(PendingClusterIssue {
                     request: entry.request,
                     retry_at: now.saturating_add(1),
@@ -76,15 +77,14 @@ impl CoreTimingModel {
             };
             match issue {
                 Ok(_) => {
-                    let _ = self
-                        .lsu
-                        .reserve_load_data(&LsuPayload::Gmem(entry.request));
+                    let _ = self.lsu.reserve_load_data(&LsuPayload::Gmem(entry.request));
                 }
-                Err(GmemReject { payload: request, retry_at, .. }) => {
-                    pending.push_back(PendingClusterIssue {
-                        request,
-                        retry_at: retry_at.max(now.saturating_add(1)),
-                    });
+                Err(GmemReject {
+                    payload: request,
+                    retry_at,
+                    ..
+                }) => {
+                    pending.push_back(PendingClusterIssue { request, retry_at });
                 }
             }
         }
@@ -123,15 +123,14 @@ impl CoreTimingModel {
 
             match self.graph.issue_smem(now, entry.request.clone()) {
                 Ok(SmemIssue { .. }) => {
-                    let _ = self
-                        .lsu
-                        .reserve_load_data(&LsuPayload::Smem(entry.request));
+                    let _ = self.lsu.reserve_load_data(&LsuPayload::Smem(entry.request));
                 }
-                Err(SmemReject { payload: request, retry_at, .. }) => {
-                    pending.push_back(PendingClusterIssue {
-                        request,
-                        retry_at: retry_at.max(now.saturating_add(1)),
-                    });
+                Err(SmemReject {
+                    payload: request,
+                    retry_at,
+                    ..
+                }) => {
+                    pending.push_back(PendingClusterIssue { request, retry_at });
                 }
             }
         }
@@ -228,7 +227,12 @@ impl CoreTimingModel {
         self.update_scheduler_state(warp, scheduler);
     }
 
-    pub(super) fn register_fence(&mut self, warp: usize, request_id: u64, scheduler: &mut Scheduler) {
+    pub(super) fn register_fence(
+        &mut self,
+        warp: usize,
+        request_id: u64,
+        scheduler: &mut Scheduler,
+    ) {
         if !self.fence.is_enabled() {
             return;
         }
@@ -287,7 +291,7 @@ impl CoreTimingModel {
         false
     }
 
-    fn update_scheduler_state(&mut self, warp: usize, scheduler: &mut Scheduler) {
+    pub(super) fn update_scheduler_state(&mut self, warp: usize, scheduler: &mut Scheduler) {
         let gmem_pending = self
             .pending_gmem
             .get(warp)
@@ -308,16 +312,14 @@ impl CoreTimingModel {
             .get(warp)
             .map(|entry| entry.is_some())
             .unwrap_or(false);
-        let barrier_pending = self
-            .barrier_inflight
-            .get(warp)
-            .copied()
-            .unwrap_or(false);
+        let barrier_pending = self.barrier_inflight.get(warp).copied().unwrap_or(false);
+        let execute_pending = self.pending_execute.get(warp).copied().flatten().is_some();
         if !gmem_pending
             && !smem_pending
             && !icache_pending
             && !fence_pending
             && !barrier_pending
+            && !execute_pending
         {
             scheduler.clear_resource_wait(warp);
         }

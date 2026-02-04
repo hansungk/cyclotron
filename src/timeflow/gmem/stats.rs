@@ -1,6 +1,6 @@
 use crate::timeq::Cycle;
-use std::ops::AddAssign;
 use serde::Serialize;
+use std::ops::AddAssign;
 
 #[derive(Debug, Clone, Copy, Default, Serialize)]
 pub struct GmemStats {
@@ -10,6 +10,9 @@ pub struct GmemStats {
     busy_rejects: u64,
     bytes_issued: u64,
     bytes_completed: u64,
+    accesses: u64,
+    hits: u64,
+    bytes_hits: u64,
     inflight: u64,
     max_inflight: u64,
     max_completion_queue: u64,
@@ -45,6 +48,18 @@ impl GmemStats {
         self.inflight
     }
 
+    pub fn accesses(&self) -> u64 {
+        self.accesses
+    }
+
+    pub fn hits(&self) -> u64 {
+        self.hits
+    }
+
+    pub fn bytes_hits(&self) -> u64 {
+        self.bytes_hits
+    }
+
     pub fn max_inflight(&self) -> u64 {
         self.max_inflight
     }
@@ -62,6 +77,15 @@ impl GmemStats {
         self.bytes_issued = self.bytes_issued.saturating_add(bytes as u64);
         self.inflight = self.inflight.saturating_add(1);
         self.max_inflight = self.max_inflight.max(self.inflight);
+    }
+
+    pub fn record_access(&mut self, _bytes: u32) {
+        self.accesses = self.accesses.saturating_add(1);
+    }
+
+    pub fn record_hit(&mut self, bytes: u32) {
+        self.hits = self.hits.saturating_add(1);
+        self.bytes_hits = self.bytes_hits.saturating_add(bytes as u64);
     }
 
     pub fn record_busy_reject(&mut self) {
@@ -92,6 +116,9 @@ impl AddAssign<&GmemStats> for GmemStats {
     fn add_assign(&mut self, other: &GmemStats) {
         self.issued = self.issued.saturating_add(other.issued);
         self.completed = self.completed.saturating_add(other.completed);
+        self.accesses = self.accesses.saturating_add(other.accesses);
+        self.hits = self.hits.saturating_add(other.hits);
+        self.bytes_hits = self.bytes_hits.saturating_add(other.bytes_hits);
         self.queue_full_rejects = self
             .queue_full_rejects
             .saturating_add(other.queue_full_rejects);

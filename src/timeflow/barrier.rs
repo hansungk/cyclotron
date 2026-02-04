@@ -7,7 +7,7 @@ use crate::timeq::{Cycle, ServerConfig, ServiceRequest, TimedServer};
 #[serde(default)]
 pub struct BarrierConfig {
     pub enabled: bool,
-    pub expected_warps: usize,
+    pub expected_warps: Option<usize>,
     pub barrier_id_bits: u32,
     #[serde(flatten)]
     pub queue: ServerConfig,
@@ -17,7 +17,7 @@ impl Default for BarrierConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            expected_warps: 0,
+            expected_warps: None,
             barrier_id_bits: 0,
             queue: ServerConfig {
                 base_latency: 1,
@@ -33,10 +33,9 @@ impl Default for BarrierConfig {
 impl BarrierConfig {
     fn expected_warps_for(&self, num_warps: usize) -> usize {
         let total = num_warps.max(1);
-        if self.expected_warps == 0 {
-            total
-        } else {
-            self.expected_warps.min(total)
+        match self.expected_warps {
+            None => total,
+            Some(v) => v.min(total),
         }
     }
 }
@@ -105,7 +104,7 @@ impl BarrierManager {
         if !self.enabled {
             return Some(now);
         }
-        if self.expected_warps == 0 || warp >= self.num_warps {
+        if warp >= self.num_warps {
             return Some(now);
         }
 
@@ -211,7 +210,7 @@ mod tests {
     fn barrier_releases_after_all_warps_arrive() {
         let mut cfg = BarrierConfig::default();
         cfg.enabled = true;
-        cfg.expected_warps = 2;
+        cfg.expected_warps = Some(2);
         cfg.queue.base_latency = 2;
 
         let mut barrier = BarrierManager::new(cfg, 2);
@@ -228,7 +227,7 @@ mod tests {
     fn barrier_tracks_multiple_ids() {
         let mut cfg = BarrierConfig::default();
         cfg.enabled = true;
-        cfg.expected_warps = 2;
+        cfg.expected_warps = Some(2);
         cfg.queue.base_latency = 1;
 
         let mut barrier = BarrierManager::new(cfg, 2);
@@ -246,7 +245,7 @@ mod tests {
     fn single_warp_barrier_immediate() {
         let mut cfg = BarrierConfig::default();
         cfg.enabled = true;
-        cfg.expected_warps = 1;
+        cfg.expected_warps = Some(1);
         cfg.queue.base_latency = 0;
 
         let mut barrier = BarrierManager::new(cfg, 1);
@@ -259,7 +258,7 @@ mod tests {
     fn partial_arrival_waits() {
         let mut cfg = BarrierConfig::default();
         cfg.enabled = true;
-        cfg.expected_warps = 4;
+        cfg.expected_warps = Some(4);
         cfg.queue.base_latency = 1;
 
         let mut barrier = BarrierManager::new(cfg, 4);
@@ -272,7 +271,7 @@ mod tests {
     fn disabled_barrier_passthrough() {
         let mut cfg = BarrierConfig::default();
         cfg.enabled = false;
-        cfg.expected_warps = 4;
+        cfg.expected_warps = Some(4);
 
         let mut barrier = BarrierManager::new(cfg, 4);
         let release = barrier.arrive(0, 0, 0);
@@ -283,7 +282,7 @@ mod tests {
     fn warp_arrives_twice_same_barrier() {
         let mut cfg = BarrierConfig::default();
         cfg.enabled = true;
-        cfg.expected_warps = 2;
+        cfg.expected_warps = Some(2);
         cfg.queue.base_latency = 1;
 
         let mut barrier = BarrierManager::new(cfg, 2);
@@ -298,7 +297,7 @@ mod tests {
     fn expected_warps_exceeds_num_warps() {
         let mut cfg = BarrierConfig::default();
         cfg.enabled = true;
-        cfg.expected_warps = 8;
+        cfg.expected_warps = Some(8);
         cfg.queue.base_latency = 0;
 
         let mut barrier = BarrierManager::new(cfg, 4);
@@ -316,7 +315,7 @@ mod tests {
     fn rapid_barrier_cycles() {
         let mut cfg = BarrierConfig::default();
         cfg.enabled = true;
-        cfg.expected_warps = 2;
+        cfg.expected_warps = Some(2);
         cfg.queue.base_latency = 0;
 
         let mut barrier = BarrierManager::new(cfg, 2);
@@ -332,7 +331,7 @@ mod tests {
     fn barrier_with_different_ids_interleaved() {
         let mut cfg = BarrierConfig::default();
         cfg.enabled = true;
-        cfg.expected_warps = 2;
+        cfg.expected_warps = Some(2);
         cfg.queue.base_latency = 0;
 
         let mut barrier = BarrierManager::new(cfg, 2);

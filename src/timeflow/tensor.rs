@@ -1,14 +1,10 @@
 use serde::Deserialize;
 
 use crate::timeflow::simple_queue::SimpleTimedQueue;
-use crate::timeflow::types::RejectReason;
 pub use crate::timeflow::types::RejectReason as TensorRejectReason;
 use crate::timeq::{Cycle, ServerConfig, Ticket};
 
-#[derive(Debug, Clone)]
-pub struct TensorIssue {
-    pub ticket: Ticket,
-}
+// TensorIssue represented directly by `Ticket` to reduce wrapper boilerplate.
 
 // Alias to central RejectReason for Tensor.
 
@@ -49,6 +45,8 @@ pub struct TensorQueue {
     mmio_base: u64,
     mmio_size: u64,
     csr_addrs: Vec<u32>,
+    bytes_issued: u64,
+    bytes_completed: u64,
 }
 
 impl TensorQueue {
@@ -59,20 +57,41 @@ impl TensorQueue {
             mmio_base: config.mmio_base,
             mmio_size: config.mmio_size,
             csr_addrs: config.csr_addrs,
+            bytes_issued: 0,
+            bytes_completed: 0,
         }
     }
 
-    pub fn try_issue(&mut self, now: Cycle, bytes: u32) -> Result<TensorIssue, TensorReject> {
-        match self.queue.try_issue(now, (), bytes) {
-            Ok(ticket) => Ok(TensorIssue { ticket }),
-            Err(err) => Err(TensorReject { retry_at: err.retry_at, reason: err.reason }),
+    pub fn try_issue(&mut self, now: Cycle, bytes: u32) -> Result<Ticket, TensorReject> {
+        let res = self.queue.try_issue(now, (), bytes);
+        if res.is_ok() {
+            self.bytes_issued = self.bytes_issued.saturating_add(bytes as u64);
+        }
+        match res {
+            Ok(ticket) => Ok(ticket),
+            Err(err) => Err(TensorReject::new(err.retry_at, err.reason)),
         }
     }
 
     pub fn tick(&mut self, now: Cycle) {
-        self.queue.tick(now, |_| {
+        self.queue.tick_with_service_result(now, |result| {
             self.completed = self.completed.saturating_add(1);
+            self.bytes_completed = self
+                .bytes_completed
+                .saturating_add(result.ticket.size_bytes() as u64);
         });
+    }
+
+    pub fn bytes_issued(&self) -> u64 {
+        self.bytes_issued
+    }
+
+    pub fn bytes_completed(&self) -> u64 {
+        self.bytes_completed
+    }
+
+    pub fn is_busy(&self) -> bool {
+        self.queue.is_busy()
     }
 
     pub fn completed(&self) -> u64 {
@@ -106,7 +125,7 @@ mod tests {
         cfg.queue.base_latency = 2;
         let mut tensor = TensorQueue::new(cfg);
 
-        let ticket = tensor.try_issue(0, 256).expect("issue").ticket;
+        let ticket = tensor.try_issue(0, 256).expect("issue");
         tensor.tick(ticket.ready_at().saturating_sub(1));
         assert_eq!(tensor.completed(), 0);
         tensor.tick(ticket.ready_at());
@@ -118,7 +137,7 @@ mod tests {
         let mut cfg = TensorConfig::default();
         cfg.enabled = false;
         let mut tensor = TensorQueue::new(cfg);
-        let ticket = tensor.try_issue(5, 128).expect("issue").ticket;
+        let ticket = tensor.try_issue(5, 128).expect("issue");
         assert_eq!(ticket.ready_at(), 5);
     }
 
@@ -140,7 +159,7 @@ mod tests {
         cfg.queue.base_latency = 4;
         cfg.queue.bytes_per_cycle = 8;
         let mut tensor = TensorQueue::new(cfg);
-        let ticket = tensor.try_issue(10, 0).unwrap().ticket;
+        let ticket = tensor.try_issue(10, 0).unwrap();
         assert_eq!(14, ticket.ready_at());
     }
 
@@ -152,7 +171,7 @@ mod tests {
         cfg.queue.bytes_per_cycle = 8;
         let mut tensor = TensorQueue::new(cfg);
 
-        let ticket = tensor.try_issue(0, 64).unwrap().ticket;
+        let ticket = tensor.try_issue(0, 64).unwrap();
         assert_eq!(11, ticket.ready_at());
     }
 }

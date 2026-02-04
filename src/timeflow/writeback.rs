@@ -3,7 +3,6 @@ use std::collections::VecDeque;
 use serde::Deserialize;
 
 use crate::timeflow::simple_queue::SimpleTimedQueue;
-use crate::timeflow::types::RejectReason;
 pub use crate::timeflow::types::RejectReason as WritebackRejectReason;
 use crate::timeq::{Cycle, ServerConfig, Ticket};
 
@@ -75,9 +74,9 @@ impl WritebackQueue {
             });
         }
 
-        match self.queue.try_issue_with_payload(now, payload, 0) {
+        match self.queue.try_issue(now, payload, 0) {
             Ok(ticket) => Ok(WritebackIssue { ticket }),
-            Err(err) => Err(WritebackReject { retry_at: err.retry_at, reason: err.reason }),
+            Err(err) => Err(WritebackReject::new(err.retry_at, err.reason)),
         }
     }
 

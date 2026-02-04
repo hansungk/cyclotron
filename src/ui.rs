@@ -114,5 +114,11 @@ pub fn make_sim(
 
     neutrino_config.muon_config = muon_config.clone();
 
-    Sim::new(sim_config, muon_config, neutrino_config, mem_config, timing_config)
+    Sim::new(
+        sim_config,
+        muon_config,
+        neutrino_config,
+        mem_config,
+        timing_config,
+    )
 }

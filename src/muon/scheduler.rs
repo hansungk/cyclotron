@@ -376,8 +376,7 @@ impl Scheduler {
 
     fn recompute_stall_masks(&mut self) {
         let wait_mask = self.resource_wait_mask();
-        self.base.state.stalled_warps =
-            self.base.state.neutrino_stalled_mask | wait_mask;
+        self.base.state.stalled_warps = self.base.state.neutrino_stalled_mask | wait_mask;
     }
 
     // TODO: This should differentiate between different threadblocks.

@@ -1,11 +1,8 @@
-use crate::timeflow::gmem::{
-    GmemCompletion, GmemFlowConfig, GmemIssue, GmemReject, GmemRequest, GmemStats, GmemSubgraph,
-};
-use crate::timeflow::gmem::GmemResult;
-use crate::timeflow::graph::FlowGraph;
 use crate::timeflow::barrier::BarrierConfig;
 use crate::timeflow::dma::DmaConfig;
 use crate::timeflow::fence::FenceConfig;
+use crate::timeflow::gmem::GmemFlowConfig;
+use crate::timeflow::graph::FlowGraph;
 use crate::timeflow::icache::IcacheFlowConfig;
 use crate::timeflow::lsu::LsuFlowConfig;
 use crate::timeflow::operand_fetch::OperandFetchConfig;
@@ -13,10 +10,10 @@ use crate::timeflow::smem::{
     SmemCompletion, SmemFlowConfig, SmemIssue, SmemReject, SmemRequest, SmemStats, SmemSubgraph,
     SmemUtilSample,
 };
-use crate::timeflow::tensor::TensorConfig;
+use crate::timeflow::types::CoreFlowPayload;
 use crate::timeflow::warp_scheduler::WarpSchedulerConfig;
 use crate::timeflow::writeback::WritebackConfig;
-use crate::timeflow::types::CoreFlowPayload;
+use crate::timeflow::{execute::ExecutePipelineConfig, tensor::TensorConfig};
 use crate::timeq::Cycle;
 use serde::Deserialize;
 
@@ -70,6 +67,7 @@ impl Default for MemoryConfig {
 pub struct ComputeConfig {
     pub tensor: TensorConfig,
     pub scheduler: WarpSchedulerConfig,
+    pub execute: ExecutePipelineConfig,
 }
 
 impl Default for ComputeConfig {
@@ -77,6 +75,7 @@ impl Default for ComputeConfig {
         Self {
             tensor: TensorConfig::default(),
             scheduler: WarpSchedulerConfig::default(),
+            execute: ExecutePipelineConfig::default(),
         }
     }
 }
@@ -101,26 +100,15 @@ impl Default for IoConfig {
 
 pub struct CoreGraph {
     pub(crate) graph: FlowGraph<CoreFlowPayload>,
-    pub(crate) gmem: GmemSubgraph,
     pub(crate) smem: SmemSubgraph,
 }
 
 impl CoreGraph {
     pub fn new(config: CoreGraphConfig) -> Self {
         let mut graph = FlowGraph::new();
-        let gmem = GmemSubgraph::attach(&mut graph, &config.memory.gmem);
         let smem = SmemSubgraph::attach(&mut graph, &config.memory.smem);
-        Self { graph, gmem, smem }
+        Self { graph, smem }
     }
-
-    pub fn issue_gmem(
-        &mut self,
-        now: Cycle,
-        request: GmemRequest,
-    ) -> GmemResult<GmemIssue> {
-        self.gmem.issue(&mut self.graph, now, request)
-    }
-
 
     pub fn issue_smem(
         &mut self,
@@ -132,24 +120,7 @@ impl CoreGraph {
 
     pub fn tick(&mut self, now: Cycle) {
         self.graph.tick(now);
-        self.gmem.collect_completions(&mut self.graph, now);
         self.smem.collect_completions(&mut self.graph, now);
-    }
-
-    pub fn pop_gmem_completion(&mut self) -> Option<GmemCompletion> {
-        self.gmem.completions.pop_front()
-    }
-
-    pub fn pending_gmem_completions(&self) -> usize {
-        self.gmem.completions.len()
-    }
-
-    pub fn gmem_stats(&self) -> GmemStats {
-        self.gmem.stats
-    }
-
-    pub fn clear_gmem_stats(&mut self) {
-        self.gmem.stats = GmemStats::default();
     }
 
     pub fn pop_smem_completion(&mut self) -> Option<SmemCompletion> {
@@ -176,28 +147,16 @@ impl CoreGraph {
     pub fn record_smem_sample(&mut self) {
         self.smem.sample_and_accumulate(&mut self.graph);
     }
+
+    /// Minimal adapter: provide mutable access to the SMEM subgraph.
+    pub(crate) fn smem_subgraph_mut(&mut self) -> &mut SmemSubgraph {
+        &mut self.smem
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn core_graph_completes_gmem_requests() {
-        let mut cfg = CoreGraphConfig::default();
-        cfg.memory.gmem.nodes.coalescer.base_latency = 1;
-        cfg.memory.gmem.nodes.l0d_tag.base_latency = 2;
-        cfg.memory.gmem.nodes.dram.base_latency = 3;
-
-        let mut graph = CoreGraph::new(cfg);
-        let request = GmemRequest::new(0, 16, 0xF, true);
-        let issue = graph.issue_gmem(0, request).expect("issue should succeed");
-        let ready_at = issue.ticket.ready_at();
-        for cycle in 0..=ready_at.saturating_add(500) {
-            graph.tick(cycle);
-        }
-        assert_eq!(1, graph.pending_gmem_completions());
-    }
 
     #[test]
     fn core_graph_completes_smem_requests() {
@@ -217,61 +176,21 @@ mod tests {
     }
 
     #[test]
-    fn core_graph_handles_mixed_gmem_smem() {
+    fn core_graph_tracks_smem_stats_correctly() {
         let mut cfg = CoreGraphConfig::default();
-        cfg.memory.gmem.nodes.coalescer.base_latency = 0;
-        cfg.memory.gmem.nodes.l0d_tag.base_latency = 0;
-        cfg.memory.gmem.nodes.dram.base_latency = 0;
         cfg.memory.smem.lane.base_latency = 0;
         cfg.memory.smem.bank.base_latency = 0;
         cfg.memory.smem.crossbar.base_latency = 0;
 
         let mut graph = CoreGraph::new(cfg);
-        let gmem_req = GmemRequest::new(0, 16, 0xF, true);
-        let smem_req = SmemRequest::new(0, 16, 0xF, false, 0);
-        let gmem_issue = graph.issue_gmem(0, gmem_req).expect("gmem issue");
-        let smem_issue = graph.issue_smem(0, smem_req).expect("smem issue");
-        let ready_at = gmem_issue
-            .ticket
-            .ready_at()
-            .max(smem_issue.ticket.ready_at());
-        for cycle in 0..=ready_at.saturating_add(200) {
-            graph.tick(cycle);
-        }
-        assert_eq!(1, graph.pending_gmem_completions());
-        assert_eq!(1, graph.pending_smem_completions());
-    }
-
-    #[test]
-    fn core_graph_tracks_stats_correctly() {
-        let mut cfg = CoreGraphConfig::default();
-        cfg.memory.gmem.nodes.coalescer.base_latency = 0;
-        cfg.memory.gmem.nodes.l0d_tag.base_latency = 0;
-        cfg.memory.gmem.nodes.dram.base_latency = 0;
-        cfg.memory.smem.lane.base_latency = 0;
-        cfg.memory.smem.bank.base_latency = 0;
-        cfg.memory.smem.crossbar.base_latency = 0;
-
-        let mut graph = CoreGraph::new(cfg);
-        graph.clear_gmem_stats();
         graph.clear_smem_stats();
-
-        let gmem_req = GmemRequest::new(0, 16, 0xF, true);
         let smem_req = SmemRequest::new(0, 16, 0xF, false, 0);
-        let gmem_issue = graph.issue_gmem(0, gmem_req).expect("gmem issue");
         let smem_issue = graph.issue_smem(0, smem_req).expect("smem issue");
-        let ready_at = gmem_issue
-            .ticket
-            .ready_at()
-            .max(smem_issue.ticket.ready_at());
+        let ready_at = smem_issue.ticket.ready_at();
         for cycle in 0..=ready_at.saturating_add(200) {
             graph.tick(cycle);
         }
-
-        let gmem_stats = graph.gmem_stats();
         let smem_stats = graph.smem_stats();
-        assert_eq!(gmem_stats.issued(), 1);
-        assert_eq!(gmem_stats.completed(), 1);
         assert_eq!(smem_stats.issued, 1);
         assert_eq!(smem_stats.completed, 1);
     }

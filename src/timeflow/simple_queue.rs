@@ -1,5 +1,8 @@
-use crate::timeflow::types::{Reject, RejectWith, RejectReason};
-use crate::timeq::{Backpressure, Cycle, ServerConfig, ServiceRequest, Ticket, TimedServer};
+use crate::timeflow::types::{Reject, RejectReason, RejectWith};
+use crate::timeq::{
+    normalize_retry, Backpressure, Cycle, ServerConfig, ServiceRequest, ServiceResult, Ticket,
+    TimedServer,
+};
 
 pub struct SimpleTimedQueue<T> {
     enabled: bool,
@@ -26,21 +29,13 @@ impl<T> SimpleTimedQueue<T> {
         let request = ServiceRequest::new(payload, bytes);
         match self.server.try_enqueue(now, request) {
             Ok(ticket) => Ok(ticket),
-            Err(Backpressure::Busy { available_at, .. }) => Err(Reject {
-                retry_at: available_at.max(now.saturating_add(1)),
-                reason: RejectReason::Busy,
-            }),
+            Err(Backpressure::Busy { available_at, .. }) => Err(Reject::new(
+                normalize_retry(now, available_at),
+                RejectReason::Busy,
+            )),
             Err(Backpressure::QueueFull { .. }) => {
-                let retry_at = self
-                    .server
-                    .oldest_ticket()
-                    .map(|ticket| ticket.ready_at())
-                    .unwrap_or_else(|| self.server.available_at())
-                    .max(now.saturating_add(1));
-                Err(Reject {
-                    retry_at,
-                    reason: RejectReason::QueueFull,
-                })
+                let retry_at = self.queue_full_retry(now);
+                Err(Reject::new(retry_at, RejectReason::QueueFull))
             }
         }
     }
@@ -61,36 +56,60 @@ impl<T> SimpleTimedQueue<T> {
             Err(Backpressure::Busy {
                 request,
                 available_at,
-            }) => Err(RejectWith {
-                retry_at: available_at.max(now.saturating_add(1)),
-                reason: RejectReason::Busy,
-                payload: request.payload,
-            }),
-            Err(Backpressure::QueueFull { request, .. }) => {
-                let retry_at = self
-                    .server
-                    .oldest_ticket()
-                    .map(|ticket| ticket.ready_at())
-                    .unwrap_or_else(|| self.server.available_at())
-                    .max(now.saturating_add(1));
-                Err(RejectWith {
+            }) => {
+                let retry_at = normalize_retry(now, available_at);
+                Err(RejectWith::new(
+                    request.payload,
                     retry_at,
-                    reason: RejectReason::QueueFull,
-                    payload: request.payload,
-                })
+                    RejectReason::Busy,
+                ))
+            }
+            Err(Backpressure::QueueFull { request, .. }) => {
+                let retry_at = self.queue_full_retry(now);
+                Err(RejectWith::new(
+                    request.payload,
+                    retry_at,
+                    RejectReason::QueueFull,
+                ))
             }
         }
+    }
+
+    fn queue_full_retry(&self, now: Cycle) -> Cycle {
+        let suggested = self
+            .server
+            .oldest_ticket()
+            .map(|ticket| ticket.ready_at())
+            .unwrap_or_else(|| self.server.available_at());
+        normalize_retry(now, suggested)
+    }
+
+    pub fn tick_with_service_result<R>(&mut self, now: Cycle, mut on_ready: R)
+    where
+        R: FnMut(ServiceResult<T>),
+    {
+        if !self.enabled {
+            return;
+        }
+        self.server.service_ready(now, |result| {
+            on_ready(result);
+        });
     }
 
     pub fn tick<R>(&mut self, now: Cycle, mut on_ready: R)
     where
         R: FnMut(T),
     {
-        if !self.enabled {
-            return;
-        }
-        self.server.service_ready(now, |result| {
+        self.tick_with_service_result(now, |result| {
             on_ready(result.payload);
         });
+    }
+
+    pub fn outstanding(&self) -> usize {
+        self.server.outstanding()
+    }
+
+    pub fn is_busy(&self) -> bool {
+        self.enabled && self.server.outstanding() > 0
     }
 }

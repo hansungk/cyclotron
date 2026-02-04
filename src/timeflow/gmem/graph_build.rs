@@ -33,7 +33,7 @@ impl LinkConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(default)] 
+#[serde(default)]
 pub struct GmemNodeConfig {
     pub coalescer: ServerConfig,
     pub l0_flush_gate: ServerConfig,
@@ -53,6 +53,54 @@ pub struct GmemNodeConfig {
     pub l2_writeback: ServerConfig,
     pub dram: ServerConfig,
     pub return_path: ServerConfig,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct CacheLevelConfig {
+    pub name: String,
+    pub banks: usize,
+    pub tag: ServerConfig,
+    pub data: ServerConfig,
+    pub mshr: ServerConfig,
+    pub refill: ServerConfig,
+    pub writeback: ServerConfig,
+}
+
+impl Default for CacheLevelConfig {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            banks: 1,
+            tag: ServerConfig::default(),
+            data: ServerConfig::default(),
+            mshr: ServerConfig::default(),
+            refill: ServerConfig::default(),
+            writeback: ServerConfig::default(),
+        }
+    }
+}
+
+impl CacheLevelConfig {
+    fn from_legacy(
+        name: &str,
+        banks: usize,
+        tag: ServerConfig,
+        data: ServerConfig,
+        mshr: ServerConfig,
+        refill: ServerConfig,
+        writeback: ServerConfig,
+    ) -> Self {
+        Self {
+            name: name.to_string(),
+            banks,
+            tag,
+            data,
+            mshr,
+            refill,
+            writeback,
+        }
+    }
 }
 
 impl Default for GmemNodeConfig {
@@ -240,6 +288,7 @@ pub struct GmemFlowConfig {
     pub nodes: GmemNodeConfig,
     pub links: GmemLinkConfig,
     pub policy: GmemPolicyConfig,
+    pub levels: Vec<CacheLevelConfig>,
 }
 
 impl Default for GmemFlowConfig {
@@ -248,6 +297,7 @@ impl Default for GmemFlowConfig {
             nodes: GmemNodeConfig::default(),
             links: GmemLinkConfig::default(),
             policy: GmemPolicyConfig::default(),
+            levels: Vec::new(),
         }
     }
 }
@@ -285,6 +335,41 @@ impl GmemFlowConfig {
         }
         cfg.links.default.entries = 8;
         cfg
+    }
+
+    pub fn cache_levels(&self) -> Vec<CacheLevelConfig> {
+        if !self.levels.is_empty() {
+            return self.levels.clone();
+        }
+        vec![
+            CacheLevelConfig::from_legacy(
+                "l0",
+                1,
+                self.nodes.l0d_tag,
+                self.nodes.l0d_data,
+                self.nodes.l0d_mshr,
+                self.nodes.l0d_mshr,
+                self.nodes.l0d_mshr,
+            ),
+            CacheLevelConfig::from_legacy(
+                "l1",
+                self.policy.l1_banks,
+                self.nodes.l1_tag,
+                self.nodes.l1_data,
+                self.nodes.l1_mshr,
+                self.nodes.l1_refill,
+                self.nodes.l1_writeback,
+            ),
+            CacheLevelConfig::from_legacy(
+                "l2",
+                self.policy.l2_banks,
+                self.nodes.l2_tag,
+                self.nodes.l2_data,
+                self.nodes.l2_mshr,
+                self.nodes.l2_refill,
+                self.nodes.l2_writeback,
+            ),
+        ]
     }
 }
 
@@ -383,6 +468,30 @@ fn connect_core_l0(
         state.l1_flush_gate,
         "l0_mshr->l1_flush",
         link(links.l0_mshr_to_l1_flush),
+    );
+}
+
+fn connect_core_no_l0(
+    graph: &mut FlowGraph<CoreFlowPayload>,
+    links: &GmemLinkConfig,
+    state: &CoreGraphState,
+) {
+    let link = |cfg: Option<LinkConfig>| cfg.unwrap_or(links.default).build();
+    graph.connect_filtered(
+        state.ingress_node,
+        state.return_node,
+        "coalescer->return_flush_l0",
+        link(links.coalescer_to_l0_flush),
+        |payload| matches!(payload, CoreFlowPayload::Gmem(req) if req.kind.is_flush_l0()),
+    );
+    graph.connect_filtered(
+        state.ingress_node,
+        state.l1_flush_gate,
+        "coalescer->l1_flush",
+        link(links.coalescer_to_l0_flush),
+        |payload| {
+            matches!(payload, CoreFlowPayload::Gmem(req) if req.kind.is_mem() || req.kind.is_flush_l1())
+        },
     );
 }
 
@@ -572,9 +681,7 @@ fn connect_core_dram(
             refill_node,
             format!("dram->l2_refill_{l2_bank}"),
             link(links.dram_to_l2_refill),
-            move |payload| {
-                matches!(payload, CoreFlowPayload::Gmem(req) if req.l2_bank == l2_bank)
-            },
+            move |payload| matches!(payload, CoreFlowPayload::Gmem(req) if req.l2_bank == l2_bank),
         );
     }
 }
@@ -585,49 +692,81 @@ struct ClusterL1State {
     l1_refill_nodes: Vec<NodeId>,
 }
 
+struct CacheLevelNodes {
+    tag_nodes: Vec<NodeId>,
+    data_nodes: Vec<NodeId>,
+    mshr_nodes: Vec<NodeId>,
+    refill_nodes: Vec<NodeId>,
+    wb_nodes: Vec<NodeId>,
+}
+
+fn build_cache_level_nodes(
+    graph: &mut FlowGraph<CoreFlowPayload>,
+    prefix: &str,
+    level: &CacheLevelConfig,
+) -> CacheLevelNodes {
+    let banks = level.banks.max(1);
+    let mut tag_nodes = Vec::with_capacity(banks);
+    let mut data_nodes = Vec::with_capacity(banks);
+    let mut mshr_nodes = Vec::with_capacity(banks);
+    let mut refill_nodes = Vec::with_capacity(banks);
+    let mut wb_nodes = Vec::with_capacity(banks);
+    for bank in 0..banks {
+        tag_nodes.push(graph.add_node(ServerNode::new(
+            format!("{prefix}_tag_{bank}"),
+            TimedServer::new(level.tag),
+        )));
+        data_nodes.push(graph.add_node(ServerNode::new(
+            format!("{prefix}_data_{bank}"),
+            TimedServer::new(level.data),
+        )));
+        mshr_nodes.push(graph.add_node(ServerNode::new(
+            format!("{prefix}_mshr_{bank}"),
+            TimedServer::new(level.mshr),
+        )));
+        refill_nodes.push(graph.add_node(ServerNode::new(
+            format!("{prefix}_refill_{bank}"),
+            TimedServer::new(level.refill),
+        )));
+        wb_nodes.push(graph.add_node(ServerNode::new(
+            format!("{prefix}_wb_{bank}"),
+            TimedServer::new(level.writeback),
+        )));
+    }
+    CacheLevelNodes {
+        tag_nodes,
+        data_nodes,
+        mshr_nodes,
+        refill_nodes,
+        wb_nodes,
+    }
+}
+
 fn build_cluster_l2(
     graph: &mut FlowGraph<CoreFlowPayload>,
     nodes: &GmemNodeConfig,
     links: &GmemLinkConfig,
-    l2_banks: usize,
-) -> (Vec<NodeId>, Vec<NodeId>, Vec<NodeId>, Vec<NodeId>, Vec<NodeId>, NodeId) {
-    let mut l2_tag_nodes = Vec::with_capacity(l2_banks);
-    let mut l2_data_nodes = Vec::with_capacity(l2_banks);
-    let mut l2_mshr_nodes = Vec::with_capacity(l2_banks);
-    let mut l2_refill_nodes = Vec::with_capacity(l2_banks);
-    let mut l2_wb_nodes = Vec::with_capacity(l2_banks);
-    for bank in 0..l2_banks {
-        l2_tag_nodes.push(graph.add_node(ServerNode::new(
-            format!("l2_tag_{bank}"),
-            TimedServer::new(nodes.l2_tag),
-        )));
-        l2_data_nodes.push(graph.add_node(ServerNode::new(
-            format!("l2_data_{bank}"),
-            TimedServer::new(nodes.l2_data),
-        )));
-        l2_mshr_nodes.push(graph.add_node(ServerNode::new(
-            format!("l2_mshr_{bank}"),
-            TimedServer::new(nodes.l2_mshr),
-        )));
-        l2_refill_nodes.push(graph.add_node(ServerNode::new(
-            format!("l2_refill_{bank}"),
-            TimedServer::new(nodes.l2_refill),
-        )));
-        l2_wb_nodes.push(graph.add_node(ServerNode::new(
-            format!("l2_wb_{bank}"),
-            TimedServer::new(nodes.l2_writeback),
-        )));
-    }
+    level: &CacheLevelConfig,
+) -> (
+    Vec<NodeId>,
+    Vec<NodeId>,
+    Vec<NodeId>,
+    Vec<NodeId>,
+    Vec<NodeId>,
+    NodeId,
+) {
+    let l2_nodes = build_cache_level_nodes(graph, "l2", level);
+    let l2_banks = level.banks.max(1);
 
     let dram_node = graph.add_node(ServerNode::new("dram", TimedServer::new(nodes.dram)));
     let link = |cfg: Option<LinkConfig>| cfg.unwrap_or(links.default).build();
 
     for bank in 0..l2_banks {
-        let tag_node = l2_tag_nodes[bank];
-        let data_node = l2_data_nodes[bank];
-        let mshr_node = l2_mshr_nodes[bank];
-        let refill_node = l2_refill_nodes[bank];
-        let wb_node = l2_wb_nodes[bank];
+        let tag_node = l2_nodes.tag_nodes[bank];
+        let data_node = l2_nodes.data_nodes[bank];
+        let mshr_node = l2_nodes.mshr_nodes[bank];
+        let refill_node = l2_nodes.refill_nodes[bank];
+        let wb_node = l2_nodes.wb_nodes[bank];
 
         graph.connect_filtered(
             tag_node,
@@ -670,18 +809,16 @@ fn build_cluster_l2(
             refill_node,
             format!("dram->l2_refill_{bank}"),
             link(links.dram_to_l2_refill),
-            move |payload| {
-                matches!(payload, CoreFlowPayload::Gmem(req) if req.l2_bank == bank)
-            },
+            move |payload| matches!(payload, CoreFlowPayload::Gmem(req) if req.l2_bank == bank),
         );
     }
 
     (
-        l2_tag_nodes,
-        l2_data_nodes,
-        l2_mshr_nodes,
-        l2_refill_nodes,
-        l2_wb_nodes,
+        l2_nodes.tag_nodes,
+        l2_nodes.data_nodes,
+        l2_nodes.mshr_nodes,
+        l2_nodes.refill_nodes,
+        l2_nodes.wb_nodes,
         dram_node,
     )
 }
@@ -690,7 +827,7 @@ fn build_cluster_l1(
     graph: &mut FlowGraph<CoreFlowPayload>,
     nodes: &GmemNodeConfig,
     links: &GmemLinkConfig,
-    l1_banks: usize,
+    level: &CacheLevelConfig,
     l2_banks: usize,
     cluster_id: usize,
     l2_tag_nodes: &[NodeId],
@@ -700,41 +837,15 @@ fn build_cluster_l1(
         TimedServer::new(nodes.l1_flush_gate),
     ));
 
-    let mut l1_tag_nodes = Vec::with_capacity(l1_banks);
-    let mut l1_data_nodes = Vec::with_capacity(l1_banks);
-    let mut l1_mshr_nodes = Vec::with_capacity(l1_banks);
-    let mut l1_refill_nodes = Vec::with_capacity(l1_banks);
-    let mut l1_wb_nodes = Vec::with_capacity(l1_banks);
-
-    for bank in 0..l1_banks {
-        l1_tag_nodes.push(graph.add_node(ServerNode::new(
-            format!("cluster{cluster_id}_l1_tag_{bank}"),
-            TimedServer::new(nodes.l1_tag),
-        )));
-        l1_data_nodes.push(graph.add_node(ServerNode::new(
-            format!("cluster{cluster_id}_l1_data_{bank}"),
-            TimedServer::new(nodes.l1_data),
-        )));
-        l1_mshr_nodes.push(graph.add_node(ServerNode::new(
-            format!("cluster{cluster_id}_l1_mshr_{bank}"),
-            TimedServer::new(nodes.l1_mshr),
-        )));
-        l1_refill_nodes.push(graph.add_node(ServerNode::new(
-            format!("cluster{cluster_id}_l1_refill_{bank}"),
-            TimedServer::new(nodes.l1_refill),
-        )));
-        l1_wb_nodes.push(graph.add_node(ServerNode::new(
-            format!("cluster{cluster_id}_l1_wb_{bank}"),
-            TimedServer::new(nodes.l1_writeback),
-        )));
-    }
+    let l1_nodes = build_cache_level_nodes(graph, &format!("cluster{cluster_id}_l1"), level);
+    let l1_banks = level.banks.max(1);
 
     let link = |cfg: Option<LinkConfig>| cfg.unwrap_or(links.default).build();
     for bank in 0..l1_banks {
-        let tag_node = l1_tag_nodes[bank];
-        let data_node = l1_data_nodes[bank];
-        let mshr_node = l1_mshr_nodes[bank];
-        let wb_node = l1_wb_nodes[bank];
+        let tag_node = l1_nodes.tag_nodes[bank];
+        let data_node = l1_nodes.data_nodes[bank];
+        let mshr_node = l1_nodes.mshr_nodes[bank];
+        let wb_node = l1_nodes.wb_nodes[bank];
 
         graph.connect_filtered(
             l1_flush_gate,
@@ -796,8 +907,8 @@ fn build_cluster_l1(
 
     ClusterL1State {
         l1_flush_gate,
-        l1_data_nodes,
-        l1_refill_nodes,
+        l1_data_nodes: l1_nodes.data_nodes,
+        l1_refill_nodes: l1_nodes.refill_nodes,
     }
 }
 
@@ -832,9 +943,7 @@ fn connect_cluster_l2_to_l1_refills(
                 graph.connect_filtered(
                     l2_refill,
                     l1_refill,
-                    format!(
-                        "l2_refill_{l2_bank}->cluster{cluster_id}_l1_refill_{l1_bank}"
-                    ),
+                    format!("l2_refill_{l2_bank}->cluster{cluster_id}_l1_refill_{l1_bank}"),
                     link(links.l2_refill_to_l1_refill),
                     move |payload| {
                         matches!(payload, CoreFlowPayload::Gmem(req)
@@ -850,10 +959,12 @@ fn build_cluster_core_nodes(
     graph: &mut FlowGraph<CoreFlowPayload>,
     nodes: &GmemNodeConfig,
     links: &GmemLinkConfig,
+    l0_level: Option<&CacheLevelConfig>,
     cluster_l1: &[ClusterL1State],
     l1_banks: usize,
     num_clusters: usize,
     cores_per_cluster: usize,
+    l0_enabled: bool,
 ) -> Vec<ClusterCoreNodes> {
     let link = |cfg: Option<LinkConfig>| cfg.unwrap_or(links.default).build();
     let total_cores = num_clusters.saturating_mul(cores_per_cluster);
@@ -874,15 +985,15 @@ fn build_cluster_core_nodes(
             ));
             let l0_tag = graph.add_node(ServerNode::new(
                 format!("cluster{cluster_id}_core{local_core}_l0d_tag"),
-                TimedServer::new(nodes.l0d_tag),
+                TimedServer::new(l0_level.map(|level| level.tag).unwrap_or(nodes.l0d_tag)),
             ));
             let l0_data = graph.add_node(ServerNode::new(
                 format!("cluster{cluster_id}_core{local_core}_l0d_data"),
-                TimedServer::new(nodes.l0d_data),
+                TimedServer::new(l0_level.map(|level| level.data).unwrap_or(nodes.l0d_data)),
             ));
             let l0_mshr = graph.add_node(ServerNode::new(
                 format!("cluster{cluster_id}_core{local_core}_l0d_mshr"),
-                TimedServer::new(nodes.l0d_mshr),
+                TimedServer::new(l0_level.map(|level| level.mshr).unwrap_or(nodes.l0d_mshr)),
             ));
 
             let return_node = graph.add_node(ServerNode::new(
@@ -890,66 +1001,90 @@ fn build_cluster_core_nodes(
                 TimedServer::new(nodes.return_path),
             ));
 
-            graph.connect(
-                ingress_node,
-                l0_flush_gate,
-                format!("cluster{cluster_id}_core{local_core}_coalescer->l0_flush"),
-                link(links.coalescer_to_l0_flush),
-            );
+            if l0_enabled {
+                graph.connect(
+                    ingress_node,
+                    l0_flush_gate,
+                    format!("cluster{cluster_id}_core{local_core}_coalescer->l0_flush"),
+                    link(links.coalescer_to_l0_flush),
+                );
 
-            let core_match = core_id;
-            graph.connect_filtered(
-                l0_flush_gate,
-                return_node,
-                format!("cluster{cluster_id}_core{local_core}_l0_flush->return"),
-                link(links.l0_flush_to_return),
-                move |payload| {
-                    matches!(payload, CoreFlowPayload::Gmem(req)
-                        if req.kind.is_flush_l0() && req.core_id == core_match)
-                },
-            );
-            graph.connect_filtered(
-                l0_flush_gate,
-                cluster_state.l1_flush_gate,
-                format!("cluster{cluster_id}_core{local_core}_l0_flush->l1_flush"),
-                link(links.l0_flush_to_l1_flush),
-                |payload| matches!(payload, CoreFlowPayload::Gmem(req) if req.kind.is_flush_l1()),
-            );
-            graph.connect_filtered(
-                l0_flush_gate,
-                l0_tag,
-                format!("cluster{cluster_id}_core{local_core}_l0_flush->l0_tag"),
-                link(links.l0_flush_to_l0_tag),
-                |payload| matches!(payload, CoreFlowPayload::Gmem(req) if req.kind.is_mem()),
-            );
+                let core_match = core_id;
+                graph.connect_filtered(
+                    l0_flush_gate,
+                    return_node,
+                    format!("cluster{cluster_id}_core{local_core}_l0_flush->return"),
+                    link(links.l0_flush_to_return),
+                    move |payload| {
+                        matches!(payload, CoreFlowPayload::Gmem(req)
+                            if req.kind.is_flush_l0() && req.core_id == core_match)
+                    },
+                );
+                graph.connect_filtered(
+                    l0_flush_gate,
+                    cluster_state.l1_flush_gate,
+                    format!("cluster{cluster_id}_core{local_core}_l0_flush->l1_flush"),
+                    link(links.l0_flush_to_l1_flush),
+                    |payload| matches!(payload, CoreFlowPayload::Gmem(req) if req.kind.is_flush_l1()),
+                );
+                graph.connect_filtered(
+                    l0_flush_gate,
+                    l0_tag,
+                    format!("cluster{cluster_id}_core{local_core}_l0_flush->l0_tag"),
+                    link(links.l0_flush_to_l0_tag),
+                    |payload| matches!(payload, CoreFlowPayload::Gmem(req) if req.kind.is_mem()),
+                );
 
-            graph.connect_filtered(
-                l0_tag,
-                l0_data,
-                format!("cluster{cluster_id}_core{local_core}_l0_tag->l0_hit"),
-                link(links.l0_tag_to_l0_hit),
-                |payload| matches!(payload, CoreFlowPayload::Gmem(req) if req.l0_hit),
-            );
-            graph.connect_filtered(
-                l0_tag,
-                l0_mshr,
-                format!("cluster{cluster_id}_core{local_core}_l0_tag->l0_mshr"),
-                link(links.l0_tag_to_l0_mshr),
-                |payload| matches!(payload, CoreFlowPayload::Gmem(req) if !req.l0_hit),
-            );
+                graph.connect_filtered(
+                    l0_tag,
+                    l0_data,
+                    format!("cluster{cluster_id}_core{local_core}_l0_tag->l0_hit"),
+                    link(links.l0_tag_to_l0_hit),
+                    |payload| matches!(payload, CoreFlowPayload::Gmem(req) if req.l0_hit),
+                );
+                graph.connect_filtered(
+                    l0_tag,
+                    l0_mshr,
+                    format!("cluster{cluster_id}_core{local_core}_l0_tag->l0_mshr"),
+                    link(links.l0_tag_to_l0_mshr),
+                    |payload| matches!(payload, CoreFlowPayload::Gmem(req) if !req.l0_hit),
+                );
 
-            graph.connect(
-                l0_data,
-                return_node,
-                format!("cluster{cluster_id}_core{local_core}_l0_hit->return"),
-                link(links.l0_hit_to_return),
-            );
-            graph.connect(
-                l0_mshr,
-                cluster_state.l1_flush_gate,
-                format!("cluster{cluster_id}_core{local_core}_l0_mshr->l1_flush"),
-                link(links.l0_mshr_to_l1_flush),
-            );
+                graph.connect(
+                    l0_data,
+                    return_node,
+                    format!("cluster{cluster_id}_core{local_core}_l0_hit->return"),
+                    link(links.l0_hit_to_return),
+                );
+                graph.connect(
+                    l0_mshr,
+                    cluster_state.l1_flush_gate,
+                    format!("cluster{cluster_id}_core{local_core}_l0_mshr->l1_flush"),
+                    link(links.l0_mshr_to_l1_flush),
+                );
+            } else {
+                let core_match = core_id;
+                graph.connect_filtered(
+                    ingress_node,
+                    return_node,
+                    format!("cluster{cluster_id}_core{local_core}_coalescer->return_flush_l0"),
+                    link(links.coalescer_to_l0_flush),
+                    move |payload| {
+                        matches!(payload, CoreFlowPayload::Gmem(req)
+                            if req.kind.is_flush_l0() && req.core_id == core_match)
+                    },
+                );
+                graph.connect_filtered(
+                    ingress_node,
+                    cluster_state.l1_flush_gate,
+                    format!("cluster{cluster_id}_core{local_core}_coalescer->l1_flush"),
+                    link(links.coalescer_to_l0_flush),
+                    |payload| {
+                        matches!(payload, CoreFlowPayload::Gmem(req)
+                            if req.kind.is_mem() || req.kind.is_flush_l1())
+                    },
+                );
+            }
 
             let core_match = core_id;
             graph.connect_filtered(
@@ -1018,8 +1153,14 @@ pub(crate) fn build_core_graph(
         TimedServer::new(nodes.l0_flush_gate),
     ));
     let l0_tag = graph.add_node(ServerNode::new("l0d_tag", TimedServer::new(nodes.l0d_tag)));
-    let l0_data = graph.add_node(ServerNode::new("l0d_data", TimedServer::new(nodes.l0d_data)));
-    let l0_mshr = graph.add_node(ServerNode::new("l0d_mshr", TimedServer::new(nodes.l0d_mshr)));
+    let l0_data = graph.add_node(ServerNode::new(
+        "l0d_data",
+        TimedServer::new(nodes.l0d_data),
+    ));
+    let l0_mshr = graph.add_node(ServerNode::new(
+        "l0d_mshr",
+        TimedServer::new(nodes.l0d_mshr),
+    ));
     let l1_flush_gate = graph.add_node(ServerNode::new(
         "l1_flush_gate",
         TimedServer::new(nodes.l1_flush_gate),
@@ -1108,7 +1249,11 @@ pub(crate) fn build_core_graph(
         return_node,
     };
 
-    connect_core_l0(graph, links, &state);
+    if config.policy.l0_enabled {
+        connect_core_l0(graph, links, &state);
+    } else {
+        connect_core_no_l0(graph, links, &state);
+    }
     connect_core_l1(graph, links, &state, l1_banks, l2_banks);
     connect_core_l2(graph, links, &state, l1_banks, l2_banks);
     connect_core_dram(graph, links, &state, l2_banks);
@@ -1127,19 +1272,47 @@ pub(crate) fn build_cluster_graph(
     let mut graph = FlowGraph::new();
     let nodes = &config.nodes;
     let links = &config.links;
-    let l1_banks = config.policy.l1_banks.max(1);
-    let l2_banks = config.policy.l2_banks.max(1);
+    let levels = config.cache_levels();
+    let l0_level = levels.get(0);
+    let l1_level = levels.get(1);
+    let l2_level = levels.get(2);
+    let l1_banks = l1_level
+        .map(|level| level.banks.max(1))
+        .unwrap_or_else(|| config.policy.l1_banks.max(1));
+    let l2_banks = l2_level
+        .map(|level| level.banks.max(1))
+        .unwrap_or_else(|| config.policy.l2_banks.max(1));
 
+    let l2_fallback = CacheLevelConfig::from_legacy(
+        "l2",
+        l2_banks,
+        nodes.l2_tag,
+        nodes.l2_data,
+        nodes.l2_mshr,
+        nodes.l2_refill,
+        nodes.l2_writeback,
+    );
+    let l2_level = l2_level.unwrap_or(&l2_fallback);
     let (l2_tag_nodes, l2_data_nodes, _l2_mshr_nodes, l2_refill_nodes, _l2_wb_nodes, _dram) =
-        build_cluster_l2(&mut graph, nodes, links, l2_banks);
+        build_cluster_l2(&mut graph, nodes, links, l2_level);
 
+    let l1_fallback = CacheLevelConfig::from_legacy(
+        "l1",
+        l1_banks,
+        nodes.l1_tag,
+        nodes.l1_data,
+        nodes.l1_mshr,
+        nodes.l1_refill,
+        nodes.l1_writeback,
+    );
+    let l1_level = l1_level.unwrap_or(&l1_fallback);
     let mut cluster_l1 = Vec::with_capacity(num_clusters);
     for cluster_id in 0..num_clusters {
         cluster_l1.push(build_cluster_l1(
             &mut graph,
             nodes,
             links,
-            l1_banks,
+            l1_level,
             l2_banks,
             cluster_id,
             &l2_tag_nodes,
@@ -1161,10 +1334,12 @@ pub(crate) fn build_cluster_graph(
         &mut graph,
         nodes,
         links,
+        l0_level,
         &cluster_l1,
         l1_banks,
         num_clusters,
         cores_per_cluster,
+        config.policy.l0_enabled && l0_level.is_some(),
     );
 
     (graph, core_nodes)

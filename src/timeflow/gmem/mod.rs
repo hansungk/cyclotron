@@ -11,6 +11,7 @@ mod stats;
 mod tests;
 
 pub use cluster::ClusterGmemGraph;
+#[cfg(test)]
 pub(crate) use core::GmemSubgraph;
 pub use graph_build::{GmemFlowConfig, GmemLinkConfig, GmemNodeConfig, LinkConfig};
 pub use policy::GmemPolicyConfig;

@@ -66,7 +66,10 @@ mod tests {
 
     #[test]
     fn server_node_name_preserved() {
-        let node = ServerNode::new("test_node", TimedServer::<u32>::new(ServerConfig::default()));
+        let node = ServerNode::new(
+            "test_node",
+            TimedServer::<u32>::new(ServerConfig::default()),
+        );
         assert_eq!("test_node", node.name());
     }
 
@@ -74,7 +77,9 @@ mod tests {
     fn server_node_tick_advances_server() {
         let mut node = make_node(1, 2);
         let ticket = node.try_put(0, ServiceRequest::new(42u32, 4)).unwrap();
-        assert!(node.peek_ready(ticket.ready_at().saturating_sub(1)).is_none());
+        assert!(node
+            .peek_ready(ticket.ready_at().saturating_sub(1))
+            .is_none());
         node.tick(ticket.ready_at());
         assert!(node.peek_ready(ticket.ready_at()).is_some());
     }
@@ -111,19 +116,13 @@ mod tests {
 
     #[test]
     fn server_node_empty_peek_returns_none() {
-        let mut node = ServerNode::new(
-            "node",
-            TimedServer::<u32>::new(ServerConfig::default()),
-        );
+        let mut node = ServerNode::new("node", TimedServer::<u32>::new(ServerConfig::default()));
         assert!(node.peek_ready(0).is_none());
     }
 
     #[test]
     fn server_node_empty_take_returns_none() {
-        let mut node = ServerNode::new(
-            "node",
-            TimedServer::<u32>::new(ServerConfig::default()),
-        );
+        let mut node = ServerNode::new("node", TimedServer::<u32>::new(ServerConfig::default()));
         assert!(node.take_ready(0).is_none());
     }
 }

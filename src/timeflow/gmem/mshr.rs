@@ -1,6 +1,6 @@
-use crate::timeq::{Backpressure, Cycle, ServerConfig, ServiceRequest, TimedServer};
-use smallvec::SmallVec;
-use std::cmp::max;
+use crate::timeq::{
+    normalize_retry, Backpressure, Cycle, ServerConfig, ServiceRequest, TimedServer,
+};
 
 use super::request::GmemRequest;
 
@@ -55,7 +55,7 @@ pub(crate) struct MshrEntry {
     line_addr: u64,
     meta: MissMetadata,
     ready_at: Option<Cycle>,
-    pub(crate) merged: SmallVec<[GmemRequest; 2]>,
+    pub(crate) merged: Vec<GmemRequest>,
 }
 
 impl MshrEntry {
@@ -64,7 +64,7 @@ impl MshrEntry {
             line_addr,
             meta,
             ready_at: None,
-            merged: SmallVec::new(),
+            merged: Vec::new(),
         }
     }
 }
@@ -164,7 +164,7 @@ impl MshrAdmission {
         match self.server.try_enqueue(now, request) {
             Ok(ticket) => Ok(ticket.ready_at()),
             Err(Backpressure::Busy { available_at, .. }) => Err(AdmissionBackpressure::Busy {
-                retry_at: max(available_at, now.saturating_add(1)),
+                retry_at: normalize_retry(now, available_at),
             }),
             Err(Backpressure::QueueFull { .. }) => {
                 let retry_at = self
@@ -173,7 +173,7 @@ impl MshrAdmission {
                     .map(|ticket| ticket.ready_at())
                     .unwrap_or_else(|| self.server.available_at());
                 Err(AdmissionBackpressure::QueueFull {
-                    retry_at: max(retry_at, now.saturating_add(1)),
+                    retry_at: normalize_retry(now, retry_at),
                 })
             }
         }

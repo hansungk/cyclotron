@@ -327,8 +327,16 @@ impl SmemSubgraph {
         let num_banks = self.stats.bank_busy_samples.len();
         for bank in 0..num_banks {
             let busy = if self.dual_port {
-                let r = self.bank_read_nodes.get(bank).map(|&n| is_busy(n)).unwrap_or(false);
-                let w = self.bank_write_nodes.get(bank).map(|&n| is_busy(n)).unwrap_or(false);
+                let r = self
+                    .bank_read_nodes
+                    .get(bank)
+                    .map(|&n| is_busy(n))
+                    .unwrap_or(false);
+                let w = self
+                    .bank_write_nodes
+                    .get(bank)
+                    .map(|&n| is_busy(n))
+                    .unwrap_or(false);
                 r || w
             } else {
                 // bank_nodes stores one node per bank when not dual_port
@@ -336,15 +344,13 @@ impl SmemSubgraph {
                 node.map(|n| is_busy(n)).unwrap_or(false)
             };
             if busy {
-                self.stats.bank_busy_samples[bank] = self.stats.bank_busy_samples[bank].saturating_add(1);
+                self.stats.bank_busy_samples[bank] =
+                    self.stats.bank_busy_samples[bank].saturating_add(1);
             }
         }
     }
 
-    pub fn sample_utilization(
-        &self,
-        graph: &mut FlowGraph<CoreFlowPayload>,
-    ) -> SmemUtilSample {
+    pub fn sample_utilization(&self, graph: &mut FlowGraph<CoreFlowPayload>) -> SmemUtilSample {
         let mut lane_busy = 0usize;
         for &node in &self.lane_nodes {
             let busy = graph.with_node_mut(node, |n| n.outstanding() > 0);
@@ -411,7 +417,7 @@ impl SmemSubgraph {
                     available_at,
                 } => {
                     self.stats.busy_rejects += 1;
-                    let retry_at = available_at.max(now.saturating_add(1));
+                    let retry_at = crate::timeq::normalize_retry(now, available_at);
                     let request = extract_smem_request(request);
                     self.record_bank_attempt_and_conflict(request.bank);
                     Err(SmemReject {

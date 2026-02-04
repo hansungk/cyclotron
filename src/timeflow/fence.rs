@@ -3,7 +3,6 @@ use std::collections::VecDeque;
 use serde::Deserialize;
 
 use crate::timeflow::simple_queue::SimpleTimedQueue;
-use crate::timeflow::types::RejectReason;
 pub use crate::timeflow::types::RejectReason as FenceRejectReason;
 use crate::timeq::{Cycle, ServerConfig, Ticket};
 
@@ -72,7 +71,7 @@ impl FenceQueue {
 
         match self.queue.try_issue(now, request, 0) {
             Ok(ticket) => Ok(FenceIssue { ticket }),
-            Err(err) => Err(FenceReject { retry_at: err.retry_at, reason: err.reason }),
+            Err(err) => Err(FenceReject::new(err.retry_at, err.reason)),
         }
     }
 
@@ -104,7 +103,13 @@ mod tests {
         let mut fence = FenceQueue::new(cfg);
 
         assert!(fence
-            .try_issue(0, FenceRequest { warp: 0, request_id: 1 })
+            .try_issue(
+                0,
+                FenceRequest {
+                    warp: 0,
+                    request_id: 1
+                }
+            )
             .is_ok());
         fence.tick(1);
         assert!(fence.pop_ready().is_none());
@@ -118,7 +123,13 @@ mod tests {
         cfg.enabled = false;
         let mut fence = FenceQueue::new(cfg);
         fence
-            .try_issue(5, FenceRequest { warp: 0, request_id: 1 })
+            .try_issue(
+                5,
+                FenceRequest {
+                    warp: 0,
+                    request_id: 1,
+                },
+            )
             .unwrap();
         assert!(fence.pop_ready().is_some());
     }
@@ -131,10 +142,22 @@ mod tests {
         let mut fence = FenceQueue::new(cfg);
 
         fence
-            .try_issue(0, FenceRequest { warp: 0, request_id: 1 })
+            .try_issue(
+                0,
+                FenceRequest {
+                    warp: 0,
+                    request_id: 1,
+                },
+            )
             .unwrap();
         let err = fence
-            .try_issue(0, FenceRequest { warp: 0, request_id: 2 })
+            .try_issue(
+                0,
+                FenceRequest {
+                    warp: 0,
+                    request_id: 2,
+                },
+            )
             .expect_err("queue should be full");
         assert_eq!(super::FenceRejectReason::QueueFull, err.reason);
     }
@@ -148,10 +171,22 @@ mod tests {
         let mut fence = FenceQueue::new(cfg);
 
         fence
-            .try_issue(0, FenceRequest { warp: 0, request_id: 1 })
+            .try_issue(
+                0,
+                FenceRequest {
+                    warp: 0,
+                    request_id: 1,
+                },
+            )
             .unwrap();
         fence
-            .try_issue(0, FenceRequest { warp: 1, request_id: 2 })
+            .try_issue(
+                0,
+                FenceRequest {
+                    warp: 1,
+                    request_id: 2,
+                },
+            )
             .unwrap();
 
         fence.tick(0);
@@ -170,7 +205,13 @@ mod tests {
         let mut fence = FenceQueue::new(cfg);
 
         fence
-            .try_issue(0, FenceRequest { warp: 0, request_id: 1 })
+            .try_issue(
+                0,
+                FenceRequest {
+                    warp: 0,
+                    request_id: 1,
+                },
+            )
             .unwrap();
         fence.tick(0);
         assert!(fence.pop_ready().is_some());

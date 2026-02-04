@@ -151,19 +151,32 @@ impl IcacheSubgraph {
                             self.stats.queue_full_rejects.saturating_add(1);
                     }
                 }
-                Err(IcacheReject { payload: err.payload, retry_at: err.retry_at, reason: err.reason })
+                Err(IcacheReject {
+                    payload: err.payload,
+                    retry_at: err.retry_at,
+                    reason: err.reason,
+                })
             }
         }
     }
 
     pub fn tick(&mut self, now: Cycle) {
-        let mut complete = |request: IcacheRequest| {
+        self.hit.tick(now, |request: IcacheRequest| {
             self.stats.completed = self.stats.completed.saturating_add(1);
-            self.stats.bytes_completed = self.stats.bytes_completed.saturating_add(request.bytes as u64);
+            self.stats.bytes_completed = self
+                .stats
+                .bytes_completed
+                .saturating_add(request.bytes as u64);
             self.stats.last_completion_cycle = Some(now);
-        };
-        self.hit.tick(now, |payload| complete(payload));
-        self.miss.tick(now, |payload| complete(payload));
+        });
+        self.miss.tick(now, |request: IcacheRequest| {
+            self.stats.completed = self.stats.completed.saturating_add(1);
+            self.stats.bytes_completed = self
+                .stats
+                .bytes_completed
+                .saturating_add(request.bytes as u64);
+            self.stats.last_completion_cycle = Some(now);
+        });
     }
 
     pub fn stats(&self) -> IcacheStats {
@@ -177,13 +190,7 @@ fn line_addr(addr: u64, line_bytes: u32) -> u64 {
 }
 
 fn decide(rate: f64, key: u64) -> bool {
-    let clamped = if rate < 0.0 {
-        0.0
-    } else if rate > 1.0 {
-        1.0
-    } else {
-        rate
-    };
+    let clamped = rate.clamp(0.0, 1.0);
     if clamped <= 0.0 {
         return false;
     }
@@ -238,7 +245,9 @@ mod tests {
         let req0 = IcacheRequest::new(0, 0x1000, 8);
         icache.issue(0, req0).expect("first miss should accept");
         let req1 = IcacheRequest::new(1, 0x2000, 8);
-        let err = icache.issue(0, req1).expect_err("second miss should reject");
+        let err = icache
+            .issue(0, req1)
+            .expect_err("second miss should reject");
         assert!(err.retry_at > 0);
     }
 

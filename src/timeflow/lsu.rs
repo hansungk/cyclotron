@@ -4,7 +4,9 @@ use crate::timeflow::graph::{FlowGraph, Link};
 use crate::timeflow::server_node::ServerNode;
 use crate::timeflow::types::NodeId;
 use crate::timeflow::{gmem::GmemRequest, smem::SmemRequest};
-use crate::timeq::{Backpressure, Cycle, ServerConfig, ServiceRequest, Ticket, TimedServer};
+use crate::timeq::{
+    normalize_retry, Backpressure, Cycle, ServerConfig, ServiceRequest, Ticket, TimedServer,
+};
 
 #[derive(Debug, Clone)]
 pub enum LsuPayload {
@@ -13,21 +15,21 @@ pub enum LsuPayload {
 }
 
 impl LsuPayload {
-    fn bytes(&self) -> u32 {
+    pub(crate) fn bytes(&self) -> u32 {
         match self {
             Self::Gmem(req) => req.bytes.max(1),
             Self::Smem(req) => req.bytes.max(1),
         }
     }
 
-    fn warp(&self) -> usize {
+    pub(crate) fn warp(&self) -> usize {
         match self {
             Self::Gmem(req) => req.warp,
             Self::Smem(req) => req.warp,
         }
     }
 
-    fn queue_kind(&self) -> LsuQueueKind {
+    pub(crate) fn queue_kind(&self) -> LsuQueueKind {
         match self {
             Self::Gmem(req) => {
                 if req.kind.is_mem() {
@@ -47,6 +49,36 @@ impl LsuPayload {
                     LsuQueueKind::SharedLoad
                 }
             }
+        }
+    }
+
+    pub(crate) fn needs_address(&self) -> bool {
+        match self {
+            LsuPayload::Gmem(req) => {
+                req.kind.is_mem() || req.kind.is_flush_l0() || req.kind.is_flush_l1()
+            }
+            LsuPayload::Smem(_) => true,
+        }
+    }
+
+    pub(crate) fn needs_store_data(&self) -> bool {
+        match self {
+            LsuPayload::Gmem(req) => req.kind.is_mem() && !req.is_load,
+            LsuPayload::Smem(req) => req.is_store,
+        }
+    }
+
+    pub(crate) fn needs_load_data(&self) -> bool {
+        match self {
+            LsuPayload::Gmem(req) => req.kind.is_mem() && req.is_load,
+            LsuPayload::Smem(req) => !req.is_store,
+        }
+    }
+
+    pub(crate) fn id(&self) -> u64 {
+        match self {
+            LsuPayload::Gmem(req) => req.id,
+            LsuPayload::Smem(req) => req.id,
         }
     }
 }
@@ -177,10 +209,8 @@ pub struct LsuSubgraph {
 impl LsuSubgraph {
     pub fn new(config: LsuFlowConfig, num_warps: usize) -> Self {
         let mut graph = FlowGraph::new();
-        let issue_node = graph.add_node(ServerNode::new(
-            "lsu_issue",
-            TimedServer::new(config.issue),
-        ));
+        let issue_node =
+            graph.add_node(ServerNode::new("lsu_issue", TimedServer::new(config.issue)));
 
         let mut queues = Vec::with_capacity(num_warps);
         for warp in 0..num_warps {
@@ -258,30 +288,22 @@ impl LsuSubgraph {
         }
     }
 
-    pub fn issue_gmem(
-        &mut self,
-        now: Cycle,
-        request: GmemRequest,
-    ) -> Result<LsuIssue, LsuReject> {
+    pub fn issue_gmem(&mut self, now: Cycle, request: GmemRequest) -> Result<LsuIssue, LsuReject> {
         self.issue_payload(now, LsuPayload::Gmem(request))
     }
 
-    pub fn issue_smem(
-        &mut self,
-        now: Cycle,
-        request: SmemRequest,
-    ) -> Result<LsuIssue, LsuReject> {
+    pub fn issue_smem(&mut self, now: Cycle, request: SmemRequest) -> Result<LsuIssue, LsuReject> {
         self.issue_payload(now, LsuPayload::Smem(request))
     }
 
-    pub fn issue_payload(&mut self, now: Cycle, payload: LsuPayload) -> Result<LsuIssue, LsuReject> {
+    pub fn issue_payload(
+        &mut self,
+        now: Cycle,
+        payload: LsuPayload,
+    ) -> Result<LsuIssue, LsuReject> {
         let retry_next = now.saturating_add(1);
         if self.load_blocked_by_store(&payload) {
-            return Err(LsuReject::new(
-                payload,
-                retry_next,
-                LsuRejectReason::Busy,
-            ));
+            return Err(LsuReject::new(payload, retry_next, LsuRejectReason::Busy));
         }
 
         if !self.can_reserve(&payload) {
@@ -325,7 +347,7 @@ impl LsuSubgraph {
                     available_at,
                 } => {
                     self.stats.busy_rejects = self.stats.busy_rejects.saturating_add(1);
-                    let retry_at = available_at.max(retry_next);
+                    let retry_at = normalize_retry(now, available_at);
                     Err(LsuReject::new(
                         request.payload,
                         retry_at,
@@ -333,8 +355,7 @@ impl LsuSubgraph {
                     ))
                 }
                 Backpressure::QueueFull { request, .. } => {
-                    self.stats.queue_full_rejects =
-                        self.stats.queue_full_rejects.saturating_add(1);
+                    self.stats.queue_full_rejects = self.stats.queue_full_rejects.saturating_add(1);
                     Err(LsuReject::new(
                         request.payload,
                         retry_next,
@@ -360,10 +381,16 @@ impl LsuSubgraph {
         if Self::needs_store_data(payload) {
             self.store_in_use = self.store_in_use.saturating_sub(1);
         }
+        if payload.needs_address() {
+            self.address_in_use = self.address_in_use.saturating_sub(1);
+        }
+        if payload.needs_store_data() {
+            self.store_in_use = self.store_in_use.saturating_sub(1);
+        }
     }
 
     pub fn reserve_load_data(&mut self, payload: &LsuPayload) -> bool {
-        if !Self::needs_load_data(payload) {
+        if !payload.needs_load_data() {
             return true;
         }
         if self.load_in_use >= self.resources.load_data_entries {
@@ -374,15 +401,14 @@ impl LsuSubgraph {
     }
 
     pub fn release_load_data(&mut self, payload: &LsuPayload) {
-        if Self::needs_load_data(payload) {
+        if payload.needs_load_data() {
             self.load_in_use = self.load_in_use.saturating_sub(1);
         }
     }
 
     pub fn peek_ready(&mut self, now: Cycle) -> Option<LsuPayload> {
         self.graph.with_node_mut(self.issue_node, |node| {
-            node.peek_ready(now)
-                .map(|result| result.payload.clone())
+            node.peek_ready(now).map(|result| result.payload.clone())
         })
     }
 
@@ -452,24 +478,15 @@ impl LsuSubgraph {
     }
 
     fn needs_address(payload: &LsuPayload) -> bool {
-        match payload {
-            LsuPayload::Gmem(req) => req.kind.is_mem() || req.kind.is_flush_l0() || req.kind.is_flush_l1(),
-            LsuPayload::Smem(_) => true,
-        }
+        payload.needs_address()
     }
 
     fn needs_store_data(payload: &LsuPayload) -> bool {
-        match payload {
-            LsuPayload::Gmem(req) => req.kind.is_mem() && !req.is_load,
-            LsuPayload::Smem(req) => req.is_store,
-        }
+        payload.needs_store_data()
     }
 
     fn needs_load_data(payload: &LsuPayload) -> bool {
-        match payload {
-            LsuPayload::Gmem(req) => req.kind.is_mem() && req.is_load,
-            LsuPayload::Smem(req) => !req.is_store,
-        }
+        payload.needs_load_data()
     }
 
     pub fn can_reserve_load_data(&self, payload: &LsuPayload) -> bool {
@@ -483,12 +500,12 @@ impl LsuSubgraph {
         if Self::needs_address(payload) && self.address_in_use >= self.resources.address_entries {
             return false;
         }
-        if Self::needs_store_data(payload) && self.store_in_use >= self.resources.store_data_entries {
+        if Self::needs_store_data(payload) && self.store_in_use >= self.resources.store_data_entries
+        {
             return false;
         }
         true
     }
-
 }
 
 #[cfg(test)]
@@ -729,16 +746,27 @@ mod tests {
 
         let mut lsu = LsuSubgraph::new(config, 2);
         for warp in 0..2 {
-            assert!(lsu.issue_gmem(0, GmemRequest::new(warp, 4, 0xF, true)).is_ok());
-            assert!(lsu.issue_gmem(0, GmemRequest::new(warp, 4, 0xF, false)).is_ok());
-            assert!(lsu.issue_smem(0, SmemRequest::new(warp, 4, 0xF, false, 0)).is_ok());
-            assert!(lsu.issue_smem(0, SmemRequest::new(warp, 4, 0xF, true, 0)).is_ok());
+            assert!(lsu
+                .issue_gmem(0, GmemRequest::new(warp, 4, 0xF, true))
+                .is_ok());
+            assert!(lsu
+                .issue_gmem(0, GmemRequest::new(warp, 4, 0xF, false))
+                .is_ok());
+            assert!(lsu
+                .issue_smem(0, SmemRequest::new(warp, 4, 0xF, false, 0))
+                .is_ok());
+            assert!(lsu
+                .issue_smem(0, SmemRequest::new(warp, 4, 0xF, true, 0))
+                .is_ok());
         }
         let err = lsu
             .issue_gmem(0, GmemRequest::new(0, 4, 0xF, true))
             .expect_err("queues should be full or busy");
         assert!(
-            matches!(err.reason, LsuRejectReason::QueueFull | LsuRejectReason::Busy),
+            matches!(
+                err.reason,
+                LsuRejectReason::QueueFull | LsuRejectReason::Busy
+            ),
             "unexpected reject reason: {:?}",
             err.reason
         );

@@ -1,11 +1,13 @@
 use crate::info;
+use crate::muon::decode::IssuedInst;
+use crate::muon::execute::Opcode;
 use crate::muon::scheduler::Scheduler;
-use crate::timeflow::{
-    GmemRequest, GmemRequestKind, IcacheIssue, IcacheReject, IcacheRequest, LsuIssue, LsuReject,
-    LsuRejectReason, SmemRequest,
-};
 use crate::timeflow::lsu::LsuPayload;
-use crate::timeq::{Cycle, Ticket};
+use crate::timeflow::{
+    execute::ExecUnitKind, GmemRequest, GmemRequestKind, IcacheIssue, IcacheReject, IcacheRequest,
+    LsuIssue, LsuReject, LsuRejectReason, SmemRequest,
+};
+use crate::timeq::{normalize_retry, Backpressure, Cycle, Ticket};
 
 use super::{CoreTimingModel, IcacheInflight};
 
@@ -34,7 +36,12 @@ impl CoreTimingModel {
         self.maybe_convert_mmio_flush(&mut request);
         if request.kind.is_mem() {
             if let Some(lane_addrs) = request.lane_addrs.as_ref() {
-                let line_bytes = self.gmem_policy.l0_line_bytes.max(1) as u64;
+                // Coalesce at the first cache level's line size.
+                let line_bytes = if self.gmem_policy.l0_enabled {
+                    self.gmem_policy.l0_line_bytes.max(1)
+                } else {
+                    self.gmem_policy.l1_line_bytes.max(1)
+                } as u64;
                 let mut lines: Vec<u64> = lane_addrs
                     .iter()
                     .map(|addr| (addr / line_bytes) * line_bytes)
@@ -60,7 +67,7 @@ impl CoreTimingModel {
             .map(|lines| lines.len().max(1))
             .unwrap_or(1);
         let is_flush = request.kind.is_flush_l0() || request.kind.is_flush_l1();
-        if let Err(reject) = self.operand_fetch.try_issue(now, request.bytes) {
+        if let Err(reject) = self.operand_fetch.try_issue(now, (), request.bytes) {
             let wait_until = reject.retry_at.max(now.saturating_add(1));
             scheduler.set_resource_wait_until(warp, Some(wait_until));
             scheduler.replay_instruction(warp);
@@ -151,7 +158,7 @@ impl CoreTimingModel {
         let split_count = self.split_smem_request(&request).len().max(1);
         let conflict_sample = self.compute_smem_conflict(&request);
         let issue_bytes = request.bytes;
-        if let Err(reject) = self.operand_fetch.try_issue(now, request.bytes) {
+        if let Err(reject) = self.operand_fetch.try_issue(now, (), request.bytes) {
             let wait_until = reject.retry_at.max(now.saturating_add(1));
             scheduler.set_resource_wait_until(warp, Some(wait_until));
             scheduler.replay_instruction(warp);
@@ -215,15 +222,88 @@ impl CoreTimingModel {
 
     pub fn issue_dma(&mut self, now: Cycle, bytes: u32) -> Result<Ticket, Cycle> {
         match self.dma.try_issue(now, bytes) {
-            Ok(issue) => Ok(issue.ticket),
+            Ok(ticket) => Ok(ticket),
             Err(reject) => Err(reject.retry_at),
         }
     }
 
     pub fn issue_tensor(&mut self, now: Cycle, bytes: u32) -> Result<Ticket, Cycle> {
         match self.tensor.try_issue(now, bytes) {
-            Ok(issue) => Ok(issue.ticket),
+            Ok(ticket) => Ok(ticket),
             Err(reject) => Err(reject.retry_at),
+        }
+    }
+
+    pub fn issue_execute(
+        &mut self,
+        now: Cycle,
+        warp: usize,
+        issued: &IssuedInst,
+        active_lanes: u32,
+        scheduler: &mut Scheduler,
+    ) -> Result<Ticket, Cycle> {
+        if warp >= self.pending_execute.len() {
+            return Ok(Ticket::synthetic(now, now, active_lanes.max(1)));
+        }
+        if active_lanes == 0 {
+            return Ok(Ticket::synthetic(now, now, 0));
+        }
+
+        let kind = match exec_unit_for(issued) {
+            Some(kind) => kind,
+            None => return Ok(Ticket::synthetic(now, now, active_lanes.max(1))),
+        };
+
+        // If we already issued this warp's execute request, just wait for it.
+        if let Some(ready_at) = self.pending_execute[warp] {
+            if now >= ready_at {
+                self.pending_execute[warp] = None;
+                self.trace_event(now, "exec_complete", warp, None, active_lanes, None);
+                // Clearing execute pending may allow the scheduler to un-stall.
+                self.update_scheduler_state(warp, scheduler);
+                return Ok(Ticket::synthetic(now, now, active_lanes.max(1)));
+            }
+            scheduler.set_resource_wait_until(warp, Some(ready_at));
+            scheduler.replay_instruction(warp);
+            return Err(ready_at);
+        }
+
+        match self.execute_pipeline.issue(now, kind, active_lanes) {
+            Ok(ticket) => {
+                let ready_at = ticket.ready_at();
+                if ready_at > now {
+                    self.pending_execute[warp] = Some(ready_at);
+                    scheduler.set_resource_wait_until(warp, Some(ready_at));
+                    scheduler.replay_instruction(warp);
+                    self.trace_event(now, "exec_issue", warp, None, active_lanes, None);
+                    return Err(ready_at);
+                }
+                self.trace_event(now, "exec_issue", warp, None, active_lanes, None);
+                Ok(ticket)
+            }
+            Err(bp) => {
+                let (wait_until, reason_str) = match bp {
+                    Backpressure::Busy { available_at, .. } => {
+                        (normalize_retry(now, available_at), "busy")
+                    }
+                    Backpressure::QueueFull { .. } => (
+                        normalize_retry(now, self.execute_pipeline.suggest_retry(kind)),
+                        "queue_full",
+                    ),
+                };
+                let wait_until = wait_until.max(now.saturating_add(1));
+                scheduler.set_resource_wait_until(warp, Some(wait_until));
+                scheduler.replay_instruction(warp);
+                self.trace_event(
+                    now,
+                    "exec_reject",
+                    warp,
+                    None,
+                    active_lanes,
+                    Some(reason_str),
+                );
+                Err(wait_until)
+            }
         }
     }
 
@@ -283,15 +363,6 @@ impl CoreTimingModel {
             .saturating_add(issued_warps as u64);
         if self.scheduler_stats.issue_width == 0 {
             self.scheduler_stats.issue_width = 1;
-        }
-        if let Some(log) = self.scheduler_log.as_mut() {
-            log.write_row(
-                now,
-                active_warps,
-                eligible_warps,
-                issued_warps,
-                self.scheduler_stats.issue_width as u32,
-            );
         }
     }
 
@@ -371,5 +442,46 @@ impl CoreTimingModel {
             request.kind = GmemRequestKind::FlushL0;
             request.stall_on_completion = true;
         }
+    }
+}
+
+fn exec_unit_for(inst: &IssuedInst) -> Option<ExecUnitKind> {
+    // Do not double-count memory ops: their bottlenecks are modeled via LSU/GMEM/SMEM.
+    if inst.opcode == Opcode::LOAD
+        || inst.opcode == Opcode::STORE
+        || inst.opcode == Opcode::MISC_MEM
+        || inst.opcode == Opcode::LOAD_FP
+        || inst.opcode == Opcode::STORE_FP
+    {
+        return None;
+    }
+
+    match inst.opcode {
+        Opcode::SYSTEM => {
+            // f3 == 0 is the SFU/tohost path in the functional model.
+            if inst.f3 == 0 {
+                Some(ExecUnitKind::Sfu)
+            } else {
+                Some(ExecUnitKind::Int)
+            }
+        }
+        Opcode::CUSTOM0 => Some(ExecUnitKind::Sfu),
+        Opcode::CUSTOM2 => Some(ExecUnitKind::Sfu),
+        Opcode::OP_FP | Opcode::MADD | Opcode::MSUB | Opcode::NM_ADD | Opcode::NM_SUB => {
+            Some(ExecUnitKind::Fp)
+        }
+        Opcode::OP => {
+            // RV32M: f7==1 selects mul/div/rem variants.
+            if inst.f7 == 0b0000001 {
+                match inst.f3 {
+                    0b000 | 0b001 | 0b010 | 0b011 => Some(ExecUnitKind::IntMul),
+                    0b100 | 0b101 | 0b110 | 0b111 => Some(ExecUnitKind::IntDiv),
+                    _ => Some(ExecUnitKind::Int),
+                }
+            } else {
+                Some(ExecUnitKind::Int)
+            }
+        }
+        _ => Some(ExecUnitKind::Int),
     }
 }

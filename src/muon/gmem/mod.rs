@@ -3,26 +3,23 @@ use std::sync::Arc;
 
 use crate::sim::log::Logger;
 use crate::timeflow::{
-    BarrierManager, ClusterGmemGraph, CoreGraph, DmaQueue, FenceQueue, FenceRequest,
-    GmemPolicyConfig, GmemRequest, IcacheSubgraph, LsuSubgraph, OperandFetchQueue, SmemFlowConfig,
-    SmemRequest, TensorQueue, WarpIssueScheduler, WritebackPayload, WritebackQueue,
+    BarrierManager, ClusterGmemGraph, CoreGraph, DmaQueue, ExecutePipeline, FenceQueue,
+    FenceRequest, GmemPolicyConfig, GmemRequest, IcacheSubgraph, LsuSubgraph, OperandFetchQueue,
+    SmemFlowConfig, SmemRequest, TensorQueue, WarpIssueScheduler, WritebackPayload, WritebackQueue,
 };
 use crate::timeq::Cycle;
 
-mod metrics;
-mod logging;
+mod completions;
 mod core;
 mod issue;
-mod split;
+mod metrics;
 mod pending;
-mod completions;
+mod split;
 
 #[cfg(test)]
 mod tests;
 
 pub use metrics::*;
-
-use logging::{LatencySink, SchedulerSink, SmemConflictSink, SmemSummarySink, TraceSink};
 
 pub struct CoreTimingModel {
     graph: CoreGraph,
@@ -41,11 +38,13 @@ pub struct CoreTimingModel {
     fence_inflight: Vec<Option<u64>>,
     dma: DmaQueue,
     tensor: TensorQueue,
+    execute_pipeline: ExecutePipeline,
     icache_inflight: Vec<Option<IcacheInflight>>,
     pending_cluster_gmem: VecDeque<PendingClusterIssue<GmemRequest>>,
     pending_cluster_smem: VecDeque<PendingClusterIssue<SmemRequest>>,
     pending_gmem: Vec<VecDeque<(u64, Cycle)>>,
     pending_smem: Vec<VecDeque<(u64, Cycle)>>,
+    pending_execute: Vec<Option<Cycle>>,
     gmem_issue_cycle: HashMap<u64, Cycle>,
     smem_issue_cycle: HashMap<u64, Cycle>,
     cluster_gmem: Arc<std::sync::RwLock<ClusterGmemGraph>>,
@@ -57,21 +56,23 @@ pub struct CoreTimingModel {
     next_smem_id: u64,
     next_icache_id: u64,
     logger: Arc<Logger>,
-    trace: Option<TraceSink>,
-    mem_latency: Option<LatencySink>,
-    smem_conflicts: Option<SmemConflictSink>,
-    smem_summary: Option<SmemSummarySink>,
-    scheduler_log: Option<SchedulerSink>,
     log_stats: bool,
+    stats_log_period: Cycle,
+    last_stats_log_cycle: Option<Cycle>,
     last_logged_gmem_completed: u64,
     last_logged_smem_completed: u64,
     last_metrics_cycle: Option<Cycle>,
     last_issue_stats_cycle: Option<Cycle>,
     scheduler_stats: SchedulerSummary,
     smem_util: SmemUtilSummary,
+    execute_util: ExecuteUtilSummary,
     smem_conflicts_summary: SmemConflictSummary,
     gmem_hits: GmemHitSummary,
     latencies: LatencySummary,
+    dma_util: BasicUtilSummary,
+    tensor_util: BasicUtilSummary,
+    gmem_latency_hist: LatencyHistogram,
+    smem_latency_hist: LatencyHistogram,
 }
 
 struct PendingClusterIssue<T> {
