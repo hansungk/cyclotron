@@ -160,6 +160,7 @@ pub unsafe fn cyclotron_imem_rs(
 
 #[no_mangle]
 /// Get un-decoded instruction bits from the instruction trace.
+/// TODO: de-dup with cyclotron_imem_rs
 pub unsafe extern "C" fn cyclotron_fetch_rs(
     req_valid: u8,
     req_bits_tag: u64,
@@ -840,4 +841,5 @@ pub unsafe extern "C" fn profile_perf_counters_rs(
     println!("+-----------------------+");
 }
 
+mod tile;
 mod mem_model;
