@@ -28,7 +28,7 @@ pub struct CyclotronArgs {
 
 pub fn read_toml(filepath: &Path) -> String {
     std::fs::read_to_string(filepath).unwrap_or_else(|err| {
-        eprintln!("failed to read config file: {}", err);
+        eprintln!("failed to read config file {}: {}", filepath.display(), err);
         std::process::exit(1);
     })
 }

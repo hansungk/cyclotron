@@ -41,6 +41,7 @@ pub struct CoreTimingModel {
     cluster_id: usize,
     gmem_policy: GmemPolicyConfig,
     smem_config: SmemFlowConfig,
+    gmem_stats_range: Option<crate::timeflow::gmem::GmemStatsRange>,
     next_gmem_id: u64,
     next_smem_id: u64,
     next_icache_id: u64,

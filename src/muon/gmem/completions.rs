@@ -7,6 +7,12 @@ use super::{CoreTimingModel, SmemConflictSample};
 
 impl CoreTimingModel {
     fn record_gmem_completion(&mut self, now: Cycle, completion: &crate::timeflow::GmemCompletion) {
+        if let Some(range) = self.gmem_stats_range {
+            let addr = completion.request.addr;
+            if addr < range.start || addr >= range.end {
+                return;
+            }
+        }
         if completion.request.kind.is_mem() {
             let mut l1_considered = true;
             if self.gmem_policy.l0_enabled {

@@ -47,21 +47,36 @@ impl ElfBackedMem {
 
         // Iterate over the ELF sections
         for section in &elf.section_headers {
+            let section_name = elf
+                .shdr_strtab
+                .get_at(section.sh_name)
+                .unwrap_or_default();
             let start = section.sh_addr;
             let size = section.sh_size;
             if size > 0 {
-                let end = start + size;
-                let range = (start as usize, end as usize);
+                let mut range = None;
+                if section_name == ".args" {
+                    // .args is embedded without SHF_ALLOC; map it to the kernel arg address.
+                    let base = 0x7fff0000usize;
+                    range = Some((base, base + size as usize));
+                } else if start != 0 {
+                    let end = start + size;
+                    range = Some((start as usize, end as usize));
+                }
 
                 // Extract the section bytes
                 let offset = section.sh_offset as usize;
                 let size = section.sh_size as usize;
                 if section_header::SHT_NOBITS == section.sh_type {
                     // SHT_NOBITS sections are implicitly zeroed, not on the file
-                    self.sections.insert(range, vec![0u8; size]);
+                    if let Some(range) = range {
+                        self.sections.insert(range, vec![0u8; size]);
+                    }
                 } else if offset + size <= data.len() {
                     let bytes = data[offset..offset + size].to_vec();
-                    self.sections.insert(range, bytes);
+                    if let Some(range) = range {
+                        self.sections.insert(range, bytes);
+                    }
                 } else {
                     return Err(format!(
                         "Invalid section bounds: offset {} size {}",

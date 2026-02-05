@@ -196,6 +196,13 @@ pub struct GmemFlowConfig {
     pub links: GmemLinkConfig,
     pub policy: GmemPolicyConfig,
     pub levels: Vec<CacheLevelConfig>,
+    pub stats_range: Option<GmemStatsRange>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+pub struct GmemStatsRange {
+    pub start: u64,
+    pub end: u64,
 }
 
 fn default_levels() -> Vec<CacheLevelConfig> {
@@ -309,6 +316,7 @@ impl Default for GmemFlowConfig {
             links: GmemLinkConfig::default(),
             policy: GmemPolicyConfig::default(),
             levels: default_levels(),
+            stats_range: None,
         }
     }
 }

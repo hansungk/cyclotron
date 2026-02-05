@@ -87,7 +87,7 @@ impl Sim {
         Err(0)
     }
 
-    /// Advances all cores by one instruction.
+    // Advances all cores by one instruction.
     pub fn tick(&mut self) {
         if self.top.finished() {
             return;
@@ -102,9 +102,6 @@ impl Sim {
             self.top.clusters[0].cores.len() == 1,
             "Sim::tick() only supports 1-cluster 1-core config as of now."
         );
-
-        // now the tracer should hold the instructions
-        // TODO: report cycle
     }
 
     pub fn finished(&self) -> bool {

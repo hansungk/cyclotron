@@ -48,6 +48,7 @@ impl CoreTimingModel {
         log_stats: bool,
     ) -> Self {
         let gmem_policy = config.memory.gmem.policy.clone();
+        let gmem_stats_range = config.memory.gmem.stats_range;
         let smem_config = config.memory.smem.clone();
         let issue_scheduler = WarpIssueScheduler::new(config.compute.scheduler.clone());
         let mut scheduler_stats = super::SchedulerSummary::default();
@@ -79,6 +80,7 @@ impl CoreTimingModel {
             cluster_id,
             gmem_policy,
             smem_config,
+            gmem_stats_range,
             next_gmem_id: 0,
             next_smem_id: 0,
             next_icache_id: 0,

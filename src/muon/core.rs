@@ -99,6 +99,10 @@ impl MuonCore {
         self.scheduler.all_warps_retired()
     }
 
+    pub fn has_timing_inflight(&self) -> bool {
+        self.timing_model.outstanding_gmem() > 0 || self.timing_model.outstanding_smem() > 0
+    }
+
     pub fn schedule(&mut self) -> Vec<Option<Schedule>> {
         let schedules = (0..self.conf().num_warps)
             .map(|wid| self.scheduler.get_schedule(wid))

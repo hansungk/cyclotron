@@ -175,6 +175,7 @@ pub struct ClusterGmemGraph {
     l1_banks: usize,
     hierarchy: GmemHierarchy,
     last_tick: Cycle,
+    stats_range: Option<super::graph_build::GmemStatsRange>,
 }
 
 const L1_BANK_SEED: u64 = 0x1111_2222_3333_4444;
@@ -256,6 +257,14 @@ impl ClusterGmemGraph {
             l1_banks,
             hierarchy,
             last_tick: u64::MAX,
+            stats_range: config.stats_range,
+        }
+    }
+
+    fn stats_enabled_for(&self, addr: u64) -> bool {
+        match self.stats_range {
+            Some(range) => addr >= range.start && addr < range.end,
+            None => true,
         }
     }
 
@@ -304,7 +313,14 @@ impl ClusterGmemGraph {
         }
 
         let lines = self.compute_cache_lines(&mut request);
-        let miss_level = self.record_cache_accesses(core_id, cluster_id, &mut request, &lines);
+        let track_stats = self.stats_enabled_for(request.addr);
+        let miss_level = self.record_cache_accesses(
+            core_id,
+            cluster_id,
+            &mut request,
+            &lines,
+            track_stats,
+        );
         let meta = MissMetadata::from_request(&request);
         let allocation = self.allocate_cache_entries(
             core_id,
@@ -322,7 +338,14 @@ impl ClusterGmemGraph {
 
         let (l0_new, l1_new, l2_new) = match allocation {
             AllocationResult::Merge { ready_at, bytes } => {
-                return Ok(self.issue_merge(core_id, assigned_id, now, ready_at, bytes));
+                return Ok(self.issue_merge(
+                    core_id,
+                    assigned_id,
+                    now,
+                    ready_at,
+                    bytes,
+                    request.addr,
+                ));
             }
             AllocationResult::Continue {
                 l0_new,
@@ -397,16 +420,35 @@ impl ClusterGmemGraph {
                 }
             });
 
-            for (request, ticket) in drained {
+            // Apply completion effects for all ready requests
+            for (request, _ticket) in &drained {
+                self.apply_completion_effects(request);
+            }
+
+            // Collect merged completions (they will inherit the same ticket_ready_at as parent request)
+            let mut merged_all: Vec<(GmemRequest, crate::timeq::Ticket)> = Vec::new();
+            for (request, ticket) in &drained {
+                let merged = self.drain_mshr_merges(request, now);
+                for m in merged {
+                    merged_all.push((m, ticket.clone()));
+                }
+            }
+
+            // Apply completion effects for merged completions so their fills are visible before any completions are recorded
+            for (merged_req, _ticket) in &merged_all {
+                self.apply_completion_effects(merged_req);
+            }
+
+            // Push/record original completions
+            for (request, ticket) in drained.iter() {
                 let ticket_ready_at = ticket.ready_at();
                 self.push_completion(request.clone(), ticket_ready_at, now);
-                self.apply_completion_effects(&request);
+            }
 
-                let merged = self.drain_mshr_merges(&request, now);
-                for merged_req in merged {
-                    self.push_completion(merged_req.clone(), ticket_ready_at, now);
-                    self.apply_completion_effects(&merged_req);
-                }
+            // Push/record merged completions
+            for (merged_req, ticket) in merged_all.into_iter() {
+                let ticket_ready_at = ticket.ready_at();
+                self.push_completion(merged_req.clone(), ticket_ready_at, now);
             }
         }
     }
@@ -419,6 +461,7 @@ impl ClusterGmemGraph {
     ) -> GmemResult<GmemIssue> {
         let request_id = request.id;
         let bytes = request.bytes;
+        let addr = request.addr;
         let payload = CoreFlowPayload::Gmem(request);
         let service_req = ServiceRequest::new(payload, bytes);
 
@@ -427,7 +470,7 @@ impl ClusterGmemGraph {
             .try_put(self.cores[core_id].ingress_node, now, service_req)
         {
             Ok(ticket) => {
-                self.record_issue_stats(core_id, request_id, bytes);
+                self.record_issue_stats(core_id, request_id, bytes, addr);
                 Ok(GmemIssue { request_id, ticket })
             }
             Err(bp) => match bp {
@@ -435,13 +478,15 @@ impl ClusterGmemGraph {
                     request,
                     available_at,
                 } => {
-                    let stats = &mut self.cores[core_id].stats;
-                    stats.record_busy_reject();
+                    let request = extract_gmem_request(request);
+                    if self.stats_enabled_for(request.addr) {
+                        let stats = &mut self.cores[core_id].stats;
+                        stats.record_busy_reject();
+                    }
                     let mut retry_at = available_at;
                     if retry_at <= now {
                         retry_at = now.saturating_add(1);
                     }
-                    let request = extract_gmem_request(request);
                     Err(GmemReject {
                         payload: request,
                         retry_at,
@@ -449,10 +494,12 @@ impl ClusterGmemGraph {
                     })
                 }
                 Backpressure::QueueFull { request, .. } => {
-                    let stats = &mut self.cores[core_id].stats;
-                    stats.record_queue_full_reject();
-                    let retry_at = now.saturating_add(1);
                     let request = extract_gmem_request(request);
+                    if self.stats_enabled_for(request.addr) {
+                        let stats = &mut self.cores[core_id].stats;
+                        stats.record_queue_full_reject();
+                    }
+                    let retry_at = now.saturating_add(1);
                     Err(GmemReject {
                         payload: request,
                         retry_at,
@@ -493,6 +540,7 @@ impl ClusterGmemGraph {
         cluster_id: usize,
         request: &mut GmemRequest,
         lines: &CacheLines,
+        track_stats: bool,
     ) -> MissLevel {
         let policy = self.policy;
         let l0_enabled = policy.l0_enabled;
@@ -501,11 +549,13 @@ impl ClusterGmemGraph {
             l0_hit = self.hierarchy.l0[core_id].probe(lines.l0_line);
             if self.hierarchy.l0[core_id].bank_count() > 0 {
                 let bytes = request.bytes;
-                self.hierarchy.l0[core_id].banks[0]
-                    .stats
-                    .record_access(bytes);
-                if l0_hit {
-                    self.hierarchy.l0[core_id].banks[0].stats.record_hit(bytes);
+                if track_stats {
+                    self.hierarchy.l0[core_id].banks[0]
+                        .stats
+                        .record_access(bytes);
+                    if l0_hit {
+                        self.hierarchy.l0[core_id].banks[0].stats.record_hit(bytes);
+                    }
                 }
             }
         }
@@ -523,9 +573,11 @@ impl ClusterGmemGraph {
                 let l1_layer = &mut self.hierarchy.l1[cluster_id];
                 if (l1_layer.bank_count() > 0) && (lines.l1_bank < l1_layer.bank_count()) {
                     let bytes = request.bytes;
-                    l1_layer.banks[lines.l1_bank].stats.record_access(bytes);
-                    if l1_hit {
-                        l1_layer.banks[lines.l1_bank].stats.record_hit(bytes);
+                    if track_stats {
+                        l1_layer.banks[lines.l1_bank].stats.record_access(bytes);
+                        if l1_hit {
+                            l1_layer.banks[lines.l1_bank].stats.record_hit(bytes);
+                        }
                     }
                 }
             }
@@ -537,13 +589,15 @@ impl ClusterGmemGraph {
                     && (lines.l2_bank < self.hierarchy.l2.bank_count())
                 {
                     let bytes = request.bytes;
-                    self.hierarchy.l2.banks[lines.l2_bank]
-                        .stats
-                        .record_access(bytes);
-                    if request.l2_hit {
+                    if track_stats {
                         self.hierarchy.l2.banks[lines.l2_bank]
                             .stats
-                            .record_hit(bytes);
+                            .record_access(bytes);
+                        if request.l2_hit {
+                            self.hierarchy.l2.banks[lines.l2_bank]
+                                .stats
+                                .record_hit(bytes);
+                        }
                     }
                 }
             }
@@ -619,11 +673,15 @@ impl ClusterGmemGraph {
                     if core_id < self.hierarchy.l0.len()
                         && self.hierarchy.l0[core_id].bank_count() > 0
                     {
-                        self.hierarchy.l0[core_id].banks[0]
-                            .stats
-                            .record_queue_full_reject();
+                        if self.stats_enabled_for(request.addr) {
+                            self.hierarchy.l0[core_id].banks[0]
+                                .stats
+                                .record_queue_full_reject();
+                        }
                     }
-                    self.cores[core_id].stats.record_queue_full_reject();
+                    if self.stats_enabled_for(request.addr) {
+                        self.cores[core_id].stats.record_queue_full_reject();
+                    }
                     return Err(GmemReject {
                         payload: request,
                         retry_at: now.saturating_add(1),
@@ -634,7 +692,9 @@ impl ClusterGmemGraph {
                 let l0_new = match self.hierarchy.l0[core_id].ensure_entry(0, l0_line, meta) {
                     Ok(new_entry) => new_entry,
                     Err(_) => {
-                        self.cores[core_id].stats.record_queue_full_reject();
+                        if self.stats_enabled_for(request.addr) {
+                            self.cores[core_id].stats.record_queue_full_reject();
+                        }
                         return Err(GmemReject {
                             payload: request,
                             retry_at: now.saturating_add(1),
@@ -655,7 +715,9 @@ impl ClusterGmemGraph {
                         l0_new = match self.hierarchy.l0[core_id].ensure_entry(0, l0_line, meta) {
                             Ok(new_entry) => new_entry,
                             Err(_) => {
-                                self.cores[core_id].stats.record_queue_full_reject();
+                                if self.stats_enabled_for(request.addr) {
+                                    self.cores[core_id].stats.record_queue_full_reject();
+                                }
                                 return Err(GmemReject {
                                     payload: request,
                                     retry_at: now.saturating_add(1),
@@ -685,11 +747,15 @@ impl ClusterGmemGraph {
                     if cluster_id < self.hierarchy.l1.len()
                         && l1_bank < self.hierarchy.l1[cluster_id].bank_count()
                     {
-                        self.hierarchy.l1[cluster_id].banks[l1_bank]
-                            .stats
-                            .record_queue_full_reject();
+                        if self.stats_enabled_for(request.addr) {
+                            self.hierarchy.l1[cluster_id].banks[l1_bank]
+                                .stats
+                                .record_queue_full_reject();
+                        }
                     }
-                    self.cores[core_id].stats.record_queue_full_reject();
+                    if self.stats_enabled_for(request.addr) {
+                        self.cores[core_id].stats.record_queue_full_reject();
+                    }
                     return Err(GmemReject {
                         payload: request,
                         retry_at: now.saturating_add(1),
@@ -705,7 +771,9 @@ impl ClusterGmemGraph {
                                 core_id, cluster_id, l1_bank, l2_bank, l0_line, l1_line, l2_line,
                                 l0_new, true, false,
                             );
-                            self.cores[core_id].stats.record_queue_full_reject();
+                            if self.stats_enabled_for(request.addr) {
+                                self.cores[core_id].stats.record_queue_full_reject();
+                            }
                             return Err(GmemReject {
                                 payload: request,
                                 retry_at: now.saturating_add(1),
@@ -728,7 +796,9 @@ impl ClusterGmemGraph {
                         l0_new = match self.hierarchy.l0[core_id].ensure_entry(0, l0_line, meta) {
                             Ok(new_entry) => new_entry,
                             Err(_) => {
-                                self.cores[core_id].stats.record_queue_full_reject();
+                                if self.stats_enabled_for(request.addr) {
+                                    self.cores[core_id].stats.record_queue_full_reject();
+                                }
                                 return Err(GmemReject {
                                     payload: request,
                                     retry_at: now.saturating_add(1),
@@ -748,7 +818,9 @@ impl ClusterGmemGraph {
                                     core_id, cluster_id, l1_bank, l2_bank, l0_line, l1_line,
                                     l2_line, l0_new, true, false,
                                 );
-                                self.cores[core_id].stats.record_queue_full_reject();
+                                if self.stats_enabled_for(request.addr) {
+                                    self.cores[core_id].stats.record_queue_full_reject();
+                                }
                                 return Err(GmemReject {
                                     payload: request,
                                     retry_at: now.saturating_add(1),
@@ -778,11 +850,15 @@ impl ClusterGmemGraph {
                         l1_new, false,
                     );
                     if l2_bank < self.hierarchy.l2.bank_count() {
-                        self.hierarchy.l2.banks[l2_bank]
-                            .stats
-                            .record_queue_full_reject();
+                        if self.stats_enabled_for(request.addr) {
+                            self.hierarchy.l2.banks[l2_bank]
+                                .stats
+                                .record_queue_full_reject();
+                        }
                     }
-                    self.cores[core_id].stats.record_queue_full_reject();
+                    if self.stats_enabled_for(request.addr) {
+                        self.cores[core_id].stats.record_queue_full_reject();
+                    }
                     return Err(GmemReject {
                         payload: request,
                         retry_at: now.saturating_add(1),
@@ -797,7 +873,9 @@ impl ClusterGmemGraph {
                             core_id, cluster_id, l1_bank, l2_bank, l0_line, l1_line, l2_line,
                             l0_new, l1_new, true,
                         );
-                        self.cores[core_id].stats.record_queue_full_reject();
+                        if self.stats_enabled_for(request.addr) {
+                            self.cores[core_id].stats.record_queue_full_reject();
+                        }
                         return Err(GmemReject {
                             payload: request,
                             retry_at: now.saturating_add(1),
@@ -822,33 +900,82 @@ impl ClusterGmemGraph {
         issued_at: Cycle,
         ready_at: Cycle,
         bytes: u32,
+        addr: u64,
     ) -> GmemIssue {
-        self.record_issue_stats(core_id, request_id, bytes);
+        self.record_issue_stats(core_id, request_id, bytes, addr);
         let ticket = Ticket::new(issued_at, ready_at, bytes);
         GmemIssue { request_id, ticket }
     }
 
-    fn record_issue_stats(&mut self, core_id: usize, request_id: u64, bytes: u32) {
+    fn record_issue_stats(&mut self, core_id: usize, request_id: u64, bytes: u32, addr: u64) {
+        let track = self.stats_enabled_for(addr);
         if let Some(core_state) = self.cores.get_mut(core_id) {
             if request_id >= core_state.next_id {
                 core_state.next_id = request_id.saturating_add(1);
             }
-            core_state.stats.record_issue(bytes);
+            if track {
+                core_state.stats.record_issue(bytes);
+            }
         }
     }
 
     fn push_completion(&mut self, request: GmemRequest, ticket_ready_at: Cycle, now: Cycle) {
         let core_id = request.core_id;
+        let addr = request.addr;
+        let track = self.stats_enabled_for(addr);
+        // Recompute hit/miss flags at completion-push time so that fills applied earlier in this tick are visible when recording
+        let mut request = request;
+        if request.kind.is_mem() {
+            let lines = self.compute_cache_lines(&mut request);
+            let policy = self.policy;
+            if policy.l0_enabled && request.core_id < self.hierarchy.l0.len() {
+                let l0_hit = self.hierarchy.l0[request.core_id].probe(lines.l0_line);
+                request.l0_hit = l0_hit;
+                if l0_hit {
+                    request.l1_hit = false;
+                    request.l2_hit = false;
+                } else {
+                    let l1_hit = if request.cluster_id < self.hierarchy.l1.len() {
+                        self.hierarchy.l1[request.cluster_id].probe(lines.l1_line)
+                    } else {
+                        false
+                    };
+                    request.l1_hit = l1_hit;
+                    if l1_hit {
+                        request.l2_hit = false;
+                    } else {
+                        request.l2_hit = self.hierarchy.l2.probe(lines.l2_line);
+                    }
+                }
+            } else {
+                let l1_hit = if request.cluster_id < self.hierarchy.l1.len() {
+                    self.hierarchy.l1[request.cluster_id].probe(lines.l1_line)
+                } else {
+                    false
+                };
+                request.l1_hit = l1_hit;
+                if l1_hit {
+                    request.l2_hit = false;
+                } else {
+                    request.l2_hit = self.hierarchy.l2.probe(lines.l2_line);
+                }
+            }
+        }
+
         if let Some(core_state) = self.cores.get_mut(core_id) {
-            core_state.stats.record_completion(request.bytes, now);
+            if track {
+                core_state.stats.record_completion(request.bytes, now);
+            }
             core_state.completions.push_back(GmemCompletion {
                 ticket_ready_at,
                 completed_at: now,
                 request,
             });
-            core_state
-                .stats
-                .update_completion_queue(core_state.completions.len());
+            if track {
+                core_state
+                    .stats
+                    .update_completion_queue(core_state.completions.len());
+            }
         }
     }
 

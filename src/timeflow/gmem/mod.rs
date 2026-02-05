@@ -10,7 +10,7 @@ mod stats;
 mod tests;
 
 pub use cluster::ClusterGmemGraph;
-pub use graph_build::{GmemFlowConfig, GmemLinkConfig, GmemNodeConfig, LinkConfig};
+pub use graph_build::{GmemFlowConfig, GmemLinkConfig, GmemNodeConfig, LinkConfig, GmemStatsRange};
 pub use policy::GmemPolicyConfig;
 pub use request::{
     GmemCompletion, GmemIssue, GmemReject, GmemRejectReason, GmemRequest, GmemRequestKind,
