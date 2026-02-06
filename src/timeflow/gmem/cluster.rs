@@ -923,44 +923,7 @@ impl ClusterGmemGraph {
         let core_id = request.core_id;
         let addr = request.addr;
         let track = self.stats_enabled_for(addr);
-        // Recompute hit/miss flags at completion-push time so that fills applied earlier in this tick are visible when recording
-        let mut request = request;
-        if request.kind.is_mem() {
-            let lines = self.compute_cache_lines(&mut request);
-            let policy = self.policy;
-            if policy.l0_enabled && request.core_id < self.hierarchy.l0.len() {
-                let l0_hit = self.hierarchy.l0[request.core_id].probe(lines.l0_line);
-                request.l0_hit = l0_hit;
-                if l0_hit {
-                    request.l1_hit = false;
-                    request.l2_hit = false;
-                } else {
-                    let l1_hit = if request.cluster_id < self.hierarchy.l1.len() {
-                        self.hierarchy.l1[request.cluster_id].probe(lines.l1_line)
-                    } else {
-                        false
-                    };
-                    request.l1_hit = l1_hit;
-                    if l1_hit {
-                        request.l2_hit = false;
-                    } else {
-                        request.l2_hit = self.hierarchy.l2.probe(lines.l2_line);
-                    }
-                }
-            } else {
-                let l1_hit = if request.cluster_id < self.hierarchy.l1.len() {
-                    self.hierarchy.l1[request.cluster_id].probe(lines.l1_line)
-                } else {
-                    false
-                };
-                request.l1_hit = l1_hit;
-                if l1_hit {
-                    request.l2_hit = false;
-                } else {
-                    request.l2_hit = self.hierarchy.l2.probe(lines.l2_line);
-                }
-            }
-        }
+        let request = request;
 
         if let Some(core_state) = self.cores.get_mut(core_id) {
             if track {

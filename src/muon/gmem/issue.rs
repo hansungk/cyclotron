@@ -54,6 +54,21 @@ impl CoreTimingModel {
             }
         }
         request.lane_addrs = None;
+        if request.stall_on_completion {
+            if let Some(slot) = self.pending_gmem.get(warp) {
+                if !slot.is_empty() {
+                    let wait_until = slot
+                        .iter()
+                        .map(|(_, ready_at)| *ready_at)
+                        .min()
+                        .unwrap_or(now.saturating_add(1))
+                        .max(now.saturating_add(1));
+                    scheduler.set_resource_wait_until(warp, Some(wait_until));
+                    scheduler.replay_instruction(warp);
+                    return Err(wait_until);
+                }
+            }
+        }
         let issue_bytes = request.bytes;
         let request_id = request.id;
         let dma_trigger = !request.is_load && self.graph.dma_matches_mmio(request.addr);
