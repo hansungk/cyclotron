@@ -139,13 +139,14 @@ impl Scheduler {
                 let start_pc = rs2[first_lid];
                 let count = rs1[first_lid];
                 info!("wspawn {} warps @pc={:08x}", rs1[first_lid], start_pc);
-                for i in 0..count as usize {
-                    // TODO: shouldn't change PC of an already-active warp
-                    self.base.state.pc[i] = start_pc;
-                    if !self.base.state.active_warps.bit(i) {
-                        self.base.state.thread_masks[i] = self.all_one_bitmask();
+                for i in 1..count as usize {
+                    if self.base.state.active_warps.bit(i) {
+                        continue;
                     }
+
                     self.base.state.active_warps.mut_bit(i, true);
+                    self.base.state.pc[i] = start_pc;
+                    self.base.state.thread_masks[i] = self.all_one_bitmask();
                 }
                 info!("new active warps: {:b}", self.base.state.active_warps);
                 SchedulerWriteback {
