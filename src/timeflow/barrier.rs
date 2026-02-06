@@ -1,4 +1,4 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 use crate::timeq::{Cycle, ServerConfig, ServiceRequest, TimedServer};
@@ -38,12 +38,24 @@ pub struct BarrierManager {
     num_warps: usize,
 
     id_mask: Option<u32>,
+    stats: BarrierSummary,
 }
 
 struct BarrierState {
     arrived: Vec<bool>,
     releasing: Vec<usize>,
     release_at: Option<Cycle>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize)]
+pub struct BarrierSummary {
+    pub arrivals: u64,
+    pub queue_rejects: u64,
+    pub release_events: u64,
+    pub warps_released: u64,
+    pub max_release_batch: u64,
+    pub total_scheduled_wait_cycles: u64,
+    pub max_scheduled_wait_cycles: u64,
 }
 
 impl BarrierManager {
@@ -73,6 +85,7 @@ impl BarrierManager {
             num_warps,
 
             id_mask,
+            stats: BarrierSummary::default(),
         }
     }
 
@@ -83,6 +96,7 @@ impl BarrierManager {
         if warp >= self.num_warps {
             return Some(now);
         }
+        self.stats.arrivals = self.stats.arrivals.saturating_add(1);
 
         let id = self.apply_id_mask(barrier_id);
         let state = self.states.entry(id).or_insert_with(|| BarrierState {
@@ -114,8 +128,16 @@ impl BarrierManager {
             }
             state.releasing = warps;
             state.release_at = Some(ticket.ready_at());
+            let wait_cycles = ticket.ready_at().saturating_sub(now);
+            self.stats.total_scheduled_wait_cycles = self
+                .stats
+                .total_scheduled_wait_cycles
+                .saturating_add(wait_cycles);
+            self.stats.max_scheduled_wait_cycles =
+                self.stats.max_scheduled_wait_cycles.max(wait_cycles);
             Some(ticket.ready_at())
         } else {
+            self.stats.queue_rejects = self.stats.queue_rejects.saturating_add(1);
             None
         }
     }
@@ -138,6 +160,15 @@ impl BarrierManager {
         if released.is_empty() {
             None
         } else {
+            self.stats.release_events = self.stats.release_events.saturating_add(1);
+            self.stats.warps_released = self
+                .stats
+                .warps_released
+                .saturating_add(released.len() as u64);
+            self.stats.max_release_batch = self
+                .stats
+                .max_release_batch
+                .max(released.len() as u64);
             Some(released)
         }
     }
@@ -149,5 +180,12 @@ impl BarrierManager {
     fn apply_id_mask(&self, barrier_id: u32) -> u32 {
         self.id_mask.map_or(barrier_id, |mask| barrier_id & mask)
     }
-}
 
+    pub fn stats(&self) -> BarrierSummary {
+        self.stats
+    }
+
+    pub fn clear_stats(&mut self) {
+        self.stats = BarrierSummary::default();
+    }
+}

@@ -1,5 +1,5 @@
 use crate::timeflow::{
-    barrier::{BarrierConfig, BarrierManager},
+    barrier::{BarrierConfig, BarrierManager, BarrierSummary},
     dma::{DmaConfig, DmaQueue, DmaReject},
     fence::{FenceConfig, FenceIssue, FenceQueue, FenceReject, FenceRequest},
     gmem::{ClusterGmemGraph, GmemCompletion, GmemIssue, GmemReject, GmemRequest, GmemStats, GmemFlowConfig},
@@ -11,7 +11,7 @@ use crate::timeflow::{
     tensor::{TensorConfig, TensorQueue, TensorReject},
     types::CoreFlowPayload,
     warp_scheduler::WarpSchedulerConfig,
-    writeback::{WritebackConfig, WritebackIssue, WritebackPayload, WritebackQueue, WritebackReject},
+    writeback::{WritebackConfig, WritebackIssue, WritebackPayload, WritebackQueue, WritebackReject, WritebackStats},
     execute::{ExecUnitKind, ExecutePipeline, ExecutePipelineConfig},
 };
 use crate::timeq::{Backpressure, Cycle, Ticket};
@@ -361,6 +361,14 @@ impl CoreGraph {
         self.with_barrier_mut(|b| b.tick(now))
     }
 
+    pub fn barrier_stats(&self) -> BarrierSummary {
+        self.barrier_ref().stats()
+    }
+
+    pub fn clear_barrier_stats(&mut self) {
+        self.with_barrier_mut(|b| b.clear_stats());
+    }
+
     pub fn cluster_gmem_issue(
         &self,
         core_id: usize,
@@ -448,6 +456,17 @@ impl CoreGraph {
         self.subgraphs[self.lsu_index].clear_stats();
     }
 
+    pub fn writeback_stats(&self) -> WritebackStats {
+        match self.subgraphs[self.writeback_index].stats_snapshot() {
+            Some(StatEnum::Writeback(stats)) => stats,
+            _ => unreachable!("writeback index always points to writeback"),
+        }
+    }
+
+    pub fn clear_writeback_stats(&mut self) {
+        self.subgraphs[self.writeback_index].clear_stats();
+    }
+
     pub fn sample_smem_utilization(&mut self) -> SmemUtilSample {
         self.with_smem_mut(|smem, graph| smem.sample_utilization(graph))
     }
@@ -512,6 +531,7 @@ enum StatEnum {
     Smem(SmemStats),
     Icache(IcacheStats),
     Lsu(LsuStats),
+    Writeback(WritebackStats),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -630,6 +650,14 @@ impl Subgraph for WritebackQueue {
     }
 
     fn collect_completions(&mut self, _graph: &mut FlowGraph<CoreFlowPayload>, _now: Cycle) {}
+
+    fn stats_snapshot(&self) -> Option<StatEnum> {
+        Some(StatEnum::Writeback(self.stats()))
+    }
+
+    fn clear_stats(&mut self) {
+        WritebackQueue::clear_stats(self);
+    }
 }
 
 impl Subgraph for FenceQueue {
@@ -686,6 +714,7 @@ impl Subgraph for CoreSubgraph {
             CoreSubgraph::Smem(smem) => smem.stats_snapshot(),
             CoreSubgraph::Icache(icache) => icache.stats_snapshot(),
             CoreSubgraph::Lsu(lsu) => lsu.stats_snapshot(),
+            CoreSubgraph::Writeback(wb) => wb.stats_snapshot(),
             _ => None,
         }
     }
@@ -695,8 +724,8 @@ impl Subgraph for CoreSubgraph {
             CoreSubgraph::Smem(smem) => smem.clear_stats(),
             CoreSubgraph::Lsu(lsu) => lsu.clear_stats(),
             CoreSubgraph::Icache(icache) => icache.clear_stats(),
+            CoreSubgraph::Writeback(wb) => wb.clear_stats(),
             _ => {}
         }
     }
 }
-

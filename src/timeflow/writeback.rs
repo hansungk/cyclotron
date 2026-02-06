@@ -1,6 +1,7 @@
 use std::collections::VecDeque;
 
 use serde::Deserialize;
+use serde::Serialize;
 
 use crate::timeflow::simple_queue::SimpleTimedQueue;
 pub use crate::timeflow::types::RejectReason as WritebackRejectReason;
@@ -21,6 +22,14 @@ pub struct WritebackIssue {
 }
 
 pub type WritebackReject = crate::timeflow::types::Reject;
+
+#[derive(Debug, Clone, Copy, Default, Serialize)]
+pub struct WritebackStats {
+    pub issued: u64,
+    pub completed: u64,
+    pub queue_full_rejects: u64,
+    pub busy_rejects: u64,
+}
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
@@ -48,6 +57,7 @@ impl Default for WritebackConfig {
 pub struct WritebackQueue {
     queue: SimpleTimedQueue<WritebackPayload>,
     ready: VecDeque<WritebackPayload>,
+    stats: WritebackStats,
 }
 
 impl WritebackQueue {
@@ -57,6 +67,7 @@ impl WritebackQueue {
         Self {
             queue: SimpleTimedQueue::new(config.enabled, cfg),
             ready: VecDeque::new(),
+            stats: WritebackStats::default(),
         }
     }
 
@@ -67,14 +78,29 @@ impl WritebackQueue {
     ) -> Result<WritebackIssue, WritebackReject> {
         if !self.queue.is_enabled() {
             self.ready.push_back(payload);
+            self.stats.issued = self.stats.issued.saturating_add(1);
             return Ok(WritebackIssue {
                 ticket: Ticket::new(now, now, 0),
             });
         }
 
         match self.queue.try_issue(now, payload, 0) {
-            Ok(ticket) => Ok(WritebackIssue { ticket }),
-            Err(err) => Err(WritebackReject::new(err.retry_at, err.reason)),
+            Ok(ticket) => {
+                self.stats.issued = self.stats.issued.saturating_add(1);
+                Ok(WritebackIssue { ticket })
+            }
+            Err(err) => {
+                match err.reason {
+                    WritebackRejectReason::QueueFull => {
+                        self.stats.queue_full_rejects =
+                            self.stats.queue_full_rejects.saturating_add(1);
+                    }
+                    WritebackRejectReason::Busy => {
+                        self.stats.busy_rejects = self.stats.busy_rejects.saturating_add(1);
+                    }
+                }
+                Err(WritebackReject::new(err.retry_at, err.reason))
+            }
         }
     }
 
@@ -85,7 +111,11 @@ impl WritebackQueue {
     }
 
     pub fn pop_ready(&mut self) -> Option<WritebackPayload> {
-        self.ready.pop_front()
+        let popped = self.ready.pop_front();
+        if popped.is_some() {
+            self.stats.completed = self.stats.completed.saturating_add(1);
+        }
+        popped
     }
 
     pub fn has_ready(&self) -> bool {
@@ -95,5 +125,12 @@ impl WritebackQueue {
     pub fn is_enabled(&self) -> bool {
         self.queue.is_enabled()
     }
-}
 
+    pub fn stats(&self) -> WritebackStats {
+        self.stats
+    }
+
+    pub fn clear_stats(&mut self) {
+        self.stats = WritebackStats::default();
+    }
+}

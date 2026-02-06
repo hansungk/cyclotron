@@ -1,0 +1,267 @@
+# GMEM L2 isolation profile
+
+[gmem.policy]
+l0_enabled = false
+
+[[gmem.levels]]
+banks = 1
+
+[gmem.levels.tag]
+base_latency = 0
+bytes_per_cycle = 64
+queue_capacity = 16
+completions_per_cycle = 1
+
+[gmem.levels.data]
+base_latency = 0
+bytes_per_cycle = 64
+queue_capacity = 16
+completions_per_cycle = 1
+
+[gmem.levels.mshr]
+base_latency = 0
+bytes_per_cycle = 64
+queue_capacity = 16
+completions_per_cycle = 1
+
+[[gmem.levels]]
+banks = 2
+
+[gmem.levels.tag]
+base_latency = 1000
+bytes_per_cycle = 64
+queue_capacity = 16
+completions_per_cycle = 1
+
+[gmem.levels.data]
+base_latency = 1000
+bytes_per_cycle = 64
+queue_capacity = 16
+completions_per_cycle = 1
+
+[gmem.levels.mshr]
+base_latency = 1
+bytes_per_cycle = 64
+queue_capacity = 16
+completions_per_cycle = 1
+
+[gmem.levels.refill]
+base_latency = 1000
+bytes_per_cycle = 32
+queue_capacity = 16
+completions_per_cycle = 1
+
+[gmem.levels.writeback]
+base_latency = 1000
+bytes_per_cycle = 32
+queue_capacity = 16
+completions_per_cycle = 1
+
+[[gmem.levels]]
+banks = 1
+
+[gmem.levels.tag]
+base_latency = 4
+bytes_per_cycle = 64
+queue_capacity = 16
+completions_per_cycle = 1
+
+[gmem.levels.data]
+base_latency = 6
+bytes_per_cycle = 64
+queue_capacity = 16
+completions_per_cycle = 1
+
+[gmem.levels.mshr]
+base_latency = 1
+bytes_per_cycle = 64
+queue_capacity = 16
+completions_per_cycle = 1
+
+[gmem.levels.refill]
+base_latency = 8
+bytes_per_cycle = 32
+queue_capacity = 16
+completions_per_cycle = 1
+
+[gmem.levels.writeback]
+base_latency = 4
+bytes_per_cycle = 32
+queue_capacity = 16
+completions_per_cycle = 1
+
+[gmem.nodes.coalescer]
+base_latency = 0
+bytes_per_cycle = 1024
+queue_capacity = 1024
+completions_per_cycle = 1024
+
+[gmem.nodes.l0_flush_gate]
+base_latency = 0
+bytes_per_cycle = 1024
+queue_capacity = 1024
+completions_per_cycle = 1024
+
+[gmem.nodes.l1_flush_gate]
+base_latency = 0
+bytes_per_cycle = 1024
+queue_capacity = 1024
+completions_per_cycle = 1024
+
+[gmem.nodes.dram]
+base_latency = 1000
+bytes_per_cycle = 32
+queue_capacity = 64
+completions_per_cycle = 1
+
+[gmem.nodes.return_path]
+base_latency = 0
+bytes_per_cycle = 1024
+queue_capacity = 1024
+completions_per_cycle = 1024
+
+[lsu]
+link_capacity = 1024
+
+[lsu.resources]
+address_entries = 1024
+store_data_entries = 1024
+load_data_entries = 1024
+
+[lsu.queues.global_ldq]
+queue_capacity = 1024
+bytes_per_cycle = 1024
+base_latency = 0
+completions_per_cycle = 1024
+
+[lsu.queues.global_stq]
+queue_capacity = 1024
+bytes_per_cycle = 1024
+base_latency = 0
+completions_per_cycle = 1024
+
+[lsu.queues.shared_ldq]
+queue_capacity = 1024
+bytes_per_cycle = 1024
+base_latency = 0
+completions_per_cycle = 1024
+
+[lsu.queues.shared_stq]
+queue_capacity = 1024
+bytes_per_cycle = 1024
+base_latency = 0
+completions_per_cycle = 1024
+
+[lsu.issue]
+queue_capacity = 1024
+bytes_per_cycle = 1024
+base_latency = 0
+completions_per_cycle = 1024
+[smem]
+num_banks = 4
+num_lanes = 16
+num_subbanks = 4
+word_bytes = 4
+serialize_cores = true
+link_capacity = 16
+
+[smem.lane]
+base_latency = 0
+bytes_per_cycle = 1024
+queue_capacity = 1024
+completions_per_cycle = 1024
+
+[smem.serial]
+base_latency = 0
+bytes_per_cycle = 1024
+queue_capacity = 1024
+completions_per_cycle = 1024
+
+[smem.crossbar]
+base_latency = 0
+bytes_per_cycle = 1024
+queue_capacity = 1024
+completions_per_cycle = 1024
+
+[smem.subbank]
+base_latency = 0
+bytes_per_cycle = 1024
+queue_capacity = 1024
+completions_per_cycle = 1024
+
+[smem.bank]
+base_latency = 0
+bytes_per_cycle = 1024
+queue_capacity = 1024
+completions_per_cycle = 1024
+[execute.alu]
+base_latency = 0
+bytes_per_cycle = 1024
+queue_capacity = 1024
+completions_per_cycle = 1024
+
+[execute.int_mul]
+base_latency = 0
+bytes_per_cycle = 1024
+queue_capacity = 1024
+completions_per_cycle = 1024
+
+[execute.int_div]
+base_latency = 0
+bytes_per_cycle = 1024
+queue_capacity = 1024
+completions_per_cycle = 1024
+
+[execute.fp]
+base_latency = 0
+bytes_per_cycle = 1024
+queue_capacity = 1024
+completions_per_cycle = 1024
+
+[execute.sfu]
+base_latency = 0
+bytes_per_cycle = 1024
+queue_capacity = 1024
+completions_per_cycle = 1024
+[icache.hit]
+base_latency = 0
+bytes_per_cycle = 1024
+queue_capacity = 1024
+completions_per_cycle = 1024
+
+[icache.miss]
+base_latency = 0
+bytes_per_cycle = 1024
+queue_capacity = 1024
+completions_per_cycle = 1024
+
+[icache.policy]
+hit_rate = 1.0
+line_bytes = 32
+seed = 0
+[writeback]
+enabled = true
+base_latency = 0
+bytes_per_cycle = 1024
+queue_capacity = 1024
+completions_per_cycle = 1024
+[operand_fetch]
+enabled = false
+base_latency = 0
+bytes_per_cycle = 1024
+queue_capacity = 1024
+completions_per_cycle = 1024
+[barrier]
+enabled = false
+expected_warps = 0
+barrier_id_bits = 4
+base_latency = 0
+bytes_per_cycle = 1024
+queue_capacity = 1024
+completions_per_cycle = 1024
+[fence]
+enabled = false
+base_latency = 0
+bytes_per_cycle = 1024
+queue_capacity = 1024
+completions_per_cycle = 1024

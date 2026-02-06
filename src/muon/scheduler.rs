@@ -267,7 +267,9 @@ impl Scheduler {
                 SchedulerWriteback::default()
             }
             SFUType::BAR => {
-                panic!("muon does not support vx_bar anymore, use neutrino insts")
+                // Barrier rendezvous is modeled by the timing layer in warp.rs via
+                // notify_barrier_arrive(); keep functional execution as a no-op.
+                SchedulerWriteback::default()
             }
             SFUType::PRED => {
                 let invert = decoded_inst.rd_addr != 0;

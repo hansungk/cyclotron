@@ -94,6 +94,22 @@ pub struct LsuStats {
     pub completed: u64,
     pub queue_full_rejects: u64,
     pub busy_rejects: u64,
+    pub global_ldq_issued: u64,
+    pub global_stq_issued: u64,
+    pub shared_ldq_issued: u64,
+    pub shared_stq_issued: u64,
+    pub global_ldq_completed: u64,
+    pub global_stq_completed: u64,
+    pub shared_ldq_completed: u64,
+    pub shared_stq_completed: u64,
+    pub global_ldq_queue_full_rejects: u64,
+    pub global_stq_queue_full_rejects: u64,
+    pub shared_ldq_queue_full_rejects: u64,
+    pub shared_stq_queue_full_rejects: u64,
+    pub global_ldq_busy_rejects: u64,
+    pub global_stq_busy_rejects: u64,
+    pub shared_ldq_busy_rejects: u64,
+    pub shared_stq_busy_rejects: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -297,6 +313,7 @@ impl LsuSubgraph {
         payload: LsuPayload,
     ) -> Result<LsuIssue, LsuReject> {
         let retry_next = now.saturating_add(1);
+        let kind = payload.queue_kind();
         if self.load_blocked_by_store(&payload) {
             return Err(LsuReject::new(payload, retry_next, LsuRejectReason::Busy));
         }
@@ -310,7 +327,6 @@ impl LsuSubgraph {
         }
 
         let warp = payload.warp();
-        let kind = payload.queue_kind();
         let node_id = match self.queue_node(warp, kind) {
             Some(node) => node,
             None => {
@@ -327,6 +343,7 @@ impl LsuSubgraph {
         match self.graph.try_put(node_id, now, service_req) {
             Ok(ticket) => {
                 self.stats.issued = self.stats.issued.saturating_add(1);
+                self.record_issued(kind);
                 self.bump_store_pending(&payload_clone, true);
                 if Self::needs_address(&payload_clone) {
                     self.address_in_use = self.address_in_use.saturating_add(1);
@@ -342,6 +359,7 @@ impl LsuSubgraph {
                     available_at,
                 } => {
                     self.stats.busy_rejects = self.stats.busy_rejects.saturating_add(1);
+                    self.record_busy_reject(kind);
                     let retry_at = normalize_retry(now, available_at);
                     Err(LsuReject::new(
                         request.payload,
@@ -351,6 +369,7 @@ impl LsuSubgraph {
                 }
                 Backpressure::QueueFull { request, .. } => {
                     self.stats.queue_full_rejects = self.stats.queue_full_rejects.saturating_add(1);
+                    self.record_queue_full_reject(kind);
                     Err(LsuReject::new(
                         request.payload,
                         retry_next,
@@ -415,6 +434,7 @@ impl LsuSubgraph {
             .with_node_mut(self.issue_node, |node| node.take_ready(now));
         result.map(|result| {
             self.stats.completed = self.stats.completed.saturating_add(1);
+            self.record_completed(result.payload.queue_kind());
             self.bump_store_pending(&result.payload, false);
             LsuCompletion {
                 request: result.payload,
@@ -503,5 +523,79 @@ impl LsuSubgraph {
         true
     }
 
-}
+    fn record_issued(&mut self, kind: LsuQueueKind) {
+        match kind {
+            LsuQueueKind::GlobalLoad => {
+                self.stats.global_ldq_issued = self.stats.global_ldq_issued.saturating_add(1)
+            }
+            LsuQueueKind::GlobalStore => {
+                self.stats.global_stq_issued = self.stats.global_stq_issued.saturating_add(1)
+            }
+            LsuQueueKind::SharedLoad => {
+                self.stats.shared_ldq_issued = self.stats.shared_ldq_issued.saturating_add(1)
+            }
+            LsuQueueKind::SharedStore => {
+                self.stats.shared_stq_issued = self.stats.shared_stq_issued.saturating_add(1)
+            }
+        }
+    }
 
+    fn record_completed(&mut self, kind: LsuQueueKind) {
+        match kind {
+            LsuQueueKind::GlobalLoad => {
+                self.stats.global_ldq_completed = self.stats.global_ldq_completed.saturating_add(1)
+            }
+            LsuQueueKind::GlobalStore => {
+                self.stats.global_stq_completed = self.stats.global_stq_completed.saturating_add(1)
+            }
+            LsuQueueKind::SharedLoad => {
+                self.stats.shared_ldq_completed = self.stats.shared_ldq_completed.saturating_add(1)
+            }
+            LsuQueueKind::SharedStore => {
+                self.stats.shared_stq_completed = self.stats.shared_stq_completed.saturating_add(1)
+            }
+        }
+    }
+
+    fn record_queue_full_reject(&mut self, kind: LsuQueueKind) {
+        match kind {
+            LsuQueueKind::GlobalLoad => {
+                self.stats.global_ldq_queue_full_rejects =
+                    self.stats.global_ldq_queue_full_rejects.saturating_add(1)
+            }
+            LsuQueueKind::GlobalStore => {
+                self.stats.global_stq_queue_full_rejects =
+                    self.stats.global_stq_queue_full_rejects.saturating_add(1)
+            }
+            LsuQueueKind::SharedLoad => {
+                self.stats.shared_ldq_queue_full_rejects =
+                    self.stats.shared_ldq_queue_full_rejects.saturating_add(1)
+            }
+            LsuQueueKind::SharedStore => {
+                self.stats.shared_stq_queue_full_rejects =
+                    self.stats.shared_stq_queue_full_rejects.saturating_add(1)
+            }
+        }
+    }
+
+    fn record_busy_reject(&mut self, kind: LsuQueueKind) {
+        match kind {
+            LsuQueueKind::GlobalLoad => {
+                self.stats.global_ldq_busy_rejects =
+                    self.stats.global_ldq_busy_rejects.saturating_add(1)
+            }
+            LsuQueueKind::GlobalStore => {
+                self.stats.global_stq_busy_rejects =
+                    self.stats.global_stq_busy_rejects.saturating_add(1)
+            }
+            LsuQueueKind::SharedLoad => {
+                self.stats.shared_ldq_busy_rejects =
+                    self.stats.shared_ldq_busy_rejects.saturating_add(1)
+            }
+            LsuQueueKind::SharedStore => {
+                self.stats.shared_stq_busy_rejects =
+                    self.stats.shared_stq_busy_rejects.saturating_add(1)
+            }
+        }
+    }
+}

@@ -1,0 +1,13 @@
+[writeback]
+enabled = true
+base_latency = 6
+bytes_per_cycle = 4
+queue_capacity = 2
+completions_per_cycle = 1
+
+[gmem.policy]
+l0_hit_rate = 1.0
+l1_hit_rate = 1.0
+l2_hit_rate = 1.0
+l1_writeback_rate = 0.0
+l2_writeback_rate = 0.0

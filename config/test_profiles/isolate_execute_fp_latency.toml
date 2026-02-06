@@ -1,0 +1,29 @@
+[execute.alu]
+base_latency = 0
+bytes_per_cycle = 1024
+queue_capacity = 1024
+completions_per_cycle = 1024
+
+[execute.int_mul]
+base_latency = 0
+bytes_per_cycle = 1024
+queue_capacity = 1024
+completions_per_cycle = 1024
+
+[execute.int_div]
+base_latency = 0
+bytes_per_cycle = 1024
+queue_capacity = 1024
+completions_per_cycle = 1024
+
+[execute.fp]
+base_latency = 12
+bytes_per_cycle = 1
+queue_capacity = 64
+completions_per_cycle = 1
+
+[execute.sfu]
+base_latency = 0
+bytes_per_cycle = 1024
+queue_capacity = 1024
+completions_per_cycle = 1024

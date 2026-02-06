@@ -223,9 +223,9 @@ impl ClusterGmemGraph {
         let l2_sets = policy.l2_sets.max(1);
         let l2_ways = policy.l2_ways.max(1);
 
-        let l0_mshr_capacity = l0_level.mshr.queue_capacity;
-        let l1_mshr_capacity = l1_level.mshr.queue_capacity;
-        let l2_mshr_capacity = l2_level.mshr.queue_capacity;
+        let l0_mshr_capacity = l0_level.effective_mshr_capacity();
+        let l1_mshr_capacity = l1_level.effective_mshr_capacity();
+        let l2_mshr_capacity = l2_level.effective_mshr_capacity();
 
         let l0_layers = if policy.l0_enabled {
             (0..total_cores)

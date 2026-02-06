@@ -48,6 +48,7 @@ pub struct GmemNodeConfig {
 #[serde(default)]
 pub struct CacheLevelConfig {
     pub banks: usize,
+    pub mshr_capacity: Option<usize>,
     pub tag: ServerConfig,
     pub data: ServerConfig,
     pub mshr: ServerConfig,
@@ -59,6 +60,7 @@ impl Default for CacheLevelConfig {
     fn default() -> Self {
         Self {
             banks: 1,
+            mshr_capacity: None,
             tag: ServerConfig::default(),
             data: ServerConfig::default(),
             mshr: ServerConfig::default(),
@@ -79,12 +81,19 @@ impl CacheLevelConfig {
     ) -> Self {
         Self {
             banks,
+            mshr_capacity: None,
             tag,
             data,
             mshr,
             refill,
             writeback,
         }
+    }
+}
+
+impl CacheLevelConfig {
+    pub fn effective_mshr_capacity(&self) -> usize {
+        self.mshr_capacity.unwrap_or(self.mshr.queue_capacity)
     }
 }
 

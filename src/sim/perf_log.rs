@@ -102,6 +102,8 @@ pub struct AggregatePerfSummary {
     pub smem_stats: crate::timeflow::SmemStats,
     pub icache_stats: crate::timeflow::IcacheStats,
     pub lsu_stats: crate::timeflow::LsuStats,
+    pub writeback_stats: crate::timeflow::WritebackStats,
+    pub barrier_summary: crate::timeflow::BarrierSummary,
     pub dma_completed: u64,
     pub tensor_completed: u64,
 }
@@ -363,10 +365,26 @@ pub fn aggregate_summaries(per_core: &[CorePerfSummary]) -> AggregatePerfSummary
             .smem_stats
             .issued
             .saturating_add(core.smem_stats.issued);
+        total.smem_stats.read_issued = total
+            .smem_stats
+            .read_issued
+            .saturating_add(core.smem_stats.read_issued);
+        total.smem_stats.write_issued = total
+            .smem_stats
+            .write_issued
+            .saturating_add(core.smem_stats.write_issued);
         total.smem_stats.completed = total
             .smem_stats
             .completed
             .saturating_add(core.smem_stats.completed);
+        total.smem_stats.read_completed = total
+            .smem_stats
+            .read_completed
+            .saturating_add(core.smem_stats.read_completed);
+        total.smem_stats.write_completed = total
+            .smem_stats
+            .write_completed
+            .saturating_add(core.smem_stats.write_completed);
         total.smem_stats.queue_full_rejects = total
             .smem_stats
             .queue_full_rejects
@@ -399,6 +417,60 @@ pub fn aggregate_summaries(per_core: &[CorePerfSummary]) -> AggregatePerfSummary
             (None, Some(b)) => Some(b),
             (a, None) => a,
         };
+        if total.smem_stats.bank_busy_samples.len() < core.smem_stats.bank_busy_samples.len() {
+            total
+                .smem_stats
+                .bank_busy_samples
+                .resize(core.smem_stats.bank_busy_samples.len(), 0);
+        }
+        for (idx, value) in core.smem_stats.bank_busy_samples.iter().enumerate() {
+            total.smem_stats.bank_busy_samples[idx] = total.smem_stats.bank_busy_samples[idx]
+                .saturating_add(*value);
+        }
+        if total.smem_stats.bank_read_busy_samples.len()
+            < core.smem_stats.bank_read_busy_samples.len()
+        {
+            total
+                .smem_stats
+                .bank_read_busy_samples
+                .resize(core.smem_stats.bank_read_busy_samples.len(), 0);
+        }
+        for (idx, value) in core.smem_stats.bank_read_busy_samples.iter().enumerate() {
+            total.smem_stats.bank_read_busy_samples[idx] =
+                total.smem_stats.bank_read_busy_samples[idx].saturating_add(*value);
+        }
+        if total.smem_stats.bank_write_busy_samples.len()
+            < core.smem_stats.bank_write_busy_samples.len()
+        {
+            total
+                .smem_stats
+                .bank_write_busy_samples
+                .resize(core.smem_stats.bank_write_busy_samples.len(), 0);
+        }
+        for (idx, value) in core.smem_stats.bank_write_busy_samples.iter().enumerate() {
+            total.smem_stats.bank_write_busy_samples[idx] =
+                total.smem_stats.bank_write_busy_samples[idx].saturating_add(*value);
+        }
+        if total.smem_stats.bank_attempts.len() < core.smem_stats.bank_attempts.len() {
+            total
+                .smem_stats
+                .bank_attempts
+                .resize(core.smem_stats.bank_attempts.len(), 0);
+        }
+        for (idx, value) in core.smem_stats.bank_attempts.iter().enumerate() {
+            total.smem_stats.bank_attempts[idx] =
+                total.smem_stats.bank_attempts[idx].saturating_add(*value);
+        }
+        if total.smem_stats.bank_conflicts.len() < core.smem_stats.bank_conflicts.len() {
+            total
+                .smem_stats
+                .bank_conflicts
+                .resize(core.smem_stats.bank_conflicts.len(), 0);
+        }
+        for (idx, value) in core.smem_stats.bank_conflicts.iter().enumerate() {
+            total.smem_stats.bank_conflicts[idx] =
+                total.smem_stats.bank_conflicts[idx].saturating_add(*value);
+        }
 
         total.icache_stats.issued = total
             .icache_stats
@@ -454,6 +526,115 @@ pub fn aggregate_summaries(per_core: &[CorePerfSummary]) -> AggregatePerfSummary
             .lsu_stats
             .busy_rejects
             .saturating_add(core.lsu_stats.busy_rejects);
+        total.lsu_stats.global_ldq_issued = total
+            .lsu_stats
+            .global_ldq_issued
+            .saturating_add(core.lsu_stats.global_ldq_issued);
+        total.lsu_stats.global_stq_issued = total
+            .lsu_stats
+            .global_stq_issued
+            .saturating_add(core.lsu_stats.global_stq_issued);
+        total.lsu_stats.shared_ldq_issued = total
+            .lsu_stats
+            .shared_ldq_issued
+            .saturating_add(core.lsu_stats.shared_ldq_issued);
+        total.lsu_stats.shared_stq_issued = total
+            .lsu_stats
+            .shared_stq_issued
+            .saturating_add(core.lsu_stats.shared_stq_issued);
+        total.lsu_stats.global_ldq_completed = total
+            .lsu_stats
+            .global_ldq_completed
+            .saturating_add(core.lsu_stats.global_ldq_completed);
+        total.lsu_stats.global_stq_completed = total
+            .lsu_stats
+            .global_stq_completed
+            .saturating_add(core.lsu_stats.global_stq_completed);
+        total.lsu_stats.shared_ldq_completed = total
+            .lsu_stats
+            .shared_ldq_completed
+            .saturating_add(core.lsu_stats.shared_ldq_completed);
+        total.lsu_stats.shared_stq_completed = total
+            .lsu_stats
+            .shared_stq_completed
+            .saturating_add(core.lsu_stats.shared_stq_completed);
+        total.lsu_stats.global_ldq_queue_full_rejects = total
+            .lsu_stats
+            .global_ldq_queue_full_rejects
+            .saturating_add(core.lsu_stats.global_ldq_queue_full_rejects);
+        total.lsu_stats.global_stq_queue_full_rejects = total
+            .lsu_stats
+            .global_stq_queue_full_rejects
+            .saturating_add(core.lsu_stats.global_stq_queue_full_rejects);
+        total.lsu_stats.shared_ldq_queue_full_rejects = total
+            .lsu_stats
+            .shared_ldq_queue_full_rejects
+            .saturating_add(core.lsu_stats.shared_ldq_queue_full_rejects);
+        total.lsu_stats.shared_stq_queue_full_rejects = total
+            .lsu_stats
+            .shared_stq_queue_full_rejects
+            .saturating_add(core.lsu_stats.shared_stq_queue_full_rejects);
+        total.lsu_stats.global_ldq_busy_rejects = total
+            .lsu_stats
+            .global_ldq_busy_rejects
+            .saturating_add(core.lsu_stats.global_ldq_busy_rejects);
+        total.lsu_stats.global_stq_busy_rejects = total
+            .lsu_stats
+            .global_stq_busy_rejects
+            .saturating_add(core.lsu_stats.global_stq_busy_rejects);
+        total.lsu_stats.shared_ldq_busy_rejects = total
+            .lsu_stats
+            .shared_ldq_busy_rejects
+            .saturating_add(core.lsu_stats.shared_ldq_busy_rejects);
+        total.lsu_stats.shared_stq_busy_rejects = total
+            .lsu_stats
+            .shared_stq_busy_rejects
+            .saturating_add(core.lsu_stats.shared_stq_busy_rejects);
+        total.writeback_stats.issued = total
+            .writeback_stats
+            .issued
+            .saturating_add(core.writeback_stats.issued);
+        total.writeback_stats.completed = total
+            .writeback_stats
+            .completed
+            .saturating_add(core.writeback_stats.completed);
+        total.writeback_stats.queue_full_rejects = total
+            .writeback_stats
+            .queue_full_rejects
+            .saturating_add(core.writeback_stats.queue_full_rejects);
+        total.writeback_stats.busy_rejects = total
+            .writeback_stats
+            .busy_rejects
+            .saturating_add(core.writeback_stats.busy_rejects);
+
+        total.barrier_summary.arrivals = total
+            .barrier_summary
+            .arrivals
+            .saturating_add(core.barrier_summary.arrivals);
+        total.barrier_summary.queue_rejects = total
+            .barrier_summary
+            .queue_rejects
+            .saturating_add(core.barrier_summary.queue_rejects);
+        total.barrier_summary.release_events = total
+            .barrier_summary
+            .release_events
+            .saturating_add(core.barrier_summary.release_events);
+        total.barrier_summary.warps_released = total
+            .barrier_summary
+            .warps_released
+            .saturating_add(core.barrier_summary.warps_released);
+        total.barrier_summary.max_release_batch = total
+            .barrier_summary
+            .max_release_batch
+            .max(core.barrier_summary.max_release_batch);
+        total.barrier_summary.total_scheduled_wait_cycles = total
+            .barrier_summary
+            .total_scheduled_wait_cycles
+            .saturating_add(core.barrier_summary.total_scheduled_wait_cycles);
+        total.barrier_summary.max_scheduled_wait_cycles = total
+            .barrier_summary
+            .max_scheduled_wait_cycles
+            .max(core.barrier_summary.max_scheduled_wait_cycles);
 
         total.dma_completed = total.dma_completed.saturating_add(core.dma_completed);
         total.tensor_completed = total.tensor_completed.saturating_add(core.tensor_completed);

@@ -1,0 +1,37 @@
+[muon]
+num_lanes = 1
+num_warps = 1
+num_cores = 1
+num_regs = 256
+start_pc = 0x80000000
+smem_size = 65536
+
+[mem]
+io_cout_addr = 0xFF080000
+io_cout_size = 64
+
+[sim]
+elf = "test/performance-model-tests/op_fetch_queue_fill.elf"
+timeout = 200000
+trace = false
+
+[timing]
+include = [
+  "../../../config/timing/gmem_nodes.toml",
+  "../../../config/timing/gmem_links.toml",
+  "../../../config/timing/gmem_policy.toml",
+  "../../../config/timing/icache.toml",
+  "../../../config/timing/lsu.toml",
+  "../../../config/timing/operand_fetch.toml",
+  "../../../config/timing/scheduler.toml",
+  "../../../config/timing/smem_nodes.toml",
+  "../../../config/timing/smem_topology.toml",
+  "../../../config/timing/writeback.toml",
+  "../../../config/timing/barrier.toml",
+  "../../../config/timing/fence.toml",
+  "../../../config/timing/dma.toml",
+  "../../../config/timing/tensor.toml",
+  "../../../config/timing/execute.toml",
+  "../../../config/test_profiles/isolate_operand_fetch.toml",
+  "../../../config/test_profiles/isolate_op_fetch_queue_fill.toml",
+]

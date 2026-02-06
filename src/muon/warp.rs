@@ -4,7 +4,7 @@ use crate::base::module::{module, IsModule, ModuleBase};
 use crate::info;
 use crate::muon::config::MuonConfig;
 use crate::muon::csr::CSRFile;
-use crate::muon::decode::{DecodeUnit, IssuedInst, MicroOp, RegFile};
+use crate::muon::decode::{DecodeUnit, DecodedInst, IssuedInst, MicroOp, RegFile};
 use crate::muon::execute::{ExecuteUnit, Opcode};
 use crate::muon::gmem::CoreTimingModel;
 use crate::muon::scheduler::{Schedule, Scheduler, SchedulerWriteback};
@@ -170,7 +170,8 @@ impl Warp {
         scheduler.state_mut().thread_masks[self.wid] = tmask;
 
         if decoded.opcode == Opcode::LOAD || decoded.opcode == Opcode::STORE {
-            if decoded.opext == 1 {
+            let route_to_smem = self.route_mem_to_smem(&decoded, tmask);
+            if route_to_smem {
                 if self
                     .issue_smem_request(
                         decoded.opcode,
@@ -234,17 +235,22 @@ impl Warp {
             }
         }
 
-        if decoded.opcode == Opcode::CUSTOM2 && decoded.raw.bit(17) {
-            if tmask != 0 {
-                let first_lid = tmask.trailing_zeros() as usize;
-                let rf = self.base.state.reg_file.as_slice();
-                let barrier_id = rf
-                    .get(first_lid)
+        let pending_barrier_id = if (decoded.opcode == Opcode::CUSTOM0
+            || decoded.opcode == Opcode::CUSTOM2)
+            && decoded.f3 == 0b100
+            && decoded.f7 == 0
+            && tmask != 0
+        {
+            let first_lid = tmask.trailing_zeros() as usize;
+            let rf = self.base.state.reg_file.as_slice();
+            Some(
+                rf.get(first_lid)
                     .map(|lrf| lrf.read_gpr(decoded.rs1_addr))
-                    .unwrap_or(0);
-                timing_model.notify_barrier_arrive(now, self.wid, barrier_id, scheduler);
-            }
-        }
+                    .unwrap_or(0),
+            )
+        } else {
+            None
+        };
 
         // operand collection
         let rf = self.base.state.reg_file.as_slice();
@@ -256,6 +262,9 @@ impl Warp {
             .is_err()
         {
             return Ok(None);
+        }
+        if let Some(barrier_id) = pending_barrier_id {
+            timing_model.notify_barrier_arrive(now, self.wid, barrier_id, scheduler);
         }
 
         // execute
@@ -303,11 +312,22 @@ impl Warp {
         smem: &mut FlatMemory,
     ) -> Writeback {
         let core_id = self.conf().lane_config.core_id;
+        let smem_base_addr = self.conf().smem_base_addr;
         let rf = self.base.state.reg_file.as_mut_slice();
         let csrf = self.base.state.csr_file.as_mut_slice();
 
         let writeback = ExecuteUnit::execute(
-            issued, core_id, self.wid, tmask, rf, csrf, scheduler, neutrino, &self.gmem, smem,
+            issued,
+            core_id,
+            self.wid,
+            tmask,
+            rf,
+            csrf,
+            scheduler,
+            neutrino,
+            &self.gmem,
+            smem,
+            smem_base_addr,
         );
         writeback
     }
@@ -376,7 +396,7 @@ impl Warp {
         let bytes_per_lane = 1u32 << (f3 & 3);
         let total_bytes = bytes_per_lane.saturating_mul(active_lanes);
         let mut request =
-            GmemRequest::new(self.wid, total_bytes.max(1), tmask, opcode == Opcode::LOAD);
+            GmemRequest::new(self.wid, total_bytes.max(1), active_lanes, opcode == Opcode::LOAD);
         request.addr = lane_addrs.iter().copied().min().unwrap_or(0);
         request.lane_addrs = Some(lane_addrs);
 
@@ -384,6 +404,33 @@ impl Warp {
             .issue_gmem_request(now, self.wid, request, scheduler)
             .map(|_| ())
             .map_err(|_| ())
+    }
+
+    fn route_mem_to_smem(&self, decoded: &DecodedInst, tmask: u32) -> bool {
+        if decoded.opext == 1 {
+            return true;
+        }
+        if decoded.opcode != Opcode::LOAD && decoded.opcode != Opcode::STORE {
+            return false;
+        }
+        if tmask == 0 {
+            return false;
+        }
+
+        // Fallback for toolchains that emit plain lw/sw for shared memory:
+        // classify as SMEM if all active lanes target the configured SMEM window.
+        let lane_addrs = self.collect_lane_addrs(decoded.rs1_addr, decoded.imm32, tmask);
+        !lane_addrs.is_empty()
+            && lane_addrs
+                .iter()
+                .copied()
+                .all(|addr| self.is_smem_address(addr))
+    }
+
+    fn is_smem_address(&self, addr: u64) -> bool {
+        let start = self.conf().smem_base_addr;
+        let end = start.saturating_add(self.conf().smem_size as u64);
+        addr >= start && addr < end
     }
 
     fn collect_lane_addrs(&self, rs1_addr: u8, imm32: u32, tmask: u32) -> Vec<u64> {
@@ -423,7 +470,8 @@ impl Warp {
         let bytes_per_lane = 1u32 << (f3 & 3);
         let total_bytes = bytes_per_lane.saturating_mul(active_lanes);
         let bank = self.wid;
-        let mut request = SmemRequest::new(self.wid, total_bytes.max(1), tmask, !is_load, bank);
+        let mut request =
+            SmemRequest::new(self.wid, total_bytes.max(1), active_lanes, !is_load, bank);
         request.addr = lane_addrs.iter().copied().min().unwrap_or(0);
         request.lane_addrs = Some(lane_addrs);
 

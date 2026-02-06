@@ -121,6 +121,28 @@ pub struct InstDef<T>(pub &'static str, pub T);
 pub struct ExecuteUnit;
 
 impl ExecuteUnit {
+    #[inline]
+    fn is_smem_addr(addr: u32, smem_base_addr: u64, smem_size: usize) -> bool {
+        let addr = addr as u64;
+        let start = smem_base_addr;
+        let end = start.saturating_add(smem_size as u64);
+        addr >= start && addr < end
+    }
+
+    #[inline]
+    fn smem_index(addr: u32, smem_base_addr: u64, smem_size: usize) -> usize {
+        if Self::is_smem_addr(addr, smem_base_addr, smem_size) {
+            return (addr as u64 - smem_base_addr) as usize;
+        }
+        let index = addr as usize;
+        if index < smem_size {
+            return index;
+        }
+        panic!(
+            "shared memory address out of bounds: addr=0x{addr:08x}, base=0x{smem_base_addr:08x}, size=0x{smem_size:x}"
+        );
+    }
+
     pub fn alu(issued: &IssuedInst, lane: usize) -> Option<u32> {
         fn check_zero(b: u32) -> bool {
             if b == 0 {
@@ -396,31 +418,9 @@ impl ExecuteUnit {
         lane: usize,
         gmem: &RwLock<FlatMemory>,
         smem: &FlatMemory,
+        smem_base_addr: u64,
     ) -> Option<u32> {
-        static INSTS: phf::Map<(u8, u8), &'static str> = phf_map! {
-            (0u8, 0u8) => "lb.global",
-            (0u8, 1u8) => "lb.shared",
-            (1u8, 0u8) => "lh.global",
-            (1u8, 1u8) => "lh.shared",
-            (2u8, 0u8) => "lw.global",
-            (2u8, 1u8) => "lw.shared",
-            (3u8, 0u8) => "ld.global",
-            (3u8, 1u8) => "ld.shared",
-            (4u8, 0u8) => "lbu.global",
-            (4u8, 1u8) => "lbu.shared",
-            (5u8, 0u8) => "lhu.global",
-            (5u8, 1u8) => "lhu.shared",
-            (6u8, 0u8) => "lwu.global",
-            (6u8, 1u8) => "lwu.shared",
-        };
-
-        let key = (issued_inst.f3, issued_inst.opext);
-        let shared_load = issued_inst.opext == 1;
-        let Some(&mnemonic) = INSTS.get(&key) else {
-            unimplemented!("unknown load instruction")
-        };
-
-        let inst_imp = InstImp(mnemonic, |[a, b]| a.wrapping_add(b));
+        let inst_imp = InstImp("load", |[a, b]| a.wrapping_add(b));
         let alu_result = print_and_execute!(
             inst_imp,
             [issued_inst.rs1_data[lane].unwrap(), issued_inst.imm32]
@@ -432,8 +432,11 @@ impl ExecuteUnit {
         let load_end = alu_result.wrapping_add(load_span);
         assert_eq!(alu_result >> 2, load_end >> 2, "misaligned load");
 
+        let shared_load = issued_inst.opext == 1
+            || Self::is_smem_addr(alu_result, smem_base_addr, smem.size_bytes());
         let load_data_bytes = if shared_load {
-            smem.read_n::<4>(load_addr as usize).expect("load failed")
+            let smem_index = Self::smem_index(load_addr, smem_base_addr, smem.size_bytes());
+            smem.read_n::<4>(smem_index).expect("load failed")
         } else {
             gmem.read()
                 .expect("lock poisoned")
@@ -468,32 +471,26 @@ impl ExecuteUnit {
         lane: usize,
         gmem: &RwLock<FlatMemory>,
         smem: &mut FlatMemory,
+        smem_base_addr: u64,
     ) -> Option<u32> {
-        static INSTS: phf::Map<(u8, u8), &'static str> = phf_map! {
-            (0u8, 0u8) => "sb.global",
-            (0u8, 1u8) => "sb.shared",
-            (1u8, 0u8) => "sh.global",
-            (1u8, 1u8) => "sh.shared",
-            (2u8, 0u8) => "sw.global",
-            (2u8, 1u8) => "sw.shared",
-        };
-
-        let key = (issued_inst.f3, issued_inst.opext);
-        let shared_store = issued_inst.opext == 1;
-        let Some(&mnemonic) = INSTS.get(&key) else {
-            unimplemented!("unknown store instruction")
-        };
-
-        let inst_imp = InstImp(mnemonic, |[a, b]| a.wrapping_add(b));
+        let inst_imp = InstImp("store", |[a, b]| a.wrapping_add(b));
         let alu_result = print_and_execute!(
             inst_imp,
             [issued_inst.rs1_data[lane].unwrap(), issued_inst.imm32]
         );
 
+        let smem_size = smem.size_bytes();
+        let shared_store =
+            issued_inst.opext == 1 || Self::is_smem_addr(alu_result, smem_base_addr, smem_size);
+        let smem_addr = if shared_store {
+            Some(Self::smem_index(alu_result, smem_base_addr, smem_size))
+        } else {
+            None
+        };
         let mut gmem = gmem.write().expect("lock poisoned");
         let mem = if shared_store { smem } else { gmem.deref_mut() };
 
-        let addr = alu_result as usize;
+        let addr = smem_addr.unwrap_or(alu_result as usize);
         let data = issued_inst.rs2_data[lane].unwrap().to_le_bytes();
         match issued_inst.f3 & 3 {
             0 => mem.write(addr, &data[0..1]),
@@ -648,6 +645,7 @@ impl ExecuteUnit {
         neutrino: &mut Neutrino,
         gmem: &RwLock<FlatMemory>,
         smem: &mut FlatMemory,
+        smem_base_addr: u64,
     ) -> Writeback {
         let num_lanes = rf.len();
         // lane id of first active thread
@@ -693,7 +691,7 @@ impl ExecuteUnit {
             }
             Opcode::LOAD => (
                 Self::execute_lanes(
-                    |lane| ExecuteUnit::load(&issued, lane, gmem, smem),
+                    |lane| ExecuteUnit::load(&issued, lane, gmem, smem, smem_base_addr),
                     tmask,
                     rf,
                 ),
@@ -701,7 +699,7 @@ impl ExecuteUnit {
             ),
             Opcode::STORE => (
                 Self::execute_lanes(
-                    |lane| ExecuteUnit::store(&issued, lane, gmem, smem),
+                    |lane| ExecuteUnit::store(&issued, lane, gmem, smem, smem_base_addr),
                     tmask,
                     rf,
                 ),

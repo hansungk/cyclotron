@@ -164,9 +164,15 @@ impl CoreTimingModel {
 
         request.warp = warp;
         if request.id == 0 {
-            request.id = self.next_smem_id;
-            self.next_smem_id = self.next_smem_id.saturating_add(1);
+            request.id = if self.next_smem_id == 0 {
+                1
+            } else {
+                self.next_smem_id
+            };
         } else if request.id >= self.next_smem_id {
+            self.next_smem_id = request.id.saturating_add(1);
+        }
+        if request.id >= self.next_smem_id {
             self.next_smem_id = request.id.saturating_add(1);
         }
         let request_id = request.id;

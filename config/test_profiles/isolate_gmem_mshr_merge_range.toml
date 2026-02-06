@@ -1,0 +1,5 @@
+# GMEM MSHR merge stats range
+
+[gmem.stats_range]
+start = 0x90000000
+end = 0x90000040

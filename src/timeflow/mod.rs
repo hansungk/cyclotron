@@ -17,7 +17,7 @@ pub mod unit_tests;
 pub mod warp_scheduler;
 pub mod writeback;
 
-pub use barrier::{BarrierConfig, BarrierManager};
+pub use barrier::{BarrierConfig, BarrierManager, BarrierSummary};
 pub use core_graph::{CoreGraph, CoreGraphConfig};
 pub use dma::{DmaConfig, DmaQueue, DmaReject, DmaRejectReason};
 pub use execute::{ExecUnitKind, ExecutePipeline, ExecutePipelineConfig};
@@ -49,4 +49,5 @@ pub use warp_scheduler::{WarpIssueScheduler, WarpSchedulerConfig};
 pub use writeback::{
     WritebackConfig, WritebackIssue, WritebackPayload, WritebackQueue, WritebackReject,
     WritebackRejectReason,
+    WritebackStats,
 };

@@ -1,0 +1,5 @@
+# GMEM L2 miss stats range
+
+[gmem.stats_range]
+start = 0x90000000
+end = 0x90000100

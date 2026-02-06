@@ -249,6 +249,7 @@ impl CoreTimingModel {
             smem: self.graph.smem_stats(),
             icache: self.graph.icache_stats(),
             lsu: self.graph.lsu_stats(),
+            writeback: self.graph.writeback_stats(),
         }
     }
 
@@ -258,6 +259,7 @@ impl CoreTimingModel {
         let smem_stats_snapshot = stats.smem.clone();
         let icache_stats_snapshot = stats.icache;
         let lsu_stats_snapshot = stats.lsu;
+        let writeback_stats_snapshot = stats.writeback;
         let (l0_stats, l1_stats, l2_stats) = self.graph.cluster_gmem_hierarchy_stats_per_level();
         let gmem_level_stats = GmemLevelSummary {
             l0: l0_stats,
@@ -284,6 +286,8 @@ impl CoreTimingModel {
             smem_stats: smem_stats_snapshot.clone(),
             icache_stats: icache_stats_snapshot,
             lsu_stats: lsu_stats_snapshot,
+            writeback_stats: writeback_stats_snapshot,
+            barrier_summary: self.graph.barrier_stats(),
             dma_completed: self.graph.dma_completed(),
             tensor_completed: self.graph.tensor_completed(),
             stall_summary: StallSummary {
@@ -302,6 +306,8 @@ impl CoreTimingModel {
         self.graph.clear_smem_stats();
         self.graph.clear_icache_stats();
         self.graph.clear_lsu_stats();
+        self.graph.clear_writeback_stats();
+        self.graph.clear_barrier_stats();
         self.last_logged_gmem_completed = 0;
         self.last_logged_smem_completed = 0;
         self.execute_util = super::ExecuteUtilSummary::default();

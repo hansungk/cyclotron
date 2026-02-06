@@ -137,4 +137,3 @@ impl MshrTable {
         Some(self.entries.swap_remove(idx))
     }
 }
-

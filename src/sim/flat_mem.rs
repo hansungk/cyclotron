@@ -61,4 +61,8 @@ impl FlatMemory {
             bytes.copy_from_slice(&data);
         }
     }
+
+    pub fn size_bytes(&self) -> usize {
+        self.bytes.len()
+    }
 }

@@ -11,7 +11,11 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct SmemStats {
     pub issued: u64,
+    pub read_issued: u64,
+    pub write_issued: u64,
     pub completed: u64,
+    pub read_completed: u64,
+    pub write_completed: u64,
     pub queue_full_rejects: u64,
     pub busy_rejects: u64,
     pub bytes_issued: u64,
@@ -23,6 +27,8 @@ pub struct SmemStats {
     // Sampling and conflict counters (per-bank)
     pub sample_cycles: u64,
     pub bank_busy_samples: Vec<u64>,
+    pub bank_read_busy_samples: Vec<u64>,
+    pub bank_write_busy_samples: Vec<u64>,
     pub bank_attempts: Vec<u64>,
     pub bank_conflicts: Vec<u64>,
 }
@@ -301,6 +307,8 @@ impl SmemSubgraph {
 
         let mut stats = SmemStats::default();
         stats.bank_busy_samples = vec![0; num_banks];
+        stats.bank_read_busy_samples = vec![0; num_banks];
+        stats.bank_write_busy_samples = vec![0; num_banks];
         stats.bank_attempts = vec![0; num_banks];
         stats.bank_conflicts = vec![0; num_banks];
 
@@ -325,6 +333,14 @@ impl SmemSubgraph {
             let busy = if self.dual_port {
                 let r = self.bank_read_nodes.get(bank).map(|&n| is_busy(n)).unwrap_or(false);
                 let w = self.bank_write_nodes.get(bank).map(|&n| is_busy(n)).unwrap_or(false);
+                if r {
+                    self.stats.bank_read_busy_samples[bank] =
+                        self.stats.bank_read_busy_samples[bank].saturating_add(1);
+                }
+                if w {
+                    self.stats.bank_write_busy_samples[bank] =
+                        self.stats.bank_write_busy_samples[bank].saturating_add(1);
+                }
                 r || w
             } else {
                 // bank_nodes stores one node per bank when not dual_port
@@ -380,6 +396,7 @@ impl SmemSubgraph {
 
         let lane_idx = request.warp % self.lane_nodes.len();
         let bytes = request.bytes;
+        let is_store = request.is_store;
         let payload = CoreFlowPayload::Smem(request);
         let service_req = ServiceRequest::new(payload, bytes);
         let ingress_node = if let Some(serial) = self.serial_node {
@@ -390,6 +407,11 @@ impl SmemSubgraph {
         match graph.try_put(ingress_node, now, service_req) {
             Ok(ticket) => {
                 self.stats.issued = self.stats.issued.saturating_add(1);
+                if is_store {
+                    self.stats.write_issued = self.stats.write_issued.saturating_add(1);
+                } else {
+                    self.stats.read_issued = self.stats.read_issued.saturating_add(1);
+                }
                 self.stats.bytes_issued = self.stats.bytes_issued.saturating_add(bytes as u64);
                 self.stats.inflight = self.stats.inflight.saturating_add(1);
                 self.stats.max_inflight = self.stats.max_inflight.max(self.stats.inflight);
@@ -428,6 +450,13 @@ impl SmemSubgraph {
                     match result.payload {
                         CoreFlowPayload::Smem(request) => {
                             self.stats.completed = self.stats.completed.saturating_add(1);
+                            if request.is_store {
+                                self.stats.write_completed =
+                                    self.stats.write_completed.saturating_add(1);
+                            } else {
+                                self.stats.read_completed =
+                                    self.stats.read_completed.saturating_add(1);
+                            }
                             self.stats.bytes_completed = self
                                 .stats
                                 .bytes_completed
@@ -467,4 +496,3 @@ pub fn extract_smem_request(request: ServiceRequest<CoreFlowPayload>) -> SmemReq
         _ => panic!("expected smem request"),
     }
 }
-
