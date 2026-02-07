@@ -335,23 +335,6 @@ impl CoreTimingModel {
         }
     }
 
-    pub fn notify_barrier_arrive(
-        &mut self,
-        now: Cycle,
-        warp: usize,
-        barrier_id: u32,
-        scheduler: &mut Scheduler,
-    ) {
-        if !self.graph.barrier_is_enabled() {
-            return;
-        }
-        let _ = self.graph.barrier_arrive(now, warp, barrier_id);
-        if let Some(slot) = self.barrier_inflight.get_mut(warp) {
-            *slot = true;
-        }
-        scheduler.set_resource_wait_until(warp, Some(Cycle::MAX));
-    }
-
     pub fn select_issue_mask(&mut self, now: Cycle, eligible: &[bool]) -> Vec<bool> {
         self.issue_scheduler.select(now, eligible)
     }

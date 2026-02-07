@@ -275,23 +275,6 @@ impl Warp {
             }
         }
 
-        let pending_barrier_id = if (decoded.opcode == Opcode::CUSTOM0
-            || decoded.opcode == Opcode::CUSTOM2)
-            && decoded.f3 == 0b100
-            && decoded.f7 == 0
-            && tmask != 0
-        {
-            let first_lid = tmask.trailing_zeros() as usize;
-            let rf = self.base.state.reg_file.as_slice();
-            Some(
-                rf.get(first_lid)
-                    .map(|lrf| lrf.read_gpr(decoded.rs1_addr))
-                    .unwrap_or(0),
-            )
-        } else {
-            None
-        };
-
         // operand collection
         let rf = self.base.state.reg_file.as_slice();
         let issued = ExecuteUnit::collect(&uop, rf);
@@ -302,9 +285,6 @@ impl Warp {
             .is_err()
         {
             return Ok(None);
-        }
-        if let Some(barrier_id) = pending_barrier_id {
-            timing_model.notify_barrier_arrive(now, self.wid, barrier_id, scheduler);
         }
 
         // execute

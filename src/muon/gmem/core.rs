@@ -107,14 +107,7 @@ impl CoreTimingModel {
 
     pub fn tick(&mut self, now: Cycle, scheduler: &mut Scheduler) {
         self.graph.tick_front(now);
-        if let Some(released) = self.graph.barrier_tick(now) {
-            for warp in released {
-                if let Some(slot) = self.barrier_inflight.get_mut(warp) {
-                    *slot = false;
-                }
-                scheduler.clear_resource_wait(warp);
-            }
-        }
+
         self.drive_lsu_issues(now);
         self.issue_pending_cluster_gmem(now);
         self.issue_pending_cluster_smem(now);
@@ -287,7 +280,7 @@ impl CoreTimingModel {
             icache_stats: icache_stats_snapshot,
             lsu_stats: lsu_stats_snapshot,
             writeback_stats: writeback_stats_snapshot,
-            barrier_summary: self.graph.barrier_stats(),
+            barrier_summary: crate::timeflow::BarrierSummary::default(),
             dma_completed: self.graph.dma_completed(),
             tensor_completed: self.graph.tensor_completed(),
             stall_summary: StallSummary {
@@ -307,7 +300,6 @@ impl CoreTimingModel {
         self.graph.clear_icache_stats();
         self.graph.clear_lsu_stats();
         self.graph.clear_writeback_stats();
-        self.graph.clear_barrier_stats();
         self.last_logged_gmem_completed = 0;
         self.last_logged_smem_completed = 0;
         self.execute_util = super::ExecuteUtilSummary::default();
