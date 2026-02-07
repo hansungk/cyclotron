@@ -12,7 +12,7 @@ ELF_PATH="test/performance-model-tests/binaries/writeback_mixed_saturate.elf"
 
 cargo run --release -- "$CONFIG_PATH" --binary-path "$ELF_PATH"
 
-RUN_DIR="$(ls -td performance_logs/run_* | head -n 1)"
+RUN_DIR="$(ls -td performance_logs/run_* | sed -n '1p')"
 echo "Latest run: ${RUN_DIR}"
 
 jq '{writeback_issued: .total.writeback_stats.issued, writeback_completed: .total.writeback_stats.completed, writeback_queue_full: .total.writeback_stats.queue_full_rejects, writeback_busy: .total.writeback_stats.busy_rejects, gmem_completed: .total.gmem_stats.completed, smem_completed: .total.smem_stats.completed}' "${RUN_DIR}/summary.json"

@@ -14,7 +14,7 @@ BANKS=8
 
 cargo run --release -- "$CONFIG_PATH" --binary-path "$ELF_PATH"
 
-RUN_DIR="$(ls -td performance_logs/run_* | head -n 1)"
+RUN_DIR="$(ls -td performance_logs/run_* | sed -n '1p')"
 echo "Latest run: ${RUN_DIR}"
 
 jq '{scheduler_cycles: .total.scheduler.cycles, smem_issued: .total.smem_stats.issued, smem_completed: .total.smem_stats.completed, smem_queue_full: .total.smem_stats.queue_full_rejects, smem_busy: .total.smem_stats.busy_rejects, smem_conflict_instructions: .total.smem_conflicts.instructions, smem_conflict_active_lanes: .total.smem_conflicts.active_lanes, smem_conflict_lanes: .total.smem_conflicts.conflict_lanes, smem_unique_banks: .total.smem_conflicts.unique_banks, smem_unique_subbanks: .total.smem_conflicts.unique_subbanks}' "${RUN_DIR}/summary.json"

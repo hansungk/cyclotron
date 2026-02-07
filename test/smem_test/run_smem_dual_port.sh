@@ -18,7 +18,7 @@ run_case() {
   cargo run --release -- "$config_path" --binary-path "$ELF_PATH"
 
   local run_dir
-  run_dir="$(ls -td performance_logs/run_* | head -n 1)"
+  run_dir="$(ls -td performance_logs/run_* | sed -n '1p')"
   echo "${label} run: ${run_dir}"
 
   jq '{scheduler_cycles: .total.scheduler.cycles, smem_issued: .total.smem_stats.issued, smem_read_issued: .total.smem_stats.read_issued, smem_write_issued: .total.smem_stats.write_issued, smem_completed: .total.smem_stats.completed, smem_read_completed: .total.smem_stats.read_completed, smem_write_completed: .total.smem_stats.write_completed, smem_queue_full: .total.smem_stats.queue_full_rejects, smem_busy: .total.smem_stats.busy_rejects, smem_conflict_instructions: .total.smem_conflicts.instructions, smem_conflict_active_lanes: .total.smem_conflicts.active_lanes, smem_conflict_lanes: .total.smem_conflicts.conflict_lanes, smem_unique_banks: .total.smem_conflicts.unique_banks, smem_unique_subbanks: .total.smem_conflicts.unique_subbanks}' "${run_dir}/summary.json"

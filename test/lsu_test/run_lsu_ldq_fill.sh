@@ -12,7 +12,7 @@ ELF_PATH="test/performance-model-tests/binaries/lsu_ldq_fill.elf"
 
 cargo run --release -- "$CONFIG_PATH" --binary-path "$ELF_PATH"
 
-RUN_DIR="$(ls -td performance_logs/run_* | head -n 1)"
+RUN_DIR="$(ls -td performance_logs/run_* | sed -n '1p')"
 echo "Latest run: ${RUN_DIR}"
 
 jq '{lsu_issued: .total.lsu_stats.issued, lsu_completed: .total.lsu_stats.completed, lsu_queue_full: .total.lsu_stats.queue_full_rejects, lsu_busy: .total.lsu_stats.busy_rejects, global_ldq_issued: .total.lsu_stats.global_ldq_issued, global_ldq_queue_full_rejects: .total.lsu_stats.global_ldq_queue_full_rejects, global_stq_queue_full_rejects: .total.lsu_stats.global_stq_queue_full_rejects, shared_ldq_queue_full_rejects: .total.lsu_stats.shared_ldq_queue_full_rejects, shared_stq_queue_full_rejects: .total.lsu_stats.shared_stq_queue_full_rejects, gmem_issued: .total.gmem_stats.issued, l0_accesses: .total.gmem_hits.l0_accesses, l1_accesses: .total.gmem_hits.l1_accesses, l2_accesses: .total.gmem_hits.l2_accesses, smem_issued: .total.smem_stats.issued}' "${RUN_DIR}/summary.json"

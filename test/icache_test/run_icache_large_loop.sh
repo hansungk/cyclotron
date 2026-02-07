@@ -18,7 +18,7 @@ run_case() {
 
   cargo run --release -- "$cfg" --binary-path "$ELF_PATH"
   local run_dir
-  run_dir="$(ls -td performance_logs/run_* | head -n 1)"
+  run_dir="$(ls -td performance_logs/run_* | sed -n '1p')"
 
   local cycles issued completed hits misses qf busy
   cycles="$(jq -r '.total.scheduler.cycles' "${run_dir}/summary.json")"

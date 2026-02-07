@@ -13,7 +13,7 @@ ELF_PATH="test/performance-model-tests/binaries/gmem_coalesce.elf"
 
 cargo run --release -- "$CONFIG_PATH" --binary-path "$ELF_PATH"
 
-RUN_DIR="$(ls -td performance_logs/run_* | head -n 1)"
+RUN_DIR="$(ls -td performance_logs/run_* | sed -n '1p')"
 echo "Latest run: ${RUN_DIR}"
 jq '{l1_accesses: .total.gmem_hits.l1_accesses, issued: .total.gmem_stats.issued}' \
   "${RUN_DIR}/summary.json"
