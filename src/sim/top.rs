@@ -145,6 +145,16 @@ impl CyclotronTop {
         top
     }
 
+    pub fn schedule_clusters(&mut self) {
+        let tb_schedule = self.cproc.schedule();
+        let num_clusters = self.clusters.len();
+        for id in 0..num_clusters {
+            if tb_schedule[id] {
+                self.clusters[id].schedule_threadblock();
+            }
+        }
+    }
+
     /// Load a word from gmem.
     pub fn gmem_load(&self, addr: u32) -> [u8; 4] {
         self.gmem
@@ -173,19 +183,13 @@ impl CyclotronTop {
 
 impl ModuleBehaviors for CyclotronTop {
     fn tick_one(&mut self) {
-        self.cproc.tick_one();
-        let tb_schedule = self.cproc.schedule();
-        let num_clusters = self.clusters.len();
-        for id in 0..num_clusters {
-            if tb_schedule[id] {
-                self.clusters[id].schedule_threadblock();
-            }
-        }
+        self.schedule_clusters();
 
         self.clusters.iter_mut().for_each(Cluster::tick_one);
 
         // FIXME: if tick_one() is called after finished() is true, the retire() call might result
         // in an underflow.
+        let num_clusters = self.clusters.len();
         for id in 0..num_clusters {
             let retired_tb = self.clusters[id].retired_threadblock();
             self.cproc.retire(id, retired_tb);
@@ -193,7 +197,6 @@ impl ModuleBehaviors for CyclotronTop {
     }
 
     fn reset(&mut self) {
-        // reset doesn't clear memory
         self.clusters.iter_mut().for_each(Cluster::reset);
     }
 }

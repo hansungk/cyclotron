@@ -68,9 +68,10 @@ impl MuonCore {
         self.scheduler.all_warps_retired()
     }
 
+    /// Schedule all warps and get per-warp PC/tmasks.
     pub fn schedule(&mut self) -> Vec<Option<Schedule>> {
         let schedules = (0..self.conf().num_warps)
-            .map(|wid| { self.scheduler.get_schedule(wid) })
+            .map(|wid| { self.scheduler.schedule(wid) })
             .collect::<Vec<_>>();
         schedules
     }
@@ -123,7 +124,7 @@ impl MuonCore {
         writeback
     }
 
-    /// Process a single instruction in the core by sequencing both the frontend and the backend.
+    /// Process all warps & advance each by a single instruction.
     pub fn process(&mut self, neutrino: &mut Neutrino) -> Result<(), ExecErr> {
         let schedules = self.schedule();
         let ibuf = self.frontend(&schedules);
@@ -132,7 +133,7 @@ impl MuonCore {
 
     /// Exposes a non-mutating fetch interface for the core.
     pub fn fetch(&self, warp: u32, pc: u32) -> u64 {
-        // TODO: `warp` is not really necessary
+        // warp is not really necessary here
         self.warps[warp as usize].fetch(pc)
     }
 
