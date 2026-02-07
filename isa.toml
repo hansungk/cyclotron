@@ -5,6 +5,9 @@ num_cores = 1
 num_regs = 256
 start_pc = 0x10000000
 
+# 128 KiB
+smem_size = 0x20000
+
 [neutrino]
 num_entries = 32
 num_deps = 3

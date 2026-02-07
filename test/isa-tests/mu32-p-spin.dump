@@ -1,0 +1,7 @@
+
+mu32-p-spin:	file format elf32-littleriscv
+
+Disassembly of section .text:
+
+10000000 <.text>:
+10000000: 6f 00 00 00 00 00 00 00      	j	0x10000000 <.text>

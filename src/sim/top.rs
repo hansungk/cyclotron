@@ -1,4 +1,5 @@
 use crate::base::behavior::*;
+use crate::base::mem::HasMemory;
 use crate::base::module::IsModule;
 use crate::cluster::Cluster;
 use crate::command_proc::CommandProcessor;
@@ -21,6 +22,21 @@ pub struct Sim {
 
 impl Sim {
     pub fn new(
+        sim_config: SimConfig,
+        muon_config: MuonConfig,
+        neutrino_config: NeutrinoConfig,
+        mem_config: MemConfig,
+    ) -> Sim {
+        Self::new_with_timing(
+            sim_config,
+            muon_config,
+            neutrino_config,
+            mem_config,
+            CoreGraphConfig::default(),
+        )
+    }
+
+    pub fn new_with_timing(
         sim_config: SimConfig,
         muon_config: MuonConfig,
         neutrino_config: NeutrinoConfig,
@@ -56,6 +72,7 @@ impl Sim {
         for cycle in 0..self.top.timeout {
             if self.top.finished() {
                 println!("simulation finished after {} cycles", cycle + 1);
+
                 let summaries = self
                     .top
                     .clusters
@@ -63,20 +80,24 @@ impl Sim {
                     .flat_map(|cluster| cluster.cores.iter().map(|core| core.timing_summary()))
                     .collect::<Vec<_>>();
                 crate::sim::perf_log::write_summary(summaries);
-                if let Some(mut tohost) = self.top.clusters[0].cores[0].scheduler.state_mut().tohost
-                {
-                    if tohost > 0 {
-                        tohost >>= 1;
-                        println!("failed test case {}", tohost);
+
+                if let Some(tohost) = self.top.clusters[0].cores[0].scheduler.state().tohost {
+                    if tohost != 0 {
+                        let case = tohost >> 1;
+                        println!(
+                            "Cyclotron: isa-test failed with tohost={}, case={}",
+                            tohost, case
+                        );
                         return Err(tohost);
                     } else {
-                        println!("test passed");
+                        println!("Cyclotron: isa-test reached tohost");
                     }
                 }
                 return Ok(());
             }
             self.top.tick_one();
         }
+
         let summaries = self
             .top
             .clusters
@@ -84,10 +105,11 @@ impl Sim {
             .flat_map(|cluster| cluster.cores.iter().map(|core| core.timing_summary()))
             .collect::<Vec<_>>();
         crate::sim::perf_log::write_summary(summaries);
+
         Err(0)
     }
 
-    // Advances all cores by one instruction.
+    /// Advances all cores by one instruction.
     pub fn tick(&mut self) {
         if self.top.finished() {
             return;
@@ -102,6 +124,9 @@ impl Sim {
             self.top.clusters[0].cores.len() == 1,
             "Sim::tick() only supports 1-cluster 1-core config as of now."
         );
+
+        // now the tracer should hold the instructions
+        // TODO: report cycle
     }
 
     pub fn finished(&self) -> bool {
@@ -146,7 +171,7 @@ impl CyclotronTop {
         let gmem = Arc::new(RwLock::new(gmem));
 
         let num_clusters = 1;
-        let cores_per_cluster = cluster_config.muon_config.num_cores;
+        let cores_per_cluster = cluster_config.muon_config.num_cores.max(1);
         let gmem_timing = Arc::new(RwLock::new(crate::timeflow::ClusterGmemGraph::new(
             cluster_config.timing_config.memory.gmem.clone(),
             num_clusters,
@@ -154,7 +179,7 @@ impl CyclotronTop {
         )));
 
         for id in 0..num_clusters {
-            clusters.push(Cluster::new(
+            clusters.push(Cluster::new_with_timing(
                 cluster_config.clone(),
                 id,
                 logger,
@@ -162,7 +187,7 @@ impl CyclotronTop {
                 gmem_timing.clone(),
             ));
         }
-        let top = CyclotronTop {
+        CyclotronTop {
             cproc: CommandProcessor::new(
                 Arc::new(config.cluster_config.muon_config.clone()),
                 1, /*FIXME: properly get thread dimension*/
@@ -171,9 +196,39 @@ impl CyclotronTop {
             timeout: config.timeout,
             gmem,
             gmem_timing,
-        };
+        }
+    }
 
-        top
+    pub fn schedule_clusters(&mut self) {
+        let tb_schedule = self.cproc.schedule();
+        let num_clusters = self.clusters.len();
+        for id in 0..num_clusters {
+            if tb_schedule[id] {
+                self.clusters[id].schedule_threadblock();
+            }
+        }
+    }
+
+    /// Load a word from gmem.
+    pub fn gmem_load(&self, addr: u32) -> [u8; 4] {
+        self.gmem
+            .read()
+            .expect("lock poisoned")
+            .read_n::<4>(addr as usize)
+            .expect("load failed")
+    }
+
+    /// Store a data with given size to gmem.  Doesn't support partial writes.
+    pub fn gmem_store(&self, addr: u32, data: u32, size: u32) {
+        let mut gmem = self.gmem.write().expect("lock poisoned");
+        let data_bytes = data.to_le_bytes();
+        match size {
+            0 => gmem.write(addr as usize, &data_bytes[0..1]), // store byte
+            1 => gmem.write(addr as usize, &data_bytes[0..2]), // store half
+            2 => gmem.write(addr as usize, &data_bytes[0..4]), // store word
+            _ => panic!("unimplemented store type"),
+        }
+        .expect("store failed");
     }
 
     pub fn finished(&self) -> bool {
@@ -183,19 +238,13 @@ impl CyclotronTop {
 
 impl ModuleBehaviors for CyclotronTop {
     fn tick_one(&mut self) {
-        self.cproc.tick_one();
-        let tb_schedule = self.cproc.schedule();
-        let num_clusters = self.clusters.len();
-        for id in 0..num_clusters {
-            if tb_schedule[id] {
-                self.clusters[id].schedule_threadblock();
-            }
-        }
+        self.schedule_clusters();
 
         self.clusters.iter_mut().for_each(Cluster::tick_one);
 
         // FIXME: if tick_one() is called after finished() is true, the retire() call might result
         // in an underflow.
+        let num_clusters = self.clusters.len();
         for id in 0..num_clusters {
             let retired_tb = self.clusters[id].retired_threadblock();
             self.cproc.retire(id, retired_tb);
@@ -203,7 +252,6 @@ impl ModuleBehaviors for CyclotronTop {
     }
 
     fn reset(&mut self) {
-        // reset doesn't clear memory
         self.clusters.iter_mut().for_each(Cluster::reset);
     }
 }

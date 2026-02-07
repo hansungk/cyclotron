@@ -2,15 +2,14 @@ use crate::base::{behavior::*, module::*};
 use crate::info;
 use crate::muon::config::{LaneConfig, MuonConfig};
 use crate::muon::decode::{InstBuf, IssuedInst};
-use crate::muon::gmem::CorePerfSummary;
-use crate::muon::gmem::CoreTimingModel;
+use crate::muon::gmem::{CorePerfSummary, CoreTimingModel};
 use crate::muon::scheduler::{Schedule, Scheduler};
 use crate::muon::warp::{ExecErr, Warp, Writeback};
 use crate::neutrino::neutrino::Neutrino;
 use crate::sim::flat_mem::FlatMemory;
 use crate::sim::log::Logger;
 use crate::sim::trace::Tracer;
-use crate::timeflow::CoreGraphConfig;
+use crate::timeflow::{ClusterGmemGraph, CoreGraphConfig, GmemFlowConfig};
 use crate::timeq::module_now;
 use std::iter::zip;
 use std::sync::{Arc, RwLock};
@@ -20,7 +19,6 @@ pub struct MuonState {}
 
 pub struct MuonCore {
     base: ModuleBase<MuonState, MuonConfig>,
-    pub id: usize,
     pub scheduler: Scheduler,
     pub warps: Vec<Warp>,
     pub(crate) shared_mem: FlatMemory,
@@ -33,28 +31,62 @@ pub struct MuonCore {
 impl MuonCore {
     pub fn new(
         config: Arc<MuonConfig>,
-        id: usize,
+        cluster_id: usize,
+        core_id: usize,
+        logger: &Arc<Logger>,
+        gmem: Arc<RwLock<FlatMemory>>,
+    ) -> Self {
+        let num_cores = config.num_cores.max(1);
+        let timing_core_id = cluster_id * num_cores + core_id;
+        let cluster_gmem = Arc::new(RwLock::new(ClusterGmemGraph::new(
+            GmemFlowConfig::default(),
+            1,
+            num_cores,
+        )));
+
+        Self::new_with_timing(
+            config,
+            cluster_id,
+            core_id,
+            logger,
+            gmem,
+            CoreGraphConfig::default(),
+            timing_core_id,
+            cluster_id,
+            cluster_gmem,
+        )
+    }
+
+    pub fn new_with_timing(
+        config: Arc<MuonConfig>,
+        cluster_id: usize,
+        core_id: usize,
         logger: &Arc<Logger>,
         gmem: Arc<RwLock<FlatMemory>>,
         timing_config: CoreGraphConfig,
         timing_core_id: usize,
         timing_cluster_id: usize,
-        cluster_gmem: Arc<std::sync::RwLock<crate::timeflow::ClusterGmemGraph>>,
+        cluster_gmem: Arc<RwLock<ClusterGmemGraph>>,
     ) -> Self {
         let num_warps = config.num_warps;
         let mut core = MuonCore {
             base: Default::default(),
-            id,
-            scheduler: Scheduler::new(Arc::clone(&config), id),
+            scheduler: Scheduler::new(Arc::clone(&config), core_id),
             warps: (0..num_warps)
                 .map(|warp_id| {
-                    let mut per_cfg = (*config).clone();
-                    per_cfg.lane_config = LaneConfig {
-                        warp_id,
-                        core_id: id,
-                        ..config.lane_config
-                    };
-                    Warp::new(Arc::new(per_cfg), logger, gmem.clone())
+                    Warp::new(
+                        Arc::new(MuonConfig {
+                            lane_config: LaneConfig {
+                                warp_id,
+                                core_id,
+                                cluster_id,
+                                ..config.lane_config
+                            },
+                            ..*config
+                        }),
+                        logger,
+                        gmem.clone(),
+                    )
                 })
                 .collect(),
             shared_mem: FlatMemory::new_with_size(config.smem_size, None),
@@ -70,7 +102,12 @@ impl MuonCore {
             ),
         };
 
-        info!(core.logger, "muon core {} instantiated!", id);
+        info!(
+            core.logger,
+            "muon core {} in cluster {} instantiated!",
+            core_id,
+            cluster_id
+        );
 
         core.init_conf(Arc::clone(&config));
         core
@@ -86,11 +123,12 @@ impl MuonCore {
         pc: u32,
         block_idx: (u32, u32, u32),
         thread_idxs: Vec<Vec<(u32, u32, u32)>>,
+        bp: u32,
     ) {
-        assert!(thread_idxs.len() <= self.conf().num_warps && thread_idxs.len() > 0);
+        assert!(thread_idxs.len() <= self.conf().num_warps && !thread_idxs.is_empty());
         self.scheduler.spawn_n_warps(pc, &thread_idxs);
         for (warp, warp_thread_idxs) in self.warps.iter_mut().zip(thread_idxs.iter()) {
-            warp.set_block_threads(block_idx, warp_thread_idxs);
+            warp.set_block_threads_bp(block_idx, warp_thread_idxs, bp);
         }
     }
 
@@ -103,11 +141,11 @@ impl MuonCore {
         self.timing_model.outstanding_gmem() > 0 || self.timing_model.outstanding_smem() > 0
     }
 
+    /// Schedule all warps and get per-warp PC/tmasks.
     pub fn schedule(&mut self) -> Vec<Option<Schedule>> {
-        let schedules = (0..self.conf().num_warps)
-            .map(|wid| self.scheduler.get_schedule(wid))
-            .collect::<Vec<_>>();
-        schedules
+        (0..self.conf().num_warps)
+            .map(|wid| self.scheduler.schedule(wid))
+            .collect::<Vec<_>>()
     }
 
     pub fn frontend(&mut self, schedules: &[Option<Schedule>]) -> InstBuf {
@@ -153,12 +191,11 @@ impl MuonCore {
             .record_issue_stats(now, active_warps, eligible_warps, issued_warps);
 
         let mut writebacks: Vec<Option<Writeback>> = Vec::with_capacity(self.warps.len());
-
         let warps = self.warps.iter_mut();
         let ibuf_entries = ibuf.0.iter().copied();
 
-        for (wid, (warp, ibuf)) in zip(warps, ibuf_entries).enumerate() {
-            let wb_opt = match ibuf {
+        for (wid, (warp, ibuf_entry)) in zip(warps, ibuf_entries).enumerate() {
+            let wb_opt = match ibuf_entry {
                 Some(ib) => {
                     if !issue_mask.get(wid).copied().unwrap_or(false) {
                         self.scheduler
@@ -166,7 +203,7 @@ impl MuonCore {
                         self.scheduler.replay_instruction(wid);
                         None
                     } else {
-                        warp.backend(
+                        warp.backend_timed(
                             ib,
                             &mut self.scheduler,
                             neutrino,
@@ -208,11 +245,10 @@ impl MuonCore {
         self.warps[warp_id].tick_one();
 
         // no tracing done; instruction tracing is only enabled in the ISA-model mode
-
         writeback
     }
 
-    /// Process a single instruction in the core by sequencing both the frontend and the backend.
+    /// Process all warps & advance each by a single instruction.
     pub fn process(&mut self, neutrino: &mut Neutrino) -> Result<(), ExecErr> {
         let schedules = self.schedule();
         let ibuf = self.frontend(&schedules);
@@ -221,7 +257,7 @@ impl MuonCore {
 
     /// Exposes a non-mutating fetch interface for the core.
     pub fn fetch(&self, warp: u32, pc: u32) -> u64 {
-        // TODO: `warp` is not really necessary
+        // warp is not really necessary here
         self.warps[warp as usize].fetch(pc)
     }
 
@@ -231,22 +267,6 @@ impl MuonCore {
 
     pub fn get_tracer(&self) -> &Tracer {
         &self.tracer
-    }
-
-    pub fn parts_mut(
-        &mut self,
-    ) -> (
-        &mut Scheduler,
-        &mut [Warp],
-        &mut FlatMemory,
-        &mut CoreTimingModel,
-    ) {
-        (
-            &mut self.scheduler,
-            self.warps.as_mut_slice(),
-            &mut self.shared_mem,
-            &mut self.timing_model,
-        )
     }
 
     pub fn timing_summary(&self) -> CorePerfSummary {

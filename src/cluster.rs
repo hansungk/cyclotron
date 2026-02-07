@@ -20,13 +20,28 @@ impl Cluster {
         id: usize,
         logger: &Arc<Logger>,
         gmem: Arc<RwLock<FlatMemory>>,
+    ) -> Self {
+        let gmem_timing = Arc::new(RwLock::new(crate::timeflow::ClusterGmemGraph::new(
+            config.timing_config.memory.gmem.clone(),
+            1,
+            config.muon_config.num_cores.max(1),
+        )));
+        Self::new_with_timing(config, id, logger, gmem, gmem_timing)
+    }
+
+    pub fn new_with_timing(
+        config: Arc<ClusterConfig>,
+        id: usize,
+        logger: &Arc<Logger>,
+        gmem: Arc<RwLock<FlatMemory>>,
         gmem_timing: Arc<RwLock<crate::timeflow::ClusterGmemGraph>>,
     ) -> Self {
         let mut cores = Vec::new();
         for cid in 0..config.muon_config.num_cores {
             let timing_core_id = id * config.muon_config.num_cores + cid;
-            cores.push(MuonCore::new(
+            cores.push(MuonCore::new_with_timing(
                 Arc::new(config.muon_config),
+                id,
                 cid,
                 logger,
                 gmem.clone(),

@@ -7,7 +7,7 @@ use clap::Parser;
 use std::path::{Path, PathBuf};
 use toml::{Table, Value};
 
-#[derive(Parser)]
+#[derive(Parser, Default)]
 #[command(version, about)]
 pub struct CyclotronArgs {
     #[arg(help = "Path to config.toml")]
@@ -28,9 +28,17 @@ pub struct CyclotronArgs {
 
 pub fn read_toml(filepath: &Path) -> String {
     std::fs::read_to_string(filepath).unwrap_or_else(|err| {
-        eprintln!("failed to read config file {}: {}", filepath.display(), err);
+        eprintln!(
+            "cyclotron: failed to read config file at {}: {}",
+            filepath.display(),
+            err
+        );
         std::process::exit(1);
     })
+}
+
+fn maybe_get<'a>(table: &'a Option<Table>, key: &str) -> Option<&'a toml::Value> {
+    table.as_ref().and_then(|t| t.get(key))
 }
 
 fn merge_values(dst: &mut Value, src: Value) {
@@ -51,7 +59,11 @@ fn merge_values(dst: &mut Value, src: Value) {
     }
 }
 
-fn load_timing_config(config_path: Option<&Path>, config_table: &Table) -> CoreGraphConfig {
+fn load_timing_config(config_path: Option<&Path>, config_table: Option<&Table>) -> CoreGraphConfig {
+    let Some(config_table) = config_table else {
+        return CoreGraphConfig::default();
+    };
+
     let base_dir = config_path
         .and_then(|path| path.parent())
         .unwrap_or_else(|| Path::new("."));
@@ -88,23 +100,27 @@ fn load_timing_config(config_path: Option<&Path>, config_table: &Table) -> CoreG
     merged.try_into().unwrap_or_default()
 }
 
-/// Make a Sim object from the TOML configuration.
-/// If `cli_args` is given, override TOML options with CLI arguments.
-pub fn make_sim(
-    toml_string: &str,
-    cli_args: Option<CyclotronArgs>,
-    config_path: Option<&Path>,
-) -> Sim {
-    let config_table: Table = toml::from_str(toml_string).expect("cannot parse config toml");
-    let mut sim_config = SimConfig::from_section(config_table.get("sim"));
-    let mem_config = MemConfig::from_section(config_table.get("mem"));
-    let mut muon_config = MuonConfig::from_section(config_table.get("muon"));
-    let mut neutrino_config = NeutrinoConfig::from_section(config_table.get("neutrino"));
-    let timing_config = load_timing_config(config_path, &config_table);
+/// Make a Sim object.
+/// If `toml_string` is given, override default configs with TOML values.
+/// If `cli_args` is given, override post-TOML configs with CLI arguments.
+pub fn make_sim(toml_string: Option<&str>, cli_args: &Option<CyclotronArgs>) -> Sim {
+    let config_table = toml_string.map(|s| toml::from_str(s).expect("cannot parse config toml"));
+    let mut sim_config = SimConfig::from_section(maybe_get(&config_table, "sim"));
+    let mem_config = MemConfig::from_section(maybe_get(&config_table, "mem"));
+    let mut muon_config = MuonConfig::from_section(maybe_get(&config_table, "muon"));
+    let mut neutrino_config = NeutrinoConfig::from_section(maybe_get(&config_table, "neutrino"));
 
-    // override toml configs with CLI args
+    let config_path = cli_args.as_ref().and_then(|args| {
+        if args.config_path.as_os_str().is_empty() {
+            None
+        } else {
+            Some(args.config_path.as_path())
+        }
+    });
+    let timing_config = load_timing_config(config_path, config_table.as_ref());
+
     if let Some(args) = cli_args {
-        sim_config.elf = args.binary_path.unwrap_or(sim_config.elf);
+        sim_config.elf = args.binary_path.as_ref().cloned().unwrap_or(sim_config.elf);
         sim_config.log_level = args.log.unwrap_or(sim_config.log_level);
         sim_config.trace = args.gen_trace.unwrap_or(sim_config.trace);
         muon_config.num_lanes = args.num_lanes.unwrap_or(muon_config.num_lanes);
@@ -114,7 +130,7 @@ pub fn make_sim(
 
     neutrino_config.muon_config = muon_config.clone();
 
-    Sim::new(
+    Sim::new_with_timing(
         sim_config,
         muon_config,
         neutrino_config,

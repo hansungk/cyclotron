@@ -12,13 +12,14 @@ use crate::neutrino::neutrino::Neutrino;
 use crate::sim::flat_mem::FlatMemory;
 use crate::sim::log::Logger;
 use crate::timeflow::{GmemRequest, SmemRequest};
-use crate::timeq::{module_now, Cycle};
+use crate::timeq::Cycle;
 use crate::utils::BitSlice;
 use std::fmt::Debug;
 use std::fmt::{Display, Formatter};
 use std::iter::zip;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{Arc, RwLock};
+
 #[derive(Debug, Default)]
 pub struct WarpState {
     pub reg_file: Vec<RegFile>,
@@ -61,10 +62,6 @@ pub struct ExecErr {
     pub message: Option<String>,
 }
 
-// TODO: make ExecErr a proper error type by providing impls
-// impl Display for ExecErr
-// impl Error for ExecErr
-
 impl Writeback {
     pub fn rd_data_str(&self) -> String {
         let lanes: Vec<String> = self
@@ -94,21 +91,13 @@ impl Display for Writeback {
 }
 
 impl Warp {
-    pub fn new(
-        config: Arc<MuonConfig>,
-        logger: &Arc<Logger>,
-        gmem: Arc<RwLock<FlatMemory>>,
-    ) -> Warp {
+    pub fn new(config: Arc<MuonConfig>, logger: &Arc<Logger>, gmem: Arc<RwLock<FlatMemory>>) -> Warp {
         let num_lanes = config.num_lanes;
         let mut me = Warp {
             base: ModuleBase {
                 state: WarpState {
-                    reg_file: (0..num_lanes)
-                        .map(|i| RegFile::new(config.clone(), i))
-                        .collect(),
-                    csr_file: (0..num_lanes)
-                        .map(|i| CSRFile::new(config.clone(), i))
-                        .collect(),
+                    reg_file: (0..num_lanes).map(|i| RegFile::new(config.clone(), i)).collect(),
+                    csr_file: (0..num_lanes).map(|i| CSRFile::new(config.clone(), i)).collect(),
                 },
                 ..ModuleBase::default()
             },
@@ -159,6 +148,58 @@ impl Warp {
         scheduler: &mut Scheduler,
         neutrino: &mut Neutrino,
         smem: &mut FlatMemory,
+    ) -> Result<Writeback, ExecErr> {
+        let decoded = uop.inst;
+        let pc = decoded.pc;
+        let tmask = uop.tmask;
+
+        // TODO: verify that this step doesnt modify
+        scheduler.state_mut().thread_masks[self.wid] = tmask;
+
+        // operand collection
+        let rf = self.base.state.reg_file.as_slice();
+        let issued = ExecuteUnit::collect(&uop, rf);
+
+        // execute
+        let writeback = catch_unwind(AssertUnwindSafe(|| {
+            self.execute(issued, tmask, scheduler, neutrino, smem)
+        }));
+
+        // writeback
+        match writeback {
+            Ok(writeback) => {
+                let rf_mut = self.base.state.reg_file.as_mut_slice();
+                Self::writeback(&writeback, rf_mut);
+
+                info!(
+                    self.logger,
+                    "@t={} [{}] PC=0x{:08x}, rd={:3}, data=[{} lanes valid]",
+                    self.base.cycle,
+                    self.name(),
+                    pc,
+                    writeback.rd_addr,
+                    writeback.num_rd_data()
+                );
+
+                Ok(writeback)
+            }
+            Err(payload) => {
+                let message = payload.downcast::<String>().ok().map(|s| *s);
+                Err(ExecErr {
+                    pc,
+                    warp_id: self.wid,
+                    message,
+                })
+            }
+        }
+    }
+
+    pub fn backend_timed(
+        &mut self,
+        uop: MicroOp,
+        scheduler: &mut Scheduler,
+        neutrino: &mut Neutrino,
+        smem: &mut FlatMemory,
         timing_model: &mut CoreTimingModel,
         now: Cycle,
     ) -> Result<Option<Writeback>, ExecErr> {
@@ -170,8 +211,7 @@ impl Warp {
         scheduler.state_mut().thread_masks[self.wid] = tmask;
 
         if decoded.opcode == Opcode::LOAD || decoded.opcode == Opcode::STORE {
-            let route_to_smem = self.route_mem_to_smem(&decoded, tmask);
-            if route_to_smem {
+            if self.route_mem_to_smem(&decoded) {
                 if self
                     .issue_smem_request(
                         decoded.opcode,
@@ -301,8 +341,8 @@ impl Warp {
         }
     }
 
-    /// A backend EX-only library interface that accepts a single-warp issued instruction and
-    /// returns a writeback bundle.
+    /// An EX-only library interface that accepts a single-warp issued
+    /// instruction and returns a writeback bundle.
     pub fn execute(
         &mut self,
         issued: IssuedInst,
@@ -312,11 +352,10 @@ impl Warp {
         smem: &mut FlatMemory,
     ) -> Writeback {
         let core_id = self.conf().lane_config.core_id;
-        let smem_base_addr = self.conf().smem_base_addr;
         let rf = self.base.state.reg_file.as_mut_slice();
         let csrf = self.base.state.csr_file.as_mut_slice();
 
-        let writeback = ExecuteUnit::execute(
+        ExecuteUnit::execute(
             issued,
             core_id,
             self.wid,
@@ -327,26 +366,7 @@ impl Warp {
             neutrino,
             &self.gmem,
             smem,
-            smem_base_addr,
-        );
-        writeback
-    }
-
-    /// Fast-path that fuses frontend/backend for every warp instead of two-stage schedule/ibuf
-    /// iteration.
-    pub fn process(
-        &mut self,
-        schedule: Schedule,
-        scheduler: &mut Scheduler,
-        neutrino: &mut Neutrino,
-        shared_mem: &mut FlatMemory,
-        timing_model: &mut CoreTimingModel,
-    ) -> Result<(), ExecErr> {
-        let now = module_now(scheduler);
-        timing_model.tick(now, scheduler);
-        let ibuf = self.frontend(schedule);
-        self.backend(ibuf, scheduler, neutrino, shared_mem, timing_model, now)
-            .map(|_| ())
+        )
     }
 
     pub fn writeback(wb: &Writeback, rf: &mut [RegFile]) {
@@ -356,15 +376,16 @@ impl Warp {
         }
     }
 
-    pub fn set_block_threads(
+    pub fn set_block_threads_bp(
         &mut self,
         block_idx: (u32, u32, u32),
         thread_idxs: &Vec<(u32, u32, u32)>,
+        bp: u32,
     ) {
         assert!(thread_idxs.len() <= self.base.state.csr_file.len());
         assert!(thread_idxs.len() > 0);
         for (csr_file, thread_idx) in zip(self.base.state.csr_file.iter_mut(), thread_idxs.iter()) {
-            csr_file.set_block_thread(block_idx, *thread_idx);
+            csr_file.set_block_thread_bp(block_idx, *thread_idx, bp);
         }
     }
 
@@ -406,31 +427,8 @@ impl Warp {
             .map_err(|_| ())
     }
 
-    fn route_mem_to_smem(&self, decoded: &DecodedInst, tmask: u32) -> bool {
-        if decoded.opext == 1 {
-            return true;
-        }
-        if decoded.opcode != Opcode::LOAD && decoded.opcode != Opcode::STORE {
-            return false;
-        }
-        if tmask == 0 {
-            return false;
-        }
-
-        // Fallback for toolchains that emit plain lw/sw for shared memory:
-        // classify as SMEM if all active lanes target the configured SMEM window.
-        let lane_addrs = self.collect_lane_addrs(decoded.rs1_addr, decoded.imm32, tmask);
-        !lane_addrs.is_empty()
-            && lane_addrs
-                .iter()
-                .copied()
-                .all(|addr| self.is_smem_address(addr))
-    }
-
-    fn is_smem_address(&self, addr: u64) -> bool {
-        let start = self.conf().smem_base_addr;
-        let end = start.saturating_add(self.conf().smem_size as u64);
-        addr >= start && addr < end
+    fn route_mem_to_smem(&self, decoded: &DecodedInst) -> bool {
+        (decoded.opcode == Opcode::LOAD || decoded.opcode == Opcode::STORE) && decoded.opext == 1
     }
 
     fn collect_lane_addrs(&self, rs1_addr: u8, imm32: u32, tmask: u32) -> Vec<u64> {

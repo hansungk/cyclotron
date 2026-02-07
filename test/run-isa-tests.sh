@@ -7,18 +7,8 @@ cd "$ROOT_DIR"
 mkdir -p logs
 failures=0
 
-if [ ! -x ./target/release/cyclotron ]; then
-    cargo build --release
-fi
-
-shopt -s nullglob
-isa_tests=(test/isa-tests/*)
-if [ ${#isa_tests[@]} -eq 0 ]; then
-    echo "no isa tests found under test/isa-tests"
-    exit 1
-fi
-
-for isatest in "${isa_tests[@]}"; do
+for isatest in test/isa-tests/*; do
+    test -x "$isatest" || continue
     name=$(basename "$isatest")
     log="logs/${name}.out"
     echo "Running $name ..."

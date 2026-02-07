@@ -88,15 +88,17 @@ impl Scheduler {
         me
     }
 
+    fn all_one_bitmask(&self) -> u32 {
+        (1u32 << self.conf().num_lanes) - 1
+    }
+
     pub fn spawn_single_warp(&mut self) {
-        let all_ones = u32::MAX; // 0xFFFF
         self.state_mut().started = true;
-        self.state_mut().thread_masks = [all_ones].repeat(self.conf().num_warps);
+        self.state_mut().thread_masks = [self.all_one_bitmask()].repeat(self.conf().num_warps);
         self.state_mut().active_warps = 1;
     }
 
     pub fn spawn_n_warps(&mut self, pc: u32, thread_idxs: &Vec<Vec<(u32, u32, u32)>>) {
-        let all_ones = u32::MAX; // 0xFFFF
         let last_warp_mask = thread_idxs
             .last()
             .expect("last warp is empty")
@@ -108,7 +110,7 @@ impl Scheduler {
         assert!(disabled_warps <= self.conf().num_warps);
 
         self.state_mut().started = true;
-        self.state_mut().thread_masks = repeat(all_ones)
+        self.state_mut().thread_masks = repeat(self.all_one_bitmask())
             .take(num_warps - 1)
             .chain(once(last_warp_mask))
             .chain(repeat(0).take(disabled_warps))
@@ -148,8 +150,8 @@ impl Scheduler {
         );
         match sfu {
             SFUType::TMC => {
-                let tmask = rs1[first_lid];
-                info!("tmc value {}", tmask);
+                let tmask = rs1[first_lid] & self.all_one_bitmask();
+                info!("tmc value {:x}", tmask);
                 self.base.state.thread_masks[wid] = tmask;
                 if tmask == 0 {
                     self.base.state.active_warps.mut_bit(wid, false);
@@ -160,39 +162,17 @@ impl Scheduler {
                 }
             }
             SFUType::WSPAWN => {
-                let mut start_pc = rs2[first_lid];
-                if self.conf().start_pc != 0 && start_pc < self.conf().start_pc {
-                    start_pc = start_pc.wrapping_add(self.conf().start_pc);
-                    info!(
-                        "wspawn pc treated as offset, base {:08x} -> {:08x}",
-                        self.conf().start_pc, start_pc
-                    );
-                }
-                let requested = rs1[first_lid];
-                let max_warps = self.conf().num_warps as u32;
-                let count = requested.min(max_warps);
-                let additional = count.saturating_sub(1);
-                if count != requested {
-                    info!("wspawn count clamped from {} to {}", requested, count);
-                }
-                info!("wspawn {} warps @pc={:08x}", count, start_pc);
-                if additional > 0 {
-                    let mut spawned = 0u32;
-                    for i in 0..max_warps as usize {
-                        if i == wid {
-                            continue;
-                        }
-                        if self.base.state.active_warps.bit(i) {
-                            continue;
-                        }
-                        self.base.state.pc[i] = start_pc;
-                        self.base.state.thread_masks[i] = u32::MAX;
-                        self.base.state.active_warps.mut_bit(i, true);
-                        spawned += 1;
-                        if spawned >= additional {
-                            break;
-                        }
+                let start_pc = rs2[first_lid];
+                let count = rs1[first_lid];
+                info!("wspawn {} warps @pc={:08x}", rs1[first_lid], start_pc);
+                for i in 1..count as usize {
+                    if self.base.state.active_warps.bit(i) {
+                        continue;
                     }
+
+                    self.base.state.active_warps.mut_bit(i, true);
+                    self.base.state.pc[i] = start_pc;
+                    self.base.state.thread_masks[i] = self.all_one_bitmask();
                 }
                 info!("new active warps: {:b}", self.base.state.active_warps);
                 SchedulerWriteback {
@@ -208,44 +188,41 @@ impl Scheduler {
                     & self.state().thread_masks[wid];
                 let else_mask = rs1.iter().map(|r| !r.bit(0)).collect::<Vec<_>>().to_u32()
                     & self.state().thread_masks[wid];
-                // let then_mask: Vec<_> = wb.insts.iter()
-                //     .map(|d| d.is_some_and(|dd| !dd.rs1.bit(0))).collect();
-                // let else_mask: Vec<_> = wb.insts.iter()
-                //     .map(|d| d.is_some_and(|dd| dd.rs1.bit(0))).collect();
-                // let then_mask_int = then_mask.to_u32();
-                // let else_mask_int = else_mask.to_u32();
 
                 info!(
                     "split warp {}: then_mask={:08b}, else_mask={:08b}, invert={}",
                     wid, then_mask, else_mask, invert
                 );
 
-                // NOTE: we should not need to push non-divergent branches
-                // to the ipdom stack if we write back divergence to RD
-                // NOTE: we are NOT writing back 1 to RD for divergent branches,
-                // which differs from vortex behavior for now.
-                // TODO: reevaluate
+                // NOTE: we should not need to push the else-path of
+                // non-divergent branches to the ipdom stack; this way, the
+                // later vx_join will just see the restored mask & invalid PC at
+                // stack top, and skip serialization.  This also makes writing
+                // back divergence to RD unnecessary.
+                //
+                // Therefore, we are NOT writing back the divergence result to
+                // RD, which differs from vortex behavior for now.
                 self.base.state.ipdom_stack[wid].push_back(IpdomEntry {
                     pc: 0u32,
                     tmask: then_mask | else_mask,
                 });
 
                 let diverges = (then_mask != 0) && (else_mask != 0);
-                let true_then_mask = if invert { else_mask } else { then_mask };
-                let true_else_mask = if invert { then_mask } else { else_mask };
+                let now_mask = if invert { else_mask } else { then_mask };
+                let later_mask = if invert { then_mask } else { else_mask };
 
                 if diverges {
                     self.base.state.ipdom_stack[wid].push_back(IpdomEntry {
                         pc: decoded_inst.pc + 8,
-                        tmask: true_else_mask,
+                        tmask: later_mask,
                     });
-                    self.base.state.thread_masks[wid] = true_then_mask;
+                    self.base.state.thread_masks[wid] = now_mask;
                 }
                 SchedulerWriteback {
-                    tmask: diverges.then_some(true_then_mask),
+                    tmask: diverges.then_some(now_mask),
                     ipdom_push: Some(IpdomPush {
                         restored_mask: then_mask | else_mask,
-                        else_mask: true_else_mask,
+                        else_mask: later_mask,
                         else_pc: decoded_inst.pc + 8,
                     }),
                     ..SchedulerWriteback::default()
@@ -267,16 +244,10 @@ impl Scheduler {
                 SchedulerWriteback::default()
             }
             SFUType::BAR => {
-                // Barrier rendezvous is modeled by the timing layer in warp.rs via
-                // notify_barrier_arrive(); keep functional execution as a no-op.
-                SchedulerWriteback::default()
+                panic!("muon does not support vx_bar anymore, use neutrino insts")
             }
             SFUType::PRED => {
                 let invert = decoded_inst.rd_addr != 0;
-                // only stay active if (thread is active) AND (lsb of predicate is 1)
-                // let pred_mask: Vec<_> = wb.insts.iter()
-                //     .map(|d| d.is_some_and(|dd| dd.rs1.bit(0) ^ invert))
-                //     .collect();
                 let pred_mask = rs1
                     .iter()
                     .map(|r| r.bit(0) ^ invert)
@@ -310,12 +281,6 @@ impl Scheduler {
                 self.base.state.tohost = Some(a0);
                 self.base.state.thread_masks[wid] = 0;
                 self.base.state.active_warps.mut_bit(wid, false);
-                if a0 == 0 {
-                    println!("test passed!")
-                } else {
-                    println!("test failed with tohost={}", a0);
-                }
-                // might want a tohost writeback here
                 SchedulerWriteback {
                     tohost: Some(a0),
                     ..SchedulerWriteback::default()
@@ -324,7 +289,7 @@ impl Scheduler {
         }
     }
 
-    pub fn get_schedule(&mut self, wid: usize) -> Option<Schedule> {
+    pub fn schedule(&mut self, wid: usize) -> Option<Schedule> {
         self.recompute_stall_masks();
 
         if !self.state().active_warps.bit(wid) {
@@ -347,10 +312,14 @@ impl Scheduler {
         let sched = Schedule {
             pc,
             mask: self.base.state.thread_masks[wid],
-            active_warps: self.base.state.active_warps,
+            active_warps: self.base.state.active_warps, // for csr writing
         };
         self.state_mut().pc[wid] = pc.wrapping_add(8);
         Some(sched)
+    }
+
+    pub fn get_schedule(&mut self, wid: usize) -> Option<Schedule> {
+        self.schedule(wid)
     }
 
     pub fn neutrino_stall(&mut self, stalls: Vec<bool>) {
@@ -424,8 +393,7 @@ impl ModuleBehaviors for Scheduler {
     }
 
     fn reset(&mut self) {
-        let all_ones = u32::MAX; // 0xFFFF
-        self.state_mut().thread_masks = [all_ones].repeat(self.conf().num_warps);
+        self.state_mut().thread_masks = [self.all_one_bitmask()].repeat(self.conf().num_warps);
         self.base.state.active_warps = 0;
         self.base.state.stalled_warps = 0;
         self.base.state.neutrino_stalled_mask = 0;

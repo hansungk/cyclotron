@@ -20,4 +20,5 @@ Cargo.lock
 
 performance_logs
 
-logs
+# logs from run-isa-tests.sh
+logs/

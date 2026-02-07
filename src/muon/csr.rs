@@ -19,6 +19,7 @@ pub struct CSRFile {
     lane_id: usize,
     block_idx: (u32, u32, u32),
     thread_idx: (u32, u32, u32),
+    bp: u32,
 }
 
 impl ModuleBehaviors for CSRFile {
@@ -77,7 +78,7 @@ impl CSRFile {
                 | (0 <<  3) /* D - Double precsision floating-point extension */
                 | (0 <<  4) /* E - RV32E base ISA */
                 | (1 <<  5) /* F - Single precsision floating-point extension */
-                | (0 <<  6) /* G - Additional standard extensions present */
+                | (1 <<  6) /* G - Additional standard extensions present */
                 | (0 <<  7) /* H - Hypervisor mode implemented */
                 | (1 <<  8) /* I - RV32I/64I/128I base ISA */
                 | (0 <<  9) /* J - Reserved */
@@ -91,7 +92,7 @@ impl CSRFile {
                 | (0 << 17) /* R - Reserved */
                 | (0 << 18) /* S - Supervisor mode implemented */
                 | (0 << 19) /* T - Tentatively reserved for Transactional Memory extension */
-                | (1 << 20) /* U - User mode implemented */
+                | (0 << 20) /* U - User mode implemented */
                 | (0 << 21) /* V - Tentatively reserved for Vector extension */
                 | (0 << 22) /* W - Reserved */
                 | (1 << 23) /* X - Non-standard extensions present */
@@ -114,6 +115,7 @@ impl CSRFile {
             0xcc0, self.lane_id as u32; // thread_id
             0xcc1, self.conf().lane_config.warp_id as u32; // warp_id
             0xcc2, self.conf().lane_config.core_id as u32; // core_id
+            0xcd0, self.conf().lane_config.cluster_id as u32; // cluster_id
             0xfc0, self.conf().num_lanes as u32; // num_threads
             0xfc1, self.conf().num_warps as u32; // num_warps
             0xfc2, self.conf().num_cores as u32; // num_cores
@@ -123,6 +125,7 @@ impl CSRFile {
             0xfc6, self.thread_idx.0; // thread_idx.x
             0xfc7, self.thread_idx.1; // thread_idx.y
             0xfc8, self.thread_idx.2; // thread_idx.z
+            0xfc9, self.bp; // base pointer
         ])
     }
 
@@ -197,8 +200,9 @@ impl CSRFile {
         }
     }
 
-    pub fn set_block_thread(&mut self, block_idx: (u32, u32, u32), thread_idx: (u32, u32, u32)) {
+    pub fn set_block_thread_bp(&mut self, block_idx: (u32, u32, u32), thread_idx: (u32, u32, u32), bp: u32) {
         self.block_idx = block_idx;
         self.thread_idx = thread_idx;
+        self.bp = bp;
     }
 }
