@@ -33,5 +33,4 @@ run_case "baseline (operand_fetch disabled)" "$BASELINE_CFG" baseline_cycles
 run_case "queue_fill (operand_fetch enabled)" "$QUEUE_FILL_CFG" queue_fill_cycles
 
 echo "Cycle delta (enabled - baseline): $((queue_fill_cycles - baseline_cycles))"
-awk -v b="$baseline_cycles" -v q="$queue_fill_cycles" 'BEGIN { if (b == 0) { print "Cycle ratio (enabled/baseline): inf" } else { printf "Cycle ratio (enabled/baseline): %.3f
-", q / b } }'
+awk -v b="$baseline_cycles" -v q="$queue_fill_cycles" 'BEGIN { if (b == 0) { print "Cycle ratio (enabled/baseline): inf" } else { printf "Cycle ratio (enabled/baseline): %.3f\n", q / b } }'
