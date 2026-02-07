@@ -1,5 +1,5 @@
 use crate::timeflow::{
-    barrier::{BarrierConfig, BarrierManager, BarrierSummary},
+    barrier::BarrierConfig,
     dma::{DmaConfig, DmaQueue, DmaReject},
     fence::{FenceConfig, FenceIssue, FenceQueue, FenceReject, FenceRequest},
     gmem::{ClusterGmemGraph, GmemCompletion, GmemIssue, GmemReject, GmemRequest, GmemStats, GmemFlowConfig},
@@ -68,7 +68,6 @@ pub struct CoreGraph {
     execute_index: usize,
     writeback_index: usize,
     fence_index: usize,
-    barrier_index: usize,
     cluster_gmem: Option<Arc<RwLock<ClusterGmemGraph>>>,
 }
 
@@ -118,9 +117,7 @@ impl CoreGraph {
         let execute = ExecutePipeline::new(config.compute.execute);
         let writeback = WritebackQueue::new(config.memory.writeback);
         let fence = FenceQueue::new(config.io.fence);
-        let barrier = BarrierManager::new(config.io.barrier, num_warps);
-
-        let mut subgraphs = Vec::with_capacity(11);
+        let mut subgraphs = Vec::with_capacity(10);
         let smem_index = subgraphs.len();
         subgraphs.push(CoreSubgraph::Smem(smem));
         let icache_index = subgraphs.len();
@@ -139,8 +136,6 @@ impl CoreGraph {
         subgraphs.push(CoreSubgraph::Writeback(writeback));
         let fence_index = subgraphs.len();
         subgraphs.push(CoreSubgraph::Fence(fence));
-        let barrier_index = subgraphs.len();
-        subgraphs.push(CoreSubgraph::Barrier(barrier));
         let cluster_gmem = cluster_gmem;
 
         Self {
@@ -155,7 +150,6 @@ impl CoreGraph {
             execute_index,
             writeback_index,
             fence_index,
-            barrier_index,
             cluster_gmem,
         }
     }
@@ -349,26 +343,6 @@ impl CoreGraph {
         self.execute_ref().suggest_retry(kind)
     }
 
-    pub fn barrier_is_enabled(&self) -> bool {
-        self.barrier_ref().is_enabled()
-    }
-
-    pub fn barrier_arrive(&mut self, now: Cycle, warp: usize, barrier_id: u32) -> Option<Cycle> {
-        self.with_barrier_mut(|b| b.arrive(now, warp, barrier_id))
-    }
-
-    pub fn barrier_tick(&mut self, now: Cycle) -> Option<Vec<usize>> {
-        self.with_barrier_mut(|b| b.tick(now))
-    }
-
-    pub fn barrier_stats(&self) -> BarrierSummary {
-        self.barrier_ref().stats()
-    }
-
-    pub fn clear_barrier_stats(&mut self) {
-        self.with_barrier_mut(|b| b.clear_stats());
-    }
-
     pub fn cluster_gmem_issue(
         &self,
         core_id: usize,
@@ -509,7 +483,6 @@ impl CoreGraph {
     impl_indexed_accessor!(execute_ref, execute_mut, with_execute_mut, execute_index, CoreSubgraph::Execute, ExecutePipeline, "execute index always points to execute");
     impl_indexed_accessor!(writeback_ref, writeback_mut, with_writeback_mut, writeback_index, CoreSubgraph::Writeback, WritebackQueue, "writeback index always points to writeback");
     impl_indexed_accessor!(fence_ref, fence_mut, with_fence_mut, fence_index, CoreSubgraph::Fence, FenceQueue, "fence index always points to fence");
-    impl_indexed_accessor!(barrier_ref, barrier_mut, with_barrier_mut, barrier_index, CoreSubgraph::Barrier, BarrierManager, "barrier index always points to barrier");
 
 }
 
@@ -523,7 +496,6 @@ enum CoreSubgraph {
     Execute(ExecutePipeline),
     Writeback(WritebackQueue),
     Fence(FenceQueue),
-    Barrier(BarrierManager),
 }
 
 
@@ -670,14 +642,6 @@ impl Subgraph for FenceQueue {
     fn collect_completions(&mut self, _graph: &mut FlowGraph<CoreFlowPayload>, _now: Cycle) {}
 }
 
-impl Subgraph for BarrierManager {
-    fn tick_phase(&mut self, _phase: TickPhase, _now: Cycle) {}
-
-    fn collect_completions(&mut self, _graph: &mut FlowGraph<CoreFlowPayload>, _now: Cycle) {}
-}
-
-
-
 impl Subgraph for CoreSubgraph {
     fn tick_phase(&mut self, phase: TickPhase, now: Cycle) {
         match self {
@@ -690,7 +654,6 @@ impl Subgraph for CoreSubgraph {
             CoreSubgraph::Execute(exec) => exec.tick_phase(phase, now),
             CoreSubgraph::Writeback(wb) => wb.tick_phase(phase, now),
             CoreSubgraph::Fence(fence) => fence.tick_phase(phase, now),
-            CoreSubgraph::Barrier(barrier) => barrier.tick_phase(phase, now),
         }
     }
 
@@ -705,7 +668,6 @@ impl Subgraph for CoreSubgraph {
             CoreSubgraph::Execute(exec) => exec.collect_completions(graph, now),
             CoreSubgraph::Writeback(wb) => wb.collect_completions(graph, now),
             CoreSubgraph::Fence(fence) => fence.collect_completions(graph, now),
-            CoreSubgraph::Barrier(barrier) => barrier.collect_completions(graph, now),
         }
     } 
 

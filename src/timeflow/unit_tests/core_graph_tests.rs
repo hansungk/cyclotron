@@ -149,22 +149,6 @@ fn core_graph_ticks_writeback_and_fence_in_back_phase() {
 }
 
 #[test]
-fn core_graph_barrier_tick_releases_warps() {
-    let mut graph = core_graph_with_cfg(2, false, |cfg| {
-        cfg.io.barrier.enabled = true;
-        cfg.io.barrier.expected_warps = Some(2);
-        cfg.io.barrier.queue.base_latency = 1;
-    });
-    assert!(graph.barrier_arrive(0, 0, 0).is_none());
-    let release_at = graph.barrier_arrive(0, 1, 0).expect("barrier schedule");
-
-    let released = graph.barrier_tick(release_at.saturating_sub(1));
-    assert!(released.is_none());
-    let released = graph.barrier_tick(release_at).expect("release");
-    assert_eq!(released.len(), 2);
-}
-
-#[test]
 fn core_graph_ticks_dma_and_tensor_in_front_phase() {
     let mut graph = core_graph_with_cfg(1, false, |cfg| {
         cfg.io.dma.enabled = true;

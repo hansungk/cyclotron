@@ -65,7 +65,6 @@ impl CoreTimingModel {
             pending_dma: VecDeque::new(),
             pending_tensor: VecDeque::new(),
             issue_scheduler,
-            barrier_inflight: vec![false; num_warps],
             pending_fence: VecDeque::new(),
             fence_inflight: vec![None; num_warps],
             icache_inflight: vec![None; num_warps],

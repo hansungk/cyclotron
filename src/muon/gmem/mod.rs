@@ -26,7 +26,6 @@ pub struct CoreTimingModel {
     pending_dma: VecDeque<u32>,
     pending_tensor: VecDeque<u32>,
     issue_scheduler: WarpIssueScheduler,
-    barrier_inflight: Vec<bool>,
     pending_fence: VecDeque<FenceRequest>,
     fence_inflight: Vec<Option<u64>>,
     icache_inflight: Vec<Option<IcacheInflight>>,

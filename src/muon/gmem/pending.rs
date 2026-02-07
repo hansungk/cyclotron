@@ -322,13 +322,11 @@ impl CoreTimingModel {
             .get(warp)
             .map(|entry| entry.is_some())
             .unwrap_or(false);
-        let barrier_pending = self.barrier_inflight.get(warp).copied().unwrap_or(false);
         let execute_pending = self.pending_execute.get(warp).copied().flatten().is_some();
         if !gmem_pending
             && !smem_pending
             && !icache_pending
             && !fence_pending
-            && !barrier_pending
             && !execute_pending
         {
             scheduler.clear_resource_wait(warp);
