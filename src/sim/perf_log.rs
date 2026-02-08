@@ -2,6 +2,7 @@ use std::env;
 use std::fs;
 use std::fs::File;
 use std::io::{BufWriter, Write};
+use std::ops::AddAssign;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -108,6 +109,38 @@ pub struct AggregatePerfSummary {
     pub tensor_completed: u64,
 }
 
+impl AddAssign<&CorePerfSummary> for AggregatePerfSummary {
+    fn add_assign(&mut self, core: &CorePerfSummary) {
+        self.scheduler += &core.scheduler;
+        self.smem_util += &core.smem_util;
+        self.execute_util += &core.execute_util;
+        self.dma_bytes_issued = self.dma_bytes_issued.saturating_add(core.dma_bytes_issued);
+        self.dma_bytes_completed = self
+            .dma_bytes_completed
+            .saturating_add(core.dma_bytes_completed);
+        self.dma_util += &core.dma_util;
+        self.tensor_bytes_issued = self.tensor_bytes_issued.saturating_add(core.tensor_bytes_issued);
+        self.tensor_bytes_completed = self
+            .tensor_bytes_completed
+            .saturating_add(core.tensor_bytes_completed);
+        self.tensor_util += &core.tensor_util;
+        self.stall_summary += &core.stall_summary;
+        self.gmem_latency_hist += &core.gmem_latency_hist;
+        self.smem_latency_hist += &core.smem_latency_hist;
+        self.smem_conflicts += &core.smem_conflicts;
+        self.gmem_hits += &core.gmem_hits;
+        self.latencies += &core.latencies;
+        self.gmem_stats += &core.gmem_stats;
+        self.smem_stats += &core.smem_stats;
+        self.icache_stats += &core.icache_stats;
+        self.lsu_stats += &core.lsu_stats;
+        self.writeback_stats += &core.writeback_stats;
+        self.barrier_summary += &core.barrier_summary;
+        self.dma_completed = self.dma_completed.saturating_add(core.dma_completed);
+        self.tensor_completed = self.tensor_completed.saturating_add(core.tensor_completed);
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub struct StatsRecord {
     pub cycle: Cycle,
@@ -193,453 +226,13 @@ pub fn graph_logger() -> Option<Arc<StatsLog>> {
 }
 
 pub fn aggregate_summaries(per_core: &[CorePerfSummary]) -> AggregatePerfSummary {
-    let mut total = AggregatePerfSummary::default();
-    total.num_cores = per_core.len();
-
-    for (idx, core) in per_core.iter().enumerate() {
-        if idx == 0 {
-            total.scheduler.issue_width = core.scheduler.issue_width;
-        }
-        total.scheduler.cycles = total.scheduler.cycles.saturating_add(core.scheduler.cycles);
-        total.scheduler.active_warps_sum = total
-            .scheduler
-            .active_warps_sum
-            .saturating_add(core.scheduler.active_warps_sum);
-        total.scheduler.eligible_warps_sum = total
-            .scheduler
-            .eligible_warps_sum
-            .saturating_add(core.scheduler.eligible_warps_sum);
-        total.scheduler.issued_warps_sum = total
-            .scheduler
-            .issued_warps_sum
-            .saturating_add(core.scheduler.issued_warps_sum);
-
-        total.smem_util.cycles = total.smem_util.cycles.saturating_add(core.smem_util.cycles);
-        total.smem_util.lane_busy_sum = total
-            .smem_util
-            .lane_busy_sum
-            .saturating_add(core.smem_util.lane_busy_sum);
-        total.smem_util.bank_busy_sum = total
-            .smem_util
-            .bank_busy_sum
-            .saturating_add(core.smem_util.bank_busy_sum);
-        total.smem_util.lane_total = total.smem_util.lane_total.max(core.smem_util.lane_total);
-        total.smem_util.bank_total = total.smem_util.bank_total.max(core.smem_util.bank_total);
-
-        total.execute_util.cycles = total
-            .execute_util
-            .cycles
-            .saturating_add(core.execute_util.cycles);
-        total.execute_util.int_busy_sum = total
-            .execute_util
-            .int_busy_sum
-            .saturating_add(core.execute_util.int_busy_sum);
-        total.execute_util.int_mul_busy_sum = total
-            .execute_util
-            .int_mul_busy_sum
-            .saturating_add(core.execute_util.int_mul_busy_sum);
-        total.execute_util.int_div_busy_sum = total
-            .execute_util
-            .int_div_busy_sum
-            .saturating_add(core.execute_util.int_div_busy_sum);
-        total.execute_util.fp_busy_sum = total
-            .execute_util
-            .fp_busy_sum
-            .saturating_add(core.execute_util.fp_busy_sum);
-        total.execute_util.sfu_busy_sum = total
-            .execute_util
-            .sfu_busy_sum
-            .saturating_add(core.execute_util.sfu_busy_sum);
-
-        total.dma_bytes_issued = total.dma_bytes_issued.saturating_add(core.dma_bytes_issued);
-        total.dma_bytes_completed = total
-            .dma_bytes_completed
-            .saturating_add(core.dma_bytes_completed);
-        total.dma_util.cycles = total.dma_util.cycles.saturating_add(core.dma_util.cycles);
-        total.dma_util.busy_sum = total
-            .dma_util
-            .busy_sum
-            .saturating_add(core.dma_util.busy_sum);
-
-        total.tensor_bytes_issued = total
-            .tensor_bytes_issued
-            .saturating_add(core.tensor_bytes_issued);
-        total.tensor_bytes_completed = total
-            .tensor_bytes_completed
-            .saturating_add(core.tensor_bytes_completed);
-        total.tensor_util.cycles = total
-            .tensor_util
-            .cycles
-            .saturating_add(core.tensor_util.cycles);
-        total.tensor_util.busy_sum = total
-            .tensor_util
-            .busy_sum
-            .saturating_add(core.tensor_util.busy_sum);
-
-        total.stall_summary.gmem_queue_full = total
-            .stall_summary
-            .gmem_queue_full
-            .saturating_add(core.stall_summary.gmem_queue_full);
-        total.stall_summary.gmem_busy = total
-            .stall_summary
-            .gmem_busy
-            .saturating_add(core.stall_summary.gmem_busy);
-        total.stall_summary.smem_queue_full = total
-            .stall_summary
-            .smem_queue_full
-            .saturating_add(core.stall_summary.smem_queue_full);
-        total.stall_summary.smem_busy = total
-            .stall_summary
-            .smem_busy
-            .saturating_add(core.stall_summary.smem_busy);
-
-        total.gmem_latency_hist.accumulate(&core.gmem_latency_hist);
-        total.smem_latency_hist.accumulate(&core.smem_latency_hist);
-
-        total.smem_conflicts.instructions = total
-            .smem_conflicts
-            .instructions
-            .saturating_add(core.smem_conflicts.instructions);
-        total.smem_conflicts.active_lanes = total
-            .smem_conflicts
-            .active_lanes
-            .saturating_add(core.smem_conflicts.active_lanes);
-        total.smem_conflicts.conflict_lanes = total
-            .smem_conflicts
-            .conflict_lanes
-            .saturating_add(core.smem_conflicts.conflict_lanes);
-        total.smem_conflicts.unique_banks = total
-            .smem_conflicts
-            .unique_banks
-            .saturating_add(core.smem_conflicts.unique_banks);
-        total.smem_conflicts.unique_subbanks = total
-            .smem_conflicts
-            .unique_subbanks
-            .saturating_add(core.smem_conflicts.unique_subbanks);
-
-        total.gmem_hits.l0_accesses = total
-            .gmem_hits
-            .l0_accesses
-            .saturating_add(core.gmem_hits.l0_accesses);
-        total.gmem_hits.l0_hits = total
-            .gmem_hits
-            .l0_hits
-            .saturating_add(core.gmem_hits.l0_hits);
-        total.gmem_hits.l1_accesses = total
-            .gmem_hits
-            .l1_accesses
-            .saturating_add(core.gmem_hits.l1_accesses);
-        total.gmem_hits.l1_hits = total
-            .gmem_hits
-            .l1_hits
-            .saturating_add(core.gmem_hits.l1_hits);
-        total.gmem_hits.l2_accesses = total
-            .gmem_hits
-            .l2_accesses
-            .saturating_add(core.gmem_hits.l2_accesses);
-        total.gmem_hits.l2_hits = total
-            .gmem_hits
-            .l2_hits
-            .saturating_add(core.gmem_hits.l2_hits);
-
-        total.latencies.gmem_count = total
-            .latencies
-            .gmem_count
-            .saturating_add(core.latencies.gmem_count);
-        total.latencies.gmem_sum = total
-            .latencies
-            .gmem_sum
-            .saturating_add(core.latencies.gmem_sum);
-        total.latencies.smem_count = total
-            .latencies
-            .smem_count
-            .saturating_add(core.latencies.smem_count);
-        total.latencies.smem_sum = total
-            .latencies
-            .smem_sum
-            .saturating_add(core.latencies.smem_sum);
-
-        total.gmem_stats += &core.gmem_stats;
-
-        total.smem_stats.issued = total
-            .smem_stats
-            .issued
-            .saturating_add(core.smem_stats.issued);
-        total.smem_stats.read_issued = total
-            .smem_stats
-            .read_issued
-            .saturating_add(core.smem_stats.read_issued);
-        total.smem_stats.write_issued = total
-            .smem_stats
-            .write_issued
-            .saturating_add(core.smem_stats.write_issued);
-        total.smem_stats.completed = total
-            .smem_stats
-            .completed
-            .saturating_add(core.smem_stats.completed);
-        total.smem_stats.read_completed = total
-            .smem_stats
-            .read_completed
-            .saturating_add(core.smem_stats.read_completed);
-        total.smem_stats.write_completed = total
-            .smem_stats
-            .write_completed
-            .saturating_add(core.smem_stats.write_completed);
-        total.smem_stats.queue_full_rejects = total
-            .smem_stats
-            .queue_full_rejects
-            .saturating_add(core.smem_stats.queue_full_rejects);
-        total.smem_stats.busy_rejects = total
-            .smem_stats
-            .busy_rejects
-            .saturating_add(core.smem_stats.busy_rejects);
-        total.smem_stats.bytes_issued = total
-            .smem_stats
-            .bytes_issued
-            .saturating_add(core.smem_stats.bytes_issued);
-        total.smem_stats.bytes_completed = total
-            .smem_stats
-            .bytes_completed
-            .saturating_add(core.smem_stats.bytes_completed);
-        total.smem_stats.max_inflight = total
-            .smem_stats
-            .max_inflight
-            .max(core.smem_stats.max_inflight);
-        total.smem_stats.max_completion_queue = total
-            .smem_stats
-            .max_completion_queue
-            .max(core.smem_stats.max_completion_queue);
-        total.smem_stats.last_completion_cycle = match (
-            total.smem_stats.last_completion_cycle,
-            core.smem_stats.last_completion_cycle,
-        ) {
-            (Some(a), Some(b)) => Some(a.max(b)),
-            (None, Some(b)) => Some(b),
-            (a, None) => a,
-        };
-        if total.smem_stats.bank_busy_samples.len() < core.smem_stats.bank_busy_samples.len() {
-            total
-                .smem_stats
-                .bank_busy_samples
-                .resize(core.smem_stats.bank_busy_samples.len(), 0);
-        }
-        for (idx, value) in core.smem_stats.bank_busy_samples.iter().enumerate() {
-            total.smem_stats.bank_busy_samples[idx] = total.smem_stats.bank_busy_samples[idx]
-                .saturating_add(*value);
-        }
-        if total.smem_stats.bank_read_busy_samples.len()
-            < core.smem_stats.bank_read_busy_samples.len()
-        {
-            total
-                .smem_stats
-                .bank_read_busy_samples
-                .resize(core.smem_stats.bank_read_busy_samples.len(), 0);
-        }
-        for (idx, value) in core.smem_stats.bank_read_busy_samples.iter().enumerate() {
-            total.smem_stats.bank_read_busy_samples[idx] =
-                total.smem_stats.bank_read_busy_samples[idx].saturating_add(*value);
-        }
-        if total.smem_stats.bank_write_busy_samples.len()
-            < core.smem_stats.bank_write_busy_samples.len()
-        {
-            total
-                .smem_stats
-                .bank_write_busy_samples
-                .resize(core.smem_stats.bank_write_busy_samples.len(), 0);
-        }
-        for (idx, value) in core.smem_stats.bank_write_busy_samples.iter().enumerate() {
-            total.smem_stats.bank_write_busy_samples[idx] =
-                total.smem_stats.bank_write_busy_samples[idx].saturating_add(*value);
-        }
-        if total.smem_stats.bank_attempts.len() < core.smem_stats.bank_attempts.len() {
-            total
-                .smem_stats
-                .bank_attempts
-                .resize(core.smem_stats.bank_attempts.len(), 0);
-        }
-        for (idx, value) in core.smem_stats.bank_attempts.iter().enumerate() {
-            total.smem_stats.bank_attempts[idx] =
-                total.smem_stats.bank_attempts[idx].saturating_add(*value);
-        }
-        if total.smem_stats.bank_conflicts.len() < core.smem_stats.bank_conflicts.len() {
-            total
-                .smem_stats
-                .bank_conflicts
-                .resize(core.smem_stats.bank_conflicts.len(), 0);
-        }
-        for (idx, value) in core.smem_stats.bank_conflicts.iter().enumerate() {
-            total.smem_stats.bank_conflicts[idx] =
-                total.smem_stats.bank_conflicts[idx].saturating_add(*value);
-        }
-
-        total.icache_stats.issued = total
-            .icache_stats
-            .issued
-            .saturating_add(core.icache_stats.issued);
-        total.icache_stats.completed = total
-            .icache_stats
-            .completed
-            .saturating_add(core.icache_stats.completed);
-        total.icache_stats.hits = total
-            .icache_stats
-            .hits
-            .saturating_add(core.icache_stats.hits);
-        total.icache_stats.misses = total
-            .icache_stats
-            .misses
-            .saturating_add(core.icache_stats.misses);
-        total.icache_stats.queue_full_rejects = total
-            .icache_stats
-            .queue_full_rejects
-            .saturating_add(core.icache_stats.queue_full_rejects);
-        total.icache_stats.busy_rejects = total
-            .icache_stats
-            .busy_rejects
-            .saturating_add(core.icache_stats.busy_rejects);
-        total.icache_stats.bytes_issued = total
-            .icache_stats
-            .bytes_issued
-            .saturating_add(core.icache_stats.bytes_issued);
-        total.icache_stats.bytes_completed = total
-            .icache_stats
-            .bytes_completed
-            .saturating_add(core.icache_stats.bytes_completed);
-        total.icache_stats.last_completion_cycle = match (
-            total.icache_stats.last_completion_cycle,
-            core.icache_stats.last_completion_cycle,
-        ) {
-            (Some(a), Some(b)) => Some(a.max(b)),
-            (None, Some(b)) => Some(b),
-            (a, None) => a,
-        };
-
-        total.lsu_stats.issued = total.lsu_stats.issued.saturating_add(core.lsu_stats.issued);
-        total.lsu_stats.completed = total
-            .lsu_stats
-            .completed
-            .saturating_add(core.lsu_stats.completed);
-        total.lsu_stats.queue_full_rejects = total
-            .lsu_stats
-            .queue_full_rejects
-            .saturating_add(core.lsu_stats.queue_full_rejects);
-        total.lsu_stats.busy_rejects = total
-            .lsu_stats
-            .busy_rejects
-            .saturating_add(core.lsu_stats.busy_rejects);
-        total.lsu_stats.global_ldq_issued = total
-            .lsu_stats
-            .global_ldq_issued
-            .saturating_add(core.lsu_stats.global_ldq_issued);
-        total.lsu_stats.global_stq_issued = total
-            .lsu_stats
-            .global_stq_issued
-            .saturating_add(core.lsu_stats.global_stq_issued);
-        total.lsu_stats.shared_ldq_issued = total
-            .lsu_stats
-            .shared_ldq_issued
-            .saturating_add(core.lsu_stats.shared_ldq_issued);
-        total.lsu_stats.shared_stq_issued = total
-            .lsu_stats
-            .shared_stq_issued
-            .saturating_add(core.lsu_stats.shared_stq_issued);
-        total.lsu_stats.global_ldq_completed = total
-            .lsu_stats
-            .global_ldq_completed
-            .saturating_add(core.lsu_stats.global_ldq_completed);
-        total.lsu_stats.global_stq_completed = total
-            .lsu_stats
-            .global_stq_completed
-            .saturating_add(core.lsu_stats.global_stq_completed);
-        total.lsu_stats.shared_ldq_completed = total
-            .lsu_stats
-            .shared_ldq_completed
-            .saturating_add(core.lsu_stats.shared_ldq_completed);
-        total.lsu_stats.shared_stq_completed = total
-            .lsu_stats
-            .shared_stq_completed
-            .saturating_add(core.lsu_stats.shared_stq_completed);
-        total.lsu_stats.global_ldq_queue_full_rejects = total
-            .lsu_stats
-            .global_ldq_queue_full_rejects
-            .saturating_add(core.lsu_stats.global_ldq_queue_full_rejects);
-        total.lsu_stats.global_stq_queue_full_rejects = total
-            .lsu_stats
-            .global_stq_queue_full_rejects
-            .saturating_add(core.lsu_stats.global_stq_queue_full_rejects);
-        total.lsu_stats.shared_ldq_queue_full_rejects = total
-            .lsu_stats
-            .shared_ldq_queue_full_rejects
-            .saturating_add(core.lsu_stats.shared_ldq_queue_full_rejects);
-        total.lsu_stats.shared_stq_queue_full_rejects = total
-            .lsu_stats
-            .shared_stq_queue_full_rejects
-            .saturating_add(core.lsu_stats.shared_stq_queue_full_rejects);
-        total.lsu_stats.global_ldq_busy_rejects = total
-            .lsu_stats
-            .global_ldq_busy_rejects
-            .saturating_add(core.lsu_stats.global_ldq_busy_rejects);
-        total.lsu_stats.global_stq_busy_rejects = total
-            .lsu_stats
-            .global_stq_busy_rejects
-            .saturating_add(core.lsu_stats.global_stq_busy_rejects);
-        total.lsu_stats.shared_ldq_busy_rejects = total
-            .lsu_stats
-            .shared_ldq_busy_rejects
-            .saturating_add(core.lsu_stats.shared_ldq_busy_rejects);
-        total.lsu_stats.shared_stq_busy_rejects = total
-            .lsu_stats
-            .shared_stq_busy_rejects
-            .saturating_add(core.lsu_stats.shared_stq_busy_rejects);
-        total.writeback_stats.issued = total
-            .writeback_stats
-            .issued
-            .saturating_add(core.writeback_stats.issued);
-        total.writeback_stats.completed = total
-            .writeback_stats
-            .completed
-            .saturating_add(core.writeback_stats.completed);
-        total.writeback_stats.queue_full_rejects = total
-            .writeback_stats
-            .queue_full_rejects
-            .saturating_add(core.writeback_stats.queue_full_rejects);
-        total.writeback_stats.busy_rejects = total
-            .writeback_stats
-            .busy_rejects
-            .saturating_add(core.writeback_stats.busy_rejects);
-
-        total.barrier_summary.arrivals = total
-            .barrier_summary
-            .arrivals
-            .saturating_add(core.barrier_summary.arrivals);
-        total.barrier_summary.queue_rejects = total
-            .barrier_summary
-            .queue_rejects
-            .saturating_add(core.barrier_summary.queue_rejects);
-        total.barrier_summary.release_events = total
-            .barrier_summary
-            .release_events
-            .saturating_add(core.barrier_summary.release_events);
-        total.barrier_summary.warps_released = total
-            .barrier_summary
-            .warps_released
-            .saturating_add(core.barrier_summary.warps_released);
-        total.barrier_summary.max_release_batch = total
-            .barrier_summary
-            .max_release_batch
-            .max(core.barrier_summary.max_release_batch);
-        total.barrier_summary.total_scheduled_wait_cycles = total
-            .barrier_summary
-            .total_scheduled_wait_cycles
-            .saturating_add(core.barrier_summary.total_scheduled_wait_cycles);
-        total.barrier_summary.max_scheduled_wait_cycles = total
-            .barrier_summary
-            .max_scheduled_wait_cycles
-            .max(core.barrier_summary.max_scheduled_wait_cycles);
-
-        total.dma_completed = total.dma_completed.saturating_add(core.dma_completed);
-        total.tensor_completed = total.tensor_completed.saturating_add(core.tensor_completed);
+    let mut total = AggregatePerfSummary {
+        num_cores: per_core.len(),
+        ..AggregatePerfSummary::default()
+    };
+    for core in per_core {
+        total += core;
     }
-
     total
 }
 

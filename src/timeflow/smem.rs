@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::ops::AddAssign;
 
 use crate::timeflow::{
     graph::{FlowGraph, Link},
@@ -31,6 +32,46 @@ pub struct SmemStats {
     pub bank_write_busy_samples: Vec<u64>,
     pub bank_attempts: Vec<u64>,
     pub bank_conflicts: Vec<u64>,
+}
+
+impl AddAssign<&SmemStats> for SmemStats {
+    fn add_assign(&mut self, other: &SmemStats) {
+        self.issued = self.issued.saturating_add(other.issued);
+        self.read_issued = self.read_issued.saturating_add(other.read_issued);
+        self.write_issued = self.write_issued.saturating_add(other.write_issued);
+        self.completed = self.completed.saturating_add(other.completed);
+        self.read_completed = self.read_completed.saturating_add(other.read_completed);
+        self.write_completed = self.write_completed.saturating_add(other.write_completed);
+        self.queue_full_rejects = self
+            .queue_full_rejects
+            .saturating_add(other.queue_full_rejects);
+        self.busy_rejects = self.busy_rejects.saturating_add(other.busy_rejects);
+        self.bytes_issued = self.bytes_issued.saturating_add(other.bytes_issued);
+        self.bytes_completed = self.bytes_completed.saturating_add(other.bytes_completed);
+        self.inflight = self.inflight.saturating_add(other.inflight);
+        self.max_inflight = self.max_inflight.max(other.max_inflight);
+        self.max_completion_queue = self.max_completion_queue.max(other.max_completion_queue);
+        self.last_completion_cycle = match (self.last_completion_cycle, other.last_completion_cycle) {
+            (Some(a), Some(b)) => Some(a.max(b)),
+            (None, Some(b)) => Some(b),
+            (a, None) => a,
+        };
+        self.sample_cycles = self.sample_cycles.saturating_add(other.sample_cycles);
+        merge_vec_sums(&mut self.bank_busy_samples, &other.bank_busy_samples);
+        merge_vec_sums(&mut self.bank_read_busy_samples, &other.bank_read_busy_samples);
+        merge_vec_sums(&mut self.bank_write_busy_samples, &other.bank_write_busy_samples);
+        merge_vec_sums(&mut self.bank_attempts, &other.bank_attempts);
+        merge_vec_sums(&mut self.bank_conflicts, &other.bank_conflicts);
+    }
+}
+
+fn merge_vec_sums(dst: &mut Vec<u64>, src: &[u64]) {
+    if dst.len() < src.len() {
+        dst.resize(src.len(), 0);
+    }
+    for (idx, value) in src.iter().enumerate() {
+        dst[idx] = dst[idx].saturating_add(*value);
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default)]

@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::ops::AddAssign;
 
 use crate::timeflow::{simple_queue::SimpleTimedQueue, types::RejectReason};
 pub use crate::timeflow::types::RejectReason as IcacheRejectReason;
@@ -15,6 +16,26 @@ pub struct IcacheStats {
     pub bytes_issued: u64,
     pub bytes_completed: u64,
     pub last_completion_cycle: Option<Cycle>,
+}
+
+impl AddAssign<&IcacheStats> for IcacheStats {
+    fn add_assign(&mut self, other: &IcacheStats) {
+        self.issued = self.issued.saturating_add(other.issued);
+        self.completed = self.completed.saturating_add(other.completed);
+        self.hits = self.hits.saturating_add(other.hits);
+        self.misses = self.misses.saturating_add(other.misses);
+        self.queue_full_rejects = self
+            .queue_full_rejects
+            .saturating_add(other.queue_full_rejects);
+        self.busy_rejects = self.busy_rejects.saturating_add(other.busy_rejects);
+        self.bytes_issued = self.bytes_issued.saturating_add(other.bytes_issued);
+        self.bytes_completed = self.bytes_completed.saturating_add(other.bytes_completed);
+        self.last_completion_cycle = match (self.last_completion_cycle, other.last_completion_cycle) {
+            (Some(a), Some(b)) => Some(a.max(b)),
+            (None, Some(b)) => Some(b),
+            (a, None) => a,
+        };
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -210,4 +231,3 @@ fn hash_u64(mut x: u64) -> u64 {
     x ^= x >> 33;
     x
 }
-

@@ -1,4 +1,5 @@
 use serde::Serialize;
+use std::ops::AddAssign;
 
 use crate::timeflow::{BarrierSummary, GmemStats, IcacheStats, LsuStats, SmemStats, WritebackStats};
 
@@ -109,6 +110,91 @@ impl LatencyHistogram {
         for (dst, src) in self.buckets.iter_mut().zip(other.buckets.iter()) {
             *dst = dst.saturating_add(*src);
         }
+    }
+}
+
+impl AddAssign<&SchedulerSummary> for SchedulerSummary {
+    fn add_assign(&mut self, other: &SchedulerSummary) {
+        self.cycles = self.cycles.saturating_add(other.cycles);
+        self.active_warps_sum = self.active_warps_sum.saturating_add(other.active_warps_sum);
+        self.eligible_warps_sum = self
+            .eligible_warps_sum
+            .saturating_add(other.eligible_warps_sum);
+        self.issued_warps_sum = self.issued_warps_sum.saturating_add(other.issued_warps_sum);
+        self.issue_width = self.issue_width.max(other.issue_width);
+    }
+}
+
+impl AddAssign<&SmemUtilSummary> for SmemUtilSummary {
+    fn add_assign(&mut self, other: &SmemUtilSummary) {
+        self.cycles = self.cycles.saturating_add(other.cycles);
+        self.lane_busy_sum = self.lane_busy_sum.saturating_add(other.lane_busy_sum);
+        self.lane_total = self.lane_total.max(other.lane_total);
+        self.bank_busy_sum = self.bank_busy_sum.saturating_add(other.bank_busy_sum);
+        self.bank_total = self.bank_total.max(other.bank_total);
+    }
+}
+
+impl AddAssign<&ExecuteUtilSummary> for ExecuteUtilSummary {
+    fn add_assign(&mut self, other: &ExecuteUtilSummary) {
+        self.cycles = self.cycles.saturating_add(other.cycles);
+        self.int_busy_sum = self.int_busy_sum.saturating_add(other.int_busy_sum);
+        self.int_mul_busy_sum = self.int_mul_busy_sum.saturating_add(other.int_mul_busy_sum);
+        self.int_div_busy_sum = self.int_div_busy_sum.saturating_add(other.int_div_busy_sum);
+        self.fp_busy_sum = self.fp_busy_sum.saturating_add(other.fp_busy_sum);
+        self.sfu_busy_sum = self.sfu_busy_sum.saturating_add(other.sfu_busy_sum);
+    }
+}
+
+impl AddAssign<&BasicUtilSummary> for BasicUtilSummary {
+    fn add_assign(&mut self, other: &BasicUtilSummary) {
+        self.cycles = self.cycles.saturating_add(other.cycles);
+        self.busy_sum = self.busy_sum.saturating_add(other.busy_sum);
+    }
+}
+
+impl AddAssign<&StallSummary> for StallSummary {
+    fn add_assign(&mut self, other: &StallSummary) {
+        self.gmem_queue_full = self.gmem_queue_full.saturating_add(other.gmem_queue_full);
+        self.gmem_busy = self.gmem_busy.saturating_add(other.gmem_busy);
+        self.smem_queue_full = self.smem_queue_full.saturating_add(other.smem_queue_full);
+        self.smem_busy = self.smem_busy.saturating_add(other.smem_busy);
+    }
+}
+
+impl AddAssign<&SmemConflictSummary> for SmemConflictSummary {
+    fn add_assign(&mut self, other: &SmemConflictSummary) {
+        self.instructions = self.instructions.saturating_add(other.instructions);
+        self.active_lanes = self.active_lanes.saturating_add(other.active_lanes);
+        self.conflict_lanes = self.conflict_lanes.saturating_add(other.conflict_lanes);
+        self.unique_banks = self.unique_banks.saturating_add(other.unique_banks);
+        self.unique_subbanks = self.unique_subbanks.saturating_add(other.unique_subbanks);
+    }
+}
+
+impl AddAssign<&GmemHitSummary> for GmemHitSummary {
+    fn add_assign(&mut self, other: &GmemHitSummary) {
+        self.l0_accesses = self.l0_accesses.saturating_add(other.l0_accesses);
+        self.l0_hits = self.l0_hits.saturating_add(other.l0_hits);
+        self.l1_accesses = self.l1_accesses.saturating_add(other.l1_accesses);
+        self.l1_hits = self.l1_hits.saturating_add(other.l1_hits);
+        self.l2_accesses = self.l2_accesses.saturating_add(other.l2_accesses);
+        self.l2_hits = self.l2_hits.saturating_add(other.l2_hits);
+    }
+}
+
+impl AddAssign<&LatencySummary> for LatencySummary {
+    fn add_assign(&mut self, other: &LatencySummary) {
+        self.gmem_count = self.gmem_count.saturating_add(other.gmem_count);
+        self.gmem_sum = self.gmem_sum.saturating_add(other.gmem_sum);
+        self.smem_count = self.smem_count.saturating_add(other.smem_count);
+        self.smem_sum = self.smem_sum.saturating_add(other.smem_sum);
+    }
+}
+
+impl AddAssign<&LatencyHistogram> for LatencyHistogram {
+    fn add_assign(&mut self, other: &LatencyHistogram) {
+        self.accumulate(other);
     }
 }
 

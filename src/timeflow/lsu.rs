@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::ops::AddAssign;
 
 use crate::timeflow::{
     gmem::GmemRequest,
@@ -110,6 +111,57 @@ pub struct LsuStats {
     pub global_stq_busy_rejects: u64,
     pub shared_ldq_busy_rejects: u64,
     pub shared_stq_busy_rejects: u64,
+}
+
+impl AddAssign<&LsuStats> for LsuStats {
+    fn add_assign(&mut self, other: &LsuStats) {
+        self.issued = self.issued.saturating_add(other.issued);
+        self.completed = self.completed.saturating_add(other.completed);
+        self.queue_full_rejects = self
+            .queue_full_rejects
+            .saturating_add(other.queue_full_rejects);
+        self.busy_rejects = self.busy_rejects.saturating_add(other.busy_rejects);
+        self.global_ldq_issued = self.global_ldq_issued.saturating_add(other.global_ldq_issued);
+        self.global_stq_issued = self.global_stq_issued.saturating_add(other.global_stq_issued);
+        self.shared_ldq_issued = self.shared_ldq_issued.saturating_add(other.shared_ldq_issued);
+        self.shared_stq_issued = self.shared_stq_issued.saturating_add(other.shared_stq_issued);
+        self.global_ldq_completed = self
+            .global_ldq_completed
+            .saturating_add(other.global_ldq_completed);
+        self.global_stq_completed = self
+            .global_stq_completed
+            .saturating_add(other.global_stq_completed);
+        self.shared_ldq_completed = self
+            .shared_ldq_completed
+            .saturating_add(other.shared_ldq_completed);
+        self.shared_stq_completed = self
+            .shared_stq_completed
+            .saturating_add(other.shared_stq_completed);
+        self.global_ldq_queue_full_rejects = self
+            .global_ldq_queue_full_rejects
+            .saturating_add(other.global_ldq_queue_full_rejects);
+        self.global_stq_queue_full_rejects = self
+            .global_stq_queue_full_rejects
+            .saturating_add(other.global_stq_queue_full_rejects);
+        self.shared_ldq_queue_full_rejects = self
+            .shared_ldq_queue_full_rejects
+            .saturating_add(other.shared_ldq_queue_full_rejects);
+        self.shared_stq_queue_full_rejects = self
+            .shared_stq_queue_full_rejects
+            .saturating_add(other.shared_stq_queue_full_rejects);
+        self.global_ldq_busy_rejects = self
+            .global_ldq_busy_rejects
+            .saturating_add(other.global_ldq_busy_rejects);
+        self.global_stq_busy_rejects = self
+            .global_stq_busy_rejects
+            .saturating_add(other.global_stq_busy_rejects);
+        self.shared_ldq_busy_rejects = self
+            .shared_ldq_busy_rejects
+            .saturating_add(other.shared_ldq_busy_rejects);
+        self.shared_stq_busy_rejects = self
+            .shared_stq_busy_rejects
+            .saturating_add(other.shared_stq_busy_rejects);
+    }
 }
 
 #[derive(Debug, Clone)]

@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::ops::AddAssign;
 
 use serde::Deserialize;
 use serde::Serialize;
@@ -29,6 +30,17 @@ pub struct WritebackStats {
     pub completed: u64,
     pub queue_full_rejects: u64,
     pub busy_rejects: u64,
+}
+
+impl AddAssign<&WritebackStats> for WritebackStats {
+    fn add_assign(&mut self, other: &WritebackStats) {
+        self.issued = self.issued.saturating_add(other.issued);
+        self.completed = self.completed.saturating_add(other.completed);
+        self.queue_full_rejects = self
+            .queue_full_rejects
+            .saturating_add(other.queue_full_rejects);
+        self.busy_rejects = self.busy_rejects.saturating_add(other.busy_rejects);
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]

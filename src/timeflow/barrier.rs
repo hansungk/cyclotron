@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::ops::AddAssign;
 
 use crate::timeq::{Cycle, ServerConfig, ServiceRequest, TimedServer};
 
@@ -56,6 +57,22 @@ pub struct BarrierSummary {
     pub max_release_batch: u64,
     pub total_scheduled_wait_cycles: u64,
     pub max_scheduled_wait_cycles: u64,
+}
+
+impl AddAssign<&BarrierSummary> for BarrierSummary {
+    fn add_assign(&mut self, other: &BarrierSummary) {
+        self.arrivals = self.arrivals.saturating_add(other.arrivals);
+        self.queue_rejects = self.queue_rejects.saturating_add(other.queue_rejects);
+        self.release_events = self.release_events.saturating_add(other.release_events);
+        self.warps_released = self.warps_released.saturating_add(other.warps_released);
+        self.max_release_batch = self.max_release_batch.max(other.max_release_batch);
+        self.total_scheduled_wait_cycles = self
+            .total_scheduled_wait_cycles
+            .saturating_add(other.total_scheduled_wait_cycles);
+        self.max_scheduled_wait_cycles = self
+            .max_scheduled_wait_cycles
+            .max(other.max_scheduled_wait_cycles);
+    }
 }
 
 impl BarrierManager {
