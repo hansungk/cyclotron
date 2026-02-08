@@ -33,6 +33,27 @@ enum AllocationResult {
     },
 }
 
+#[derive(Clone, Copy)]
+enum QueueFullBankTarget {
+    L0 { core_id: usize, bank: usize },
+    L1 { cluster_id: usize, bank: usize },
+    L2 { bank: usize },
+}
+
+#[derive(Clone, Copy)]
+struct RollbackSpec {
+    core_id: usize,
+    cluster_id: usize,
+    l1_bank: usize,
+    l2_bank: usize,
+    l0_line: u64,
+    l1_line: u64,
+    l2_line: u64,
+    l0_new: bool,
+    l1_new: bool,
+    l2_new: bool,
+}
+
 pub struct Bank {
     pub mshr: MshrTable,
     pub stats: GmemStats,
@@ -670,36 +691,25 @@ impl ClusterGmemGraph {
                 }
 
                 if !self.hierarchy.l0[core_id].can_allocate(0, l0_line) {
-                    if core_id < self.hierarchy.l0.len()
-                        && self.hierarchy.l0[core_id].bank_count() > 0
-                    {
-                        if self.stats_enabled_for(request.addr) {
-                            self.hierarchy.l0[core_id].banks[0]
-                                .stats
-                                .record_queue_full_reject();
-                        }
-                    }
-                    if self.stats_enabled_for(request.addr) {
-                        self.cores[core_id].stats.record_queue_full_reject();
-                    }
-                    return Err(GmemReject {
-                        payload: request,
-                        retry_at: now.saturating_add(1),
-                        reason: GmemRejectReason::QueueFull,
-                    });
+                    return self.rollback_and_reject_queue_full(
+                        now,
+                        request,
+                        core_id,
+                        Some(QueueFullBankTarget::L0 { core_id, bank: 0 }),
+                        None,
+                    );
                 }
 
                 let l0_new = match self.hierarchy.l0[core_id].ensure_entry(0, l0_line, meta) {
                     Ok(new_entry) => new_entry,
                     Err(_) => {
-                        if self.stats_enabled_for(request.addr) {
-                            self.cores[core_id].stats.record_queue_full_reject();
-                        }
-                        return Err(GmemReject {
-                            payload: request,
-                            retry_at: now.saturating_add(1),
-                            reason: GmemRejectReason::QueueFull,
-                        });
+                        return self.rollback_and_reject_queue_full(
+                            now,
+                            request,
+                            core_id,
+                            None,
+                            None,
+                        );
                     }
                 };
                 Ok(AllocationResult::Continue {
@@ -715,14 +725,13 @@ impl ClusterGmemGraph {
                         l0_new = match self.hierarchy.l0[core_id].ensure_entry(0, l0_line, meta) {
                             Ok(new_entry) => new_entry,
                             Err(_) => {
-                                if self.stats_enabled_for(request.addr) {
-                                    self.cores[core_id].stats.record_queue_full_reject();
-                                }
-                                return Err(GmemReject {
-                                    payload: request,
-                                    retry_at: now.saturating_add(1),
-                                    reason: GmemRejectReason::QueueFull,
-                                });
+                                return self.rollback_and_reject_queue_full(
+                                    now,
+                                    request,
+                                    core_id,
+                                    None,
+                                    None,
+                                );
                             }
                         };
                     }
@@ -740,45 +749,51 @@ impl ClusterGmemGraph {
                 }
 
                 if !self.hierarchy.l1[cluster_id].can_allocate(l1_bank, l1_line) {
-                    self.rollback_mshrs(
-                        core_id, cluster_id, l1_bank, l2_bank, l0_line, l1_line, l2_line, l0_new,
-                        false, false,
+                    return self.rollback_and_reject_queue_full(
+                        now,
+                        request,
+                        core_id,
+                        Some(QueueFullBankTarget::L1 {
+                            cluster_id,
+                            bank: l1_bank,
+                        }),
+                        Some(RollbackSpec {
+                            core_id,
+                            cluster_id,
+                            l1_bank,
+                            l2_bank,
+                            l0_line,
+                            l1_line,
+                            l2_line,
+                            l0_new,
+                            l1_new: false,
+                            l2_new: false,
+                        }),
                     );
-                    if cluster_id < self.hierarchy.l1.len()
-                        && l1_bank < self.hierarchy.l1[cluster_id].bank_count()
-                    {
-                        if self.stats_enabled_for(request.addr) {
-                            self.hierarchy.l1[cluster_id].banks[l1_bank]
-                                .stats
-                                .record_queue_full_reject();
-                        }
-                    }
-                    if self.stats_enabled_for(request.addr) {
-                        self.cores[core_id].stats.record_queue_full_reject();
-                    }
-                    return Err(GmemReject {
-                        payload: request,
-                        retry_at: now.saturating_add(1),
-                        reason: GmemRejectReason::QueueFull,
-                    });
                 }
 
                 let l1_new =
                     match self.hierarchy.l1[cluster_id].ensure_entry(l1_bank, l1_line, meta) {
                         Ok(new_entry) => new_entry,
                         Err(_) => {
-                            self.rollback_mshrs(
-                                core_id, cluster_id, l1_bank, l2_bank, l0_line, l1_line, l2_line,
-                                l0_new, true, false,
+                            return self.rollback_and_reject_queue_full(
+                                now,
+                                request,
+                                core_id,
+                                None,
+                                Some(RollbackSpec {
+                                    core_id,
+                                    cluster_id,
+                                    l1_bank,
+                                    l2_bank,
+                                    l0_line,
+                                    l1_line,
+                                    l2_line,
+                                    l0_new,
+                                    l1_new: true,
+                                    l2_new: false,
+                                }),
                             );
-                            if self.stats_enabled_for(request.addr) {
-                                self.cores[core_id].stats.record_queue_full_reject();
-                            }
-                            return Err(GmemReject {
-                                payload: request,
-                                retry_at: now.saturating_add(1),
-                                reason: GmemRejectReason::QueueFull,
-                            });
                         }
                     };
 
@@ -796,14 +811,13 @@ impl ClusterGmemGraph {
                         l0_new = match self.hierarchy.l0[core_id].ensure_entry(0, l0_line, meta) {
                             Ok(new_entry) => new_entry,
                             Err(_) => {
-                                if self.stats_enabled_for(request.addr) {
-                                    self.cores[core_id].stats.record_queue_full_reject();
-                                }
-                                return Err(GmemReject {
-                                    payload: request,
-                                    retry_at: now.saturating_add(1),
-                                    reason: GmemRejectReason::QueueFull,
-                                });
+                                return self.rollback_and_reject_queue_full(
+                                    now,
+                                    request,
+                                    core_id,
+                                    None,
+                                    None,
+                                );
                             }
                         };
                     }
@@ -814,18 +828,24 @@ impl ClusterGmemGraph {
                         match self.hierarchy.l1[cluster_id].ensure_entry(l1_bank, l1_line, meta) {
                             Ok(new_entry) => new_entry,
                             Err(_) => {
-                                self.rollback_mshrs(
-                                    core_id, cluster_id, l1_bank, l2_bank, l0_line, l1_line,
-                                    l2_line, l0_new, true, false,
+                                return self.rollback_and_reject_queue_full(
+                                    now,
+                                    request,
+                                    core_id,
+                                    None,
+                                    Some(RollbackSpec {
+                                        core_id,
+                                        cluster_id,
+                                        l1_bank,
+                                        l2_bank,
+                                        l0_line,
+                                        l1_line,
+                                        l2_line,
+                                        l0_new,
+                                        l1_new: true,
+                                        l2_new: false,
+                                    }),
                                 );
-                                if self.stats_enabled_for(request.addr) {
-                                    self.cores[core_id].stats.record_queue_full_reject();
-                                }
-                                return Err(GmemReject {
-                                    payload: request,
-                                    retry_at: now.saturating_add(1),
-                                    reason: GmemRejectReason::QueueFull,
-                                });
                             }
                         };
                 }
@@ -845,42 +865,47 @@ impl ClusterGmemGraph {
                 }
 
                 if !self.hierarchy.l2.can_allocate(l2_bank, l2_line) {
-                    self.rollback_mshrs(
-                        core_id, cluster_id, l1_bank, l2_bank, l0_line, l1_line, l2_line, l0_new,
-                        l1_new, false,
+                    return self.rollback_and_reject_queue_full(
+                        now,
+                        request,
+                        core_id,
+                        Some(QueueFullBankTarget::L2 { bank: l2_bank }),
+                        Some(RollbackSpec {
+                            core_id,
+                            cluster_id,
+                            l1_bank,
+                            l2_bank,
+                            l0_line,
+                            l1_line,
+                            l2_line,
+                            l0_new,
+                            l1_new,
+                            l2_new: false,
+                        }),
                     );
-                    if l2_bank < self.hierarchy.l2.bank_count() {
-                        if self.stats_enabled_for(request.addr) {
-                            self.hierarchy.l2.banks[l2_bank]
-                                .stats
-                                .record_queue_full_reject();
-                        }
-                    }
-                    if self.stats_enabled_for(request.addr) {
-                        self.cores[core_id].stats.record_queue_full_reject();
-                    }
-                    return Err(GmemReject {
-                        payload: request,
-                        retry_at: now.saturating_add(1),
-                        reason: GmemRejectReason::QueueFull,
-                    });
                 }
 
                 let l2_new = match self.hierarchy.l2.ensure_entry(l2_bank, l2_line, meta) {
                     Ok(new_entry) => new_entry,
                     Err(_) => {
-                        self.rollback_mshrs(
-                            core_id, cluster_id, l1_bank, l2_bank, l0_line, l1_line, l2_line,
-                            l0_new, l1_new, true,
+                        return self.rollback_and_reject_queue_full(
+                            now,
+                            request,
+                            core_id,
+                            None,
+                            Some(RollbackSpec {
+                                core_id,
+                                cluster_id,
+                                l1_bank,
+                                l2_bank,
+                                l0_line,
+                                l1_line,
+                                l2_line,
+                                l0_new,
+                                l1_new,
+                                l2_new: true,
+                            }),
                         );
-                        if self.stats_enabled_for(request.addr) {
-                            self.cores[core_id].stats.record_queue_full_reject();
-                        }
-                        return Err(GmemReject {
-                            payload: request,
-                            retry_at: now.saturating_add(1),
-                            reason: GmemRejectReason::QueueFull,
-                        });
                     }
                 };
 
@@ -891,6 +916,82 @@ impl ClusterGmemGraph {
                 })
             }
         }
+    }
+
+    fn queue_full_reject(&self, now: Cycle, request: GmemRequest) -> GmemReject {
+        GmemReject {
+            payload: request,
+            retry_at: now.saturating_add(1),
+            reason: GmemRejectReason::QueueFull,
+        }
+    }
+
+    fn record_queue_full_stats(
+        &mut self,
+        core_id: usize,
+        addr: u64,
+        bank_target: Option<QueueFullBankTarget>,
+    ) {
+        if !self.stats_enabled_for(addr) {
+            return;
+        }
+
+        match bank_target {
+            Some(QueueFullBankTarget::L0 { core_id, bank }) => {
+                if core_id < self.hierarchy.l0.len() && bank < self.hierarchy.l0[core_id].bank_count() {
+                    self.hierarchy.l0[core_id].banks[bank]
+                        .stats
+                        .record_queue_full_reject();
+                }
+            }
+            Some(QueueFullBankTarget::L1 { cluster_id, bank }) => {
+                if cluster_id < self.hierarchy.l1.len()
+                    && bank < self.hierarchy.l1[cluster_id].bank_count()
+                {
+                    self.hierarchy.l1[cluster_id].banks[bank]
+                        .stats
+                        .record_queue_full_reject();
+                }
+            }
+            Some(QueueFullBankTarget::L2 { bank }) => {
+                if bank < self.hierarchy.l2.bank_count() {
+                    self.hierarchy.l2.banks[bank]
+                        .stats
+                        .record_queue_full_reject();
+                }
+            }
+            None => {}
+        }
+
+        if let Some(core) = self.cores.get_mut(core_id) {
+            core.stats.record_queue_full_reject();
+        }
+    }
+
+    fn rollback_and_reject_queue_full(
+        &mut self,
+        now: Cycle,
+        request: GmemRequest,
+        core_id: usize,
+        bank_target: Option<QueueFullBankTarget>,
+        rollback: Option<RollbackSpec>,
+    ) -> GmemResult<AllocationResult> {
+        if let Some(spec) = rollback {
+            self.rollback_mshrs(
+                spec.core_id,
+                spec.cluster_id,
+                spec.l1_bank,
+                spec.l2_bank,
+                spec.l0_line,
+                spec.l1_line,
+                spec.l2_line,
+                spec.l0_new,
+                spec.l1_new,
+                spec.l2_new,
+            );
+        }
+        self.record_queue_full_stats(core_id, request.addr, bank_target);
+        Err(self.queue_full_reject(now, request))
     }
 
     fn issue_merge(
