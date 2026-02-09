@@ -10,6 +10,6 @@ io_cout_addr = 0xFF080000
 io_cout_size = 64
 
 [sim]
-elf = "test/kernel.radiance.elf"
+elf = "test/isa-tests/rv32ui-p-add"
 timeout = 1000000
 trace = false

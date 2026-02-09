@@ -39,6 +39,7 @@ pub struct SchedulerState {
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Schedule {
     pub pc: u32,
+    pub warp: usize,
     pub mask: u32,
     pub active_warps: u32,
 }
@@ -276,6 +277,7 @@ impl Scheduler {
             let pc = self.state().pc[wid];
             let sched = Schedule {
                 pc,
+                warp: wid,
                 mask: self.base.state.thread_masks[wid],
                 active_warps: self.base.state.active_warps, // for csr writing
             };

@@ -18,3 +18,4 @@ in_order_issue = false
 [sim]
 log_level = 1
 timeout = 100000
+elf = "test/isa-tests/rv32ui-p-add"
