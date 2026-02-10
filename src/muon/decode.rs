@@ -132,10 +132,7 @@ module!(RegFile, RegFileState, MuonConfig,);
 impl RegFile {
     pub fn new(config: Arc<MuonConfig>, lid: usize) -> RegFile {
         let mut me = RegFile::default();
-        assert!(
-            config.num_regs <= 256,
-            "currently at most 256 regs due to addr size"
-        );
+        assert!(config.num_regs <= 256, "currently at most 256 regs due to addr size");
         me.init_conf(config);
         me.lane_id = lid;
         me
@@ -150,11 +147,7 @@ impl RegFile {
     }
 
     pub fn write_gpr(&mut self, addr: u8, data: u32) {
-        assert!(
-            (addr as usize) < self.conf().num_regs,
-            "invalid gpr value {}",
-            addr
-        );
+        assert!((addr as usize) < self.conf().num_regs, "invalid gpr value {}", addr);
         if addr > 0 {
             self.base.state.gpr[addr as usize] = data;
         }

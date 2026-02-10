@@ -1,13 +1,10 @@
 //! This module allows Cyclotron to be used as a backend memory model within a Verilog testbench.
-//! The memory interface it provides is kept separate from the memory that Cyclotron itself uses to produce the
+//! The memory interface it provides is kept separate from the memory that Cyclotron itself uses to produce the 
 //! golden architectural trace (though both are initialized with the same contents).
 
 use std::{ffi::c_void, iter::zip, slice};
 
-use crate::{
-    base::{behavior::Parameterizable, mem::HasMemory},
-    sim::flat_mem::FlatMemory,
-};
+use crate::{base::{behavior::Parameterizable, mem::HasMemory}, sim::flat_mem::FlatMemory};
 
 struct LsuMemRequest {
     store: bool,
@@ -21,7 +18,7 @@ struct LsuMemRequest {
 struct LsuMemResponse {
     tag: u32,
     data: Vec<u32>,
-    valid: Vec<bool>,
+    valid: Vec<bool>
 }
 
 // Interface for Cyclotron memory models
@@ -47,7 +44,7 @@ impl BasicMemModel {
             pending_reqs: Vec::new(),
             pending_resp: None,
 
-            lsu_lanes,
+            lsu_lanes
         }
     }
 }
@@ -70,8 +67,7 @@ impl LsuMemModel for BasicMemModel {
                     continue;
                 }
 
-                self.mem
-                    .write(req.address[i] as usize, &req.data[i].to_le_bytes())
+                self.mem.write(req.address[i] as usize, &req.data[i].to_le_bytes())
                     .expect("failed to write to mem");
             }
 
@@ -80,18 +76,13 @@ impl LsuMemModel for BasicMemModel {
                 data: Vec::new(),
                 valid: req.mask,
             }
-        } else {
-            let data = req
-                .address
-                .iter()
-                .map(|&address| {
-                    let bytes = self
-                        .mem
-                        .read_n::<4>(address as usize)
-                        .expect("failed to read from mem");
-                    u32::from_le_bytes(bytes)
-                })
-                .collect();
+        }
+        else {
+            let data = req.address.iter().map(|&address| {
+                let bytes = self.mem.read_n::<4>(address as usize)
+                    .expect("failed to read from mem");
+                u32::from_le_bytes(bytes)
+            }).collect();
 
             LsuMemResponse {
                 tag: req.tag,
@@ -115,7 +106,9 @@ impl LsuMemModel for BasicMemModel {
 }
 
 #[no_mangle]
-pub extern "C" fn cyclotron_mem_init_rs(lsu_lanes: usize) -> *mut c_void {
+pub extern "C" fn cyclotron_mem_init_rs(
+    lsu_lanes: usize,
+) -> *mut c_void {
     let mem_model = Box::new(BasicMemModel::new(lsu_lanes));
     let mem_model_ptr = Box::into_raw(mem_model);
 
@@ -124,8 +117,12 @@ pub extern "C" fn cyclotron_mem_init_rs(lsu_lanes: usize) -> *mut c_void {
 
 #[no_mangle]
 // SAFETY: must be called at most once on a pointer returned from `cyclotron_mem_init_rs`
-pub extern "C" fn cyclotron_mem_free_rs(mem_model_ptr: *mut c_void) {
-    let mem_model = unsafe { Box::from_raw(mem_model_ptr as *mut BasicMemModel) };
+pub extern "C" fn cyclotron_mem_free_rs(
+    mem_model_ptr: *mut c_void
+) {
+    let mem_model = unsafe {
+        Box::from_raw(mem_model_ptr as *mut BasicMemModel)
+    };
 
     drop(mem_model);
 }
@@ -156,18 +153,17 @@ pub extern "C" fn cyclotron_mem_rs(
     // SAFETY: mem_model_ptr must be a pointer returned by `cyclotron_mem_init_rs` which has
     // not yet been freed using `cyclotron_mem_free_rs`
     let mem_model = unsafe { &mut *(mem_model_ptr as *mut BasicMemModel) };
-    let (req_ready, req_address, req_data, req_mask, resp_valid, resp_tag, resp_data, resp_valids) = unsafe {
-        (
-            &mut *req_ready,
-            slice::from_raw_parts(req_address, mem_model.lsu_lanes),
-            slice::from_raw_parts(req_data, mem_model.lsu_lanes),
-            slice::from_raw_parts(req_mask, mem_model.lsu_lanes),
-            &mut *resp_valid,
-            &mut *resp_tag,
-            slice::from_raw_parts_mut(resp_data, mem_model.lsu_lanes),
-            slice::from_raw_parts_mut(resp_valids, mem_model.lsu_lanes),
-        )
-    };
+    let (req_ready, req_address, req_data, req_mask, resp_valid, resp_tag, resp_data, resp_valids) = unsafe {(
+        &mut *req_ready, 
+        slice::from_raw_parts(req_address, mem_model.lsu_lanes),
+        slice::from_raw_parts(req_data, mem_model.lsu_lanes),
+        slice::from_raw_parts(req_mask, mem_model.lsu_lanes),
+        
+        &mut *resp_valid,
+        &mut *resp_tag,
+        slice::from_raw_parts_mut(resp_data, mem_model.lsu_lanes),
+        slice::from_raw_parts_mut(resp_valids, mem_model.lsu_lanes),
+    )};
 
     mem_model.tick();
 
@@ -191,7 +187,8 @@ pub extern "C" fn cyclotron_mem_rs(
 
         let ready = mem_model.consume_request(mem_request);
         *req_ready = if ready { 1 } else { 0 };
-    } else {
+    }
+    else {
         *req_ready = 0;
     }
 
@@ -204,10 +201,11 @@ pub extern "C" fn cyclotron_mem_rs(
         resp_data.copy_from_slice(&resp.data);
         for (hw_valid, resp_valid) in zip(resp_valids, resp.valid) {
             *hw_valid = if resp_valid { 1 } else { 0 };
-        }
+        };
 
         *resp_valid = 1;
-    } else {
+    }
+    else {
         *resp_valid = 0;
     }
 }
@@ -225,18 +223,16 @@ pub unsafe fn cyclotron_trace_mem_rs(
 
     rd_addr: *mut u8,
     rd_data: *mut u32,
-
+    
     finished_ptr: *mut u8,
 ) {
     let mut context_guard = super::CELL.write().unwrap();
-    let context = context_guard
-        .as_mut()
-        .expect("DPI context not initialized!");
+    let context = context_guard.as_mut().expect("DPI context not initialized!");
     let sim = &mut context.sim_isa;
 
     let core = &mut sim.top.clusters[0].cores[0];
     let config = *core.conf();
-
+    
     let warp_id = unsafe { &mut *warp_id };
     let tmask_vec = unsafe { slice::from_raw_parts_mut(tmask_vec, config.num_lanes) };
     let rs1_data = unsafe { slice::from_raw_parts_mut(rs1_data, config.num_lanes) };
@@ -249,7 +245,8 @@ pub unsafe fn cyclotron_trace_mem_rs(
     if sim.finished() {
         *finished = 1;
         return;
-    } else {
+    }
+    else {
         *finished = 0;
     }
 

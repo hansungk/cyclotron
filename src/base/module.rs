@@ -1,5 +1,5 @@
-use crate::base::behavior::*;
 use std::sync::{Arc, OnceLock};
+use crate::base::behavior::*;
 
 #[derive(Debug)]
 pub struct ModuleBase<T, C> {
@@ -28,7 +28,7 @@ pub trait IsModule: ModuleBehaviors {
 
     fn base_ref(&self) -> &ModuleBase<Self::StateType, Self::ConfigType>;
 
-    fn state_mut(&mut self) -> &mut Self::StateType {
+    fn state_mut(&mut self) -> &mut Self::StateType{
         &mut self.base().state
     }
 
@@ -42,32 +42,20 @@ pub trait IsModule: ModuleBehaviors {
     }
 
     // get only parameterizable children
-    fn get_param_children(
-        &mut self,
-    ) -> Vec<&mut dyn Parameterizable<ConfigType = Self::ConfigType>> {
+    fn get_param_children(&mut self) -> Vec<&mut dyn Parameterizable<ConfigType=Self::ConfigType>> {
         vec![]
     }
 }
 
-impl<X> Parameterizable for X
-where
-    X: IsModule,
-{
+impl<X> Parameterizable for X where X: IsModule {
     type ConfigType = X::ConfigType;
 
     fn conf(&self) -> &Self::ConfigType {
-        self.base_ref()
-            .config
-            .get()
-            .expect("config not found, was `init_conf` called in `new`?")
+        self.base_ref().config.get().expect("config not found, was `init_conf` called in `new`?")
     }
 
     fn init_conf(&mut self, conf: Arc<Self::ConfigType>) {
-        self.base()
-            .config
-            .set(Arc::clone(&conf))
-            .map_err(|_| "config already set")
-            .unwrap();
+        self.base().config.set(Arc::clone(&conf)).map_err(|_| "config already set").unwrap();
     }
 }
 

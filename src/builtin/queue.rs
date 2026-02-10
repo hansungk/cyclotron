@@ -1,7 +1,7 @@
-use crate::base::behavior::*;
-use crate::base::module::{module_inner, IsModule, ModuleBase};
 use std::collections::VecDeque;
 use std::sync::Arc;
+use crate::base::behavior::*;
+use crate::base::module::{module_inner, ModuleBase, IsModule};
 
 #[derive(Debug)]
 pub struct QueueState<T, const N: usize> {
@@ -19,10 +19,7 @@ impl<T: Default, const N: usize> Default for QueueState<T, N> {
 }
 
 #[derive(Debug, Default)]
-pub struct Queue<T, const N: usize>
-where
-    T: Default,
-{
+pub struct Queue<T, const N: usize> where T: Default {
     base: ModuleBase<QueueState<T, N>, ()>,
 }
 
@@ -53,10 +50,7 @@ impl<T: Default + Clone, const N: usize> Queue<T, N> {
         true
     }
 
-    pub fn try_deq(&mut self) -> Option<T>
-    where
-        T: Clone,
-    {
+    pub fn try_deq(&mut self) -> Option<T> where T: Clone {
         self.state_mut().storage.pop_front()
     }
 

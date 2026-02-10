@@ -66,15 +66,13 @@ impl CommandProcessor {
             assert!(self.base.state.remaining_threadblocks == 0);
             return vec![false; num_clusters];
         }
-
+        
         let can_schedule_per_cluster = |cluster: &mut ClusterScheduleState| -> usize {
-            let from_regfile_limit =
-                (REGFILE_SIZE_PER_CLUSTER - cluster.regfile_usage) / REGFILE_USAGE_PER_BLOCK;
-            let from_smem_limit =
-                (SMEM_SIZE_PER_CLUSTER - cluster.smem_usage) / SMEM_USAGE_PER_BLOCK;
+            let from_regfile_limit = (REGFILE_SIZE_PER_CLUSTER - cluster.regfile_usage) / REGFILE_USAGE_PER_BLOCK;
+            let from_smem_limit = (SMEM_SIZE_PER_CLUSTER - cluster.smem_usage) / SMEM_USAGE_PER_BLOCK;
             std::cmp::min(from_regfile_limit, from_smem_limit) as usize
         };
-
+        
         // TODO: schedule more than one threadblock per cluster if possible
         let mut schedule: Vec<bool> = Vec::with_capacity(self.base.state.clusters.len());
         for cluster in self.base.state.clusters.iter_mut() {

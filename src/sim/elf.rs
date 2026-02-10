@@ -56,7 +56,7 @@ impl ElfBackedMem {
             if size > 0 {
                 let mut range = None;
                 if section_name == ".args" {
-                    // .args is embedded without SHF_ALLOC; map it to the kernel arg address.
+                    //. map .args to the kernel arg address
                     let base = 0x7fff0000usize;
                     range = Some((base, base + size as usize));
                 } else if start != 0 {

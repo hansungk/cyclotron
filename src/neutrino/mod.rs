@@ -1,5 +1,5 @@
 pub mod config;
+pub mod scoreboard;
 pub mod counters;
 pub mod neutrino;
-pub mod scoreboard;
 mod tasks;

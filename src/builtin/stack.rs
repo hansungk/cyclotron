@@ -1,6 +1,6 @@
-use crate::base::behavior::*;
-use crate::base::module::{module_inner, IsModule, ModuleBase};
 use std::sync::Arc;
+use crate::base::behavior::*;
+use crate::base::module::{module_inner, ModuleBase, IsModule};
 
 #[derive(Debug)]
 pub struct StackState<T, const N: usize> {
@@ -20,10 +20,7 @@ impl<T: Default, const N: usize> Default for StackState<T, N> {
 }
 
 #[derive(Debug, Default)]
-pub struct Stack<T, const N: usize>
-where
-    T: Default,
-{
+pub struct Stack<T, const N: usize> where T: Default {
     base: ModuleBase<StackState<T, N>, ()>,
 }
 
@@ -42,6 +39,7 @@ impl<T: Default, const N: usize> ModuleBehaviors for Stack<T, N> {
 
 impl<T: Default, const N: usize> IsModule for Stack<T, N> {
     module_inner!(StackState<T, N>, ());
+
 }
 
 // TODO: add locks and stuff
@@ -57,10 +55,7 @@ impl<T: Default + Clone, const N: usize> Stack<T, N> {
         true
     }
 
-    pub fn try_pop(&mut self) -> Option<T>
-    where
-        T: Clone,
-    {
+    pub fn try_pop(&mut self) -> Option<T> where T: Clone {
         let size = self.state_mut().size;
         (size > 0).then(|| {
             self.state_mut().size -= 1;

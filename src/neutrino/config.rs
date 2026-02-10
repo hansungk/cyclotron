@@ -1,13 +1,16 @@
+use serde::Deserialize;
 use crate::muon::config::MuonConfig;
 use crate::sim::config::Config;
-use serde::Deserialize;
 
 #[derive(Debug, Deserialize, Clone, Copy)]
-#[serde(default)]
 pub struct NeutrinoConfig {
+    #[serde(default)]
     pub num_entries: usize,
+    #[serde(default)]
     pub task_id_width: usize,
+    #[serde(default)]
     pub counter_width: usize,
+    #[serde(default)]
     pub in_order_issue: bool,
     #[serde(skip)]
     pub muon_config: MuonConfig,
