@@ -1,10 +1,10 @@
 [muon]
-num_lanes = 1
-num_warps = 1
-num_cores = 1
+num_lanes = __NUM_LANES__
+num_warps = __NUM_WARPS__
+num_cores = __NUM_CORES__
 num_regs = 256
 start_pc = 0x80000000
-smem_base_addr = 0xFF000000
+__SMEM_BASE_ADDR_LINE__
 smem_size = 65536
 
 [mem]
@@ -12,8 +12,8 @@ io_cout_addr = 0xFF080000
 io_cout_size = 64
 
 [sim]
-elf = "test/performance-model-tests/icache_large_loop.elf"
-timeout = 2000000
+elf = "test/performance-model-tests/__ELF__"
+timeout = __TIMEOUT__
 trace = false
 
 [timing]
@@ -33,6 +33,5 @@ include = [
   "../../../config/timing/dma.toml",
   "../../../config/timing/tensor.toml",
   "../../../config/timing/execute.toml",
-  "../../../config/test_profiles/isolate_icache.toml",
-  "../../../config/test_profiles/isolate_icache_large_loop_miss.toml",
+__PROFILE_INCLUDE_LINES__
 ]
