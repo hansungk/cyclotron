@@ -1,4 +1,0 @@
-[scheduler]
-enabled = false
-# warp scheduler is single-issue per cycle
-issue_width = 1

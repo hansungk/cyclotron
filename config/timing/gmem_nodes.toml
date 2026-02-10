@@ -1,5 +1,4 @@
 [gmem]
-# Cache levels are fully config-driven via `gmem.levels`.
 
 [[gmem.levels]]
 banks = 1
@@ -91,7 +90,6 @@ bytes_per_cycle = 64
 queue_capacity = 4
 
 [gmem.nodes.dram]
-# Adjustable default values per request
 base_latency = 200
 bytes_per_cycle = 32
 queue_capacity = 64

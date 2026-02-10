@@ -1,3 +1,11 @@
+[smem]
+num_banks = 4
+num_lanes = 16
+num_subbanks = 4
+word_bytes = 4
+serialize_cores = true
+link_capacity = 16
+
 [smem.lane]
 base_latency = 0
 bytes_per_cycle = 64

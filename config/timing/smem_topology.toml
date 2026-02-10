@@ -1,8 +1,0 @@
-[smem]
-# Match Radiance tapeout config (TapeoutSmemConfig + SIMTCoreKey)
-num_banks = 4
-num_lanes = 16
-num_subbanks = 4
-word_bytes = 4
-serialize_cores = true
-link_capacity = 16

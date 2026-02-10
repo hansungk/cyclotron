@@ -1,20 +1,16 @@
 [gmem.policy]
-# Radiance config instantiates both L0i/L0d caches by default, so keep L0 enabled here.
-# Set this to `false` only when targeting a stripped CyclotronTile without the L0 caches.
 l0_enabled = true
 
-# Dirty eviction probabilities (used to route through writeback queues)
+# dirty eviction probabilities (used to route through writeback queues)
 l1_writeback_rate = 0.1
 l2_writeback_rate = 0.1
 
-# Cache line sizes used for address-based hit/miss + banking.
-# L0d/L1 come from the Radiance chipyard cache configs (L0d=64B, L1=32B).
-# L2 uses the system block size configured via `WithCacheBlockBytes(32)` in RadianceBaseConfig.
+# cache line sizes used for address-based hit/miss + banking
 l0_line_bytes = 64
 l1_line_bytes = 32
 l2_line_bytes = 32
 
-# Cache geometry (sets/ways). Defaults are placeholders; adjust to match RTL configs.
+# cache sets/ways
 l0_sets = 512
 l0_ways = 1
 l1_sets = 512
@@ -22,17 +18,13 @@ l1_ways = 4
 l2_sets = 2048
 l2_ways = 8
 
-# L0d flush MMIO (per-core). In MuonTile.scala, L0i flush is at `peripheralAddr`
-# and L0d flush is at `peripheralAddr + 0x100`. Radiance memory map places:
-#   core0: L0i=0x0008_0200, L0d=0x0008_0300
-#   core1: L0i=0x0008_0400, L0d=0x0008_0500
-# => L0d base 0x0008_0300 with stride 0x200 per core.
+# L0d flush MMIO
 l0_flush_mmio_base = 0x00080300
 l0_flush_mmio_stride = 0x200
 l0_flush_mmio_size = 0x100
 
-# Flush size used at flush-gate nodes (bytes)
+# flush size used at flush-gate nodes (bytes)
 flush_bytes = 4096
 
-# Deterministic seed for hit/miss + bank hashing
+# deterministic seed for hit/miss + bank hashing
 seed = 1

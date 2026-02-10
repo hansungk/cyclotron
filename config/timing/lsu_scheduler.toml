@@ -35,3 +35,8 @@ queue_capacity = 1
 bytes_per_cycle = 1024
 base_latency = 1
 completions_per_cycle = 1
+
+[scheduler]
+enabled = false
+# warp scheduler is single-issue per cycle
+issue_width = 1
