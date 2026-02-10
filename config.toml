@@ -16,9 +16,7 @@ trace = false
 
 [timing]
 include = [
-  "config/timing/gmem_nodes.toml",
-  "config/timing/gmem_links.toml",
-  "config/timing/gmem_policy.toml",
+  "config/timing/gmem.toml",
   "config/timing/icache.toml",
   "config/timing/lsu_scheduler.toml",
   "config/timing/smem.toml",
