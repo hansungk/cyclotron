@@ -1,43 +1,43 @@
-# key|elf|timeout|num_lanes|num_warps|num_cores|smem_base_addr|profile_includes_csv
-execute_alu_latency|execute_alu_latency.elf|200000|1|1|1|-|../../../config/test_profiles/isolate_execute.toml,../../../config/test_profiles/isolate_execute_alu_latency.toml
-execute_fp_latency|execute_fp_latency.elf|200000|1|1|1|-|../../../config/test_profiles/isolate_execute.toml,../../../config/test_profiles/isolate_execute_fp_latency.toml
-execute_int_div_latency|execute_int_div_latency.elf|200000|1|1|1|-|../../../config/test_profiles/isolate_execute.toml,../../../config/test_profiles/isolate_execute_int_div_latency.toml
-execute_int_mul_latency|execute_int_mul_latency.elf|200000|1|1|1|-|../../../config/test_profiles/isolate_execute.toml,../../../config/test_profiles/isolate_execute_int_mul_latency.toml
-execute_sfu_latency|execute_sfu_latency.elf|200000|1|1|1|-|../../../config/test_profiles/isolate_execute.toml,../../../config/test_profiles/isolate_execute_sfu_latency.toml
+# key|elf|timeout|num_lanes|num_warps|num_cores|smem_base_addr|base_profiles_csv|override_key
+execute_alu_latency|execute_alu_latency.elf|200000|1|1|1|-|isolate_execute|execute_alu_latency
+execute_fp_latency|execute_fp_latency.elf|200000|1|1|1|-|isolate_execute|execute_fp_latency
+execute_int_div_latency|execute_int_div_latency.elf|200000|1|1|1|-|isolate_execute|execute_int_div_latency
+execute_int_mul_latency|execute_int_mul_latency.elf|200000|1|1|1|-|isolate_execute|execute_int_mul_latency
+execute_sfu_latency|execute_sfu_latency.elf|200000|1|1|1|-|isolate_execute|execute_sfu_latency
 
-smem_no_conflict|smem_no_conflict.elf|200000|16|1|1|0xFF000000|../../../config/test_profiles/isolate_smem.toml,../../../config/test_profiles/isolate_smem_no_conflict.toml
-smem_partial_conflict|smem_partial_conflict.elf|200000|16|1|1|0xFF000000|../../../config/test_profiles/isolate_smem.toml,../../../config/test_profiles/isolate_smem_partial_conflict.toml
-smem_full_conflict|smem_full_conflict.elf|200000|16|1|1|0xFF000000|../../../config/test_profiles/isolate_smem.toml
-smem_dual_port_off|smem_dual_port.elf|200000|16|2|1|0xFF000000|../../../config/test_profiles/isolate_smem.toml,../../../config/test_profiles/isolate_smem_dual_port_off.toml
-smem_dual_port_on|smem_dual_port.elf|200000|16|2|1|0xFF000000|../../../config/test_profiles/isolate_smem.toml,../../../config/test_profiles/isolate_smem_dual_port_on.toml
+smem_no_conflict|smem_no_conflict.elf|200000|16|1|1|0xFF000000|isolate_smem|smem_no_conflict
+smem_partial_conflict|smem_partial_conflict.elf|200000|16|1|1|0xFF000000|isolate_smem|smem_partial_conflict
+smem_full_conflict|smem_full_conflict.elf|200000|16|1|1|0xFF000000|isolate_smem|-
+smem_dual_port_off|smem_dual_port.elf|200000|16|2|1|0xFF000000|isolate_smem|smem_dual_port_off
+smem_dual_port_on|smem_dual_port.elf|200000|16|2|1|0xFF000000|isolate_smem|smem_dual_port_on
 
-lsu_ldq_fill|lsu_ldq_fill.elf|300000|16|4|1|0xFF000000|../../../config/test_profiles/isolate_lsu.toml,../../../config/test_profiles/isolate_lsu_ldq_fill.toml
-lsu_shared_ldq_fill|lsu_shared_ldq_fill.elf|300000|16|4|1|0xFF000000|../../../config/test_profiles/isolate_lsu.toml,../../../config/test_profiles/isolate_lsu_shared_ldq_fill.toml
-lsu_stq_fill|lsu_stq_fill.elf|300000|16|4|1|0xFF000000|../../../config/test_profiles/isolate_lsu.toml,../../../config/test_profiles/isolate_lsu_stq_fill.toml
-lsu_shared_stq_fill|lsu_shared_stq_fill.elf|300000|16|4|1|0xFF000000|../../../config/test_profiles/isolate_lsu.toml,../../../config/test_profiles/isolate_lsu_shared_stq_fill.toml
+lsu_ldq_fill|lsu_ldq_fill.elf|300000|16|4|1|0xFF000000|isolate_lsu|lsu_ldq_fill
+lsu_shared_ldq_fill|lsu_shared_ldq_fill.elf|300000|16|4|1|0xFF000000|isolate_lsu|lsu_shared_ldq_fill
+lsu_stq_fill|lsu_stq_fill.elf|300000|16|4|1|0xFF000000|isolate_lsu|lsu_stq_fill
+lsu_shared_stq_fill|lsu_shared_stq_fill.elf|300000|16|4|1|0xFF000000|isolate_lsu|lsu_shared_stq_fill
 
-gmem_bank_select|gmem_bank_select.elf|200000|16|2|1|-|../../../config/test_profiles/isolate_gmem_bank_select.toml
-gmem_coalesce|gmem_coalesce.elf|200000|8|2|2|-|../../../config/test_profiles/isolate_gmem_coalesce.toml
-gmem_l0_hit|gmem_l0_hit.elf|200000|1|1|1|-|../../../config/test_profiles/isolate_gmem_l0.toml,../../../config/test_profiles/isolate_gmem_l0_hit.toml
-gmem_l1_miss|gmem_l1_miss.elf|200000|8|1|1|-|../../../config/test_profiles/isolate_gmem_l1_miss.toml,../../../config/test_profiles/isolate_gmem_l1_miss_range.toml
-gmem_l2_miss|gmem_l2_miss.elf|200000|8|1|1|-|../../../config/test_profiles/isolate_gmem_l2_miss.toml,../../../config/test_profiles/isolate_gmem_l2_miss_range.toml
-gmem_mshr_fill|gmem_mshr_fill.elf|200000|1|8|1|-|../../../config/test_profiles/isolate_gmem_mshr_fill.toml,../../../config/test_profiles/isolate_gmem_mshr_fill_range.toml
-gmem_mshr_merge|gmem_mshr_merge.elf|200000|1|8|1|-|../../../config/test_profiles/isolate_gmem_mshr_merge.toml,../../../config/test_profiles/isolate_gmem_mshr_merge_range.toml
+gmem_bank_select|gmem_bank_select.elf|200000|16|2|1|-|isolate_gmem_bank_select|-
+gmem_coalesce|gmem_coalesce.elf|200000|8|2|2|-|isolate_gmem_coalesce|-
+gmem_l0_hit|gmem_l0_hit.elf|200000|1|1|1|-|isolate_gmem_l0|gmem_l0_hit
+gmem_l1_miss|gmem_l1_miss.elf|200000|8|1|1|-|isolate_gmem_l1_miss|gmem_l1_miss_range
+gmem_l2_miss|gmem_l2_miss.elf|200000|8|1|1|-|isolate_gmem_l2_miss|gmem_l2_miss_range
+gmem_mshr_fill|gmem_mshr_fill.elf|200000|1|8|1|-|isolate_gmem_mshr_fill|gmem_mshr_fill_range
+gmem_mshr_merge|gmem_mshr_merge.elf|200000|1|8|1|-|isolate_gmem_mshr_merge|gmem_mshr_merge_range
 
-icache_small_loop_hit|icache_small_loop.elf|2000000|1|1|1|0xFF000000|../../../config/test_profiles/isolate_icache.toml,../../../config/test_profiles/isolate_icache_small_loop_hit.toml
-icache_small_loop_miss|icache_small_loop.elf|2000000|1|1|1|0xFF000000|../../../config/test_profiles/isolate_icache.toml,../../../config/test_profiles/isolate_icache_small_loop_miss.toml
-icache_large_loop_hit|icache_large_loop.elf|2000000|1|1|1|0xFF000000|../../../config/test_profiles/isolate_icache.toml,../../../config/test_profiles/isolate_icache_small_loop_hit.toml
-icache_large_loop_miss|icache_large_loop.elf|2000000|1|1|1|0xFF000000|../../../config/test_profiles/isolate_icache.toml,../../../config/test_profiles/isolate_icache_small_loop_miss.toml
-icache_thrash_hit|icache_thrash.elf|2000000|1|1|1|0xFF000000|../../../config/test_profiles/isolate_icache.toml,../../../config/test_profiles/isolate_icache_small_loop_hit.toml
-icache_thrash_miss|icache_thrash.elf|2000000|1|1|1|0xFF000000|../../../config/test_profiles/isolate_icache.toml,../../../config/test_profiles/isolate_icache_small_loop_miss.toml
+icache_small_loop_hit|icache_small_loop.elf|2000000|1|1|1|0xFF000000|isolate_icache|icache_hit
+icache_small_loop_miss|icache_small_loop.elf|2000000|1|1|1|0xFF000000|isolate_icache|icache_miss
+icache_large_loop_hit|icache_large_loop.elf|2000000|1|1|1|0xFF000000|isolate_icache|icache_hit
+icache_large_loop_miss|icache_large_loop.elf|2000000|1|1|1|0xFF000000|isolate_icache|icache_miss
+icache_thrash_hit|icache_thrash.elf|2000000|1|1|1|0xFF000000|isolate_icache|icache_hit
+icache_thrash_miss|icache_thrash.elf|2000000|1|1|1|0xFF000000|isolate_icache|icache_miss
 
-op_fetch_queue_fill|op_fetch_queue_fill.elf|200000|1|1|1|-|../../../config/test_profiles/isolate_operand_fetch.toml,../../../config/test_profiles/isolate_op_fetch_queue_fill.toml
-op_fetch_queue_fill_baseline|op_fetch_queue_fill.elf|200000|1|1|1|-|../../../config/test_profiles/isolate_operand_fetch.toml,../../../config/test_profiles/isolate_op_fetch_queue_fill.toml,../../../config/test_profiles/isolate_op_fetch_queue_fill_baseline.toml
+op_fetch_queue_fill|op_fetch_queue_fill.elf|200000|1|1|1|-|isolate_operand_fetch|op_fetch_queue_fill
+op_fetch_queue_fill_baseline|op_fetch_queue_fill.elf|200000|1|1|1|-|isolate_operand_fetch|op_fetch_queue_fill_baseline
 
-writeback_gmem_saturate|writeback_gmem_saturate.elf|250000|16|4|1|0xFF000000|../../../config/test_profiles/isolate_writeback.toml,../../../config/test_profiles/isolate_writeback_gmem_saturate.toml
-writeback_smem_saturate|writeback_smem_saturate.elf|300000|16|4|1|0xFF000000|../../../config/test_profiles/isolate_writeback.toml,../../../config/test_profiles/isolate_writeback_gmem_saturate.toml
-writeback_mixed_saturate|writeback_mixed_saturate.elf|300000|16|4|1|0xFF000000|../../../config/test_profiles/isolate_writeback.toml,../../../config/test_profiles/isolate_writeback_gmem_saturate.toml
+writeback_gmem_saturate|writeback_gmem_saturate.elf|250000|16|4|1|0xFF000000|isolate_writeback|writeback_saturate
+writeback_smem_saturate|writeback_smem_saturate.elf|300000|16|4|1|0xFF000000|isolate_writeback|writeback_saturate
+writeback_mixed_saturate|writeback_mixed_saturate.elf|300000|16|4|1|0xFF000000|isolate_writeback|writeback_saturate
 
-barrier_single|barrier_single.elf|200000|1|2|1|-|../../../config/test_profiles/isolate_barrier.toml
-barrier_nested|barrier_nested.elf|200000|1|2|1|-|../../../config/test_profiles/isolate_barrier.toml
-barrier_skewed|barrier_skewed.elf|200000|1|2|1|-|../../../config/test_profiles/isolate_barrier.toml
+barrier_single|barrier_single.elf|200000|1|2|1|-|isolate_barrier|-
+barrier_nested|barrier_nested.elf|200000|1|2|1|-|isolate_barrier|-
+barrier_skewed|barrier_skewed.elf|200000|1|2|1|-|isolate_barrier|-

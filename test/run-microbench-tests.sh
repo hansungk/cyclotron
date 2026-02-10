@@ -26,6 +26,7 @@ fi
 
 CONFIG_TEMPLATE_PATH="test/performance-model-tests/configs/base_template.toml"
 CONFIG_MANIFEST_PATH="test/performance-model-tests/configs/manifest.tsv"
+OVERRIDE_EMITTER_PATH="test/performance-model-tests/configs/profile_override_emitter.sh"
 TMP_CONFIG_ROOT="test/temp_folder"
 mkdir -p "$TMP_CONFIG_ROOT"
 TMP_CONFIG_DIR="$(mktemp -d "$TMP_CONFIG_ROOT/microbench.XXXXXX")"
@@ -35,6 +36,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
+source "$OVERRIDE_EMITTER_PATH"
+
 LATEST_RUN_DIR=""
 GENERATED_CONFIG_PATH=""
 GENERATED_ELF_PATH=""
@@ -42,14 +45,33 @@ GENERATED_ELF_PATH=""
 render_config_for_key() {
   local key="$1"
   local line
-  line="$(awk -F'|' -v k="$key" '$0 !~ /^#/ && NF >= 8 && $1 == k { print; exit }' "$CONFIG_MANIFEST_PATH")"
+  line="$(awk -F'|' -v k="$key" '$0 !~ /^#/ && NF >= 9 && $1 == k { print; exit }' "$CONFIG_MANIFEST_PATH")"
   if [[ -z "$line" ]]; then
     echo "missing manifest entry for key: $key" >&2
     return 1
   fi
 
-  local manifest_key elf timeout num_lanes num_warps num_cores smem_base profiles
-  IFS='|' read -r manifest_key elf timeout num_lanes num_warps num_cores smem_base profiles <<< "$line"
+  local manifest_key elf timeout num_lanes num_warps num_cores smem_base base_profiles override_key
+  IFS='|' read -r manifest_key elf timeout num_lanes num_warps num_cores smem_base base_profiles override_key <<< "$line"
+
+  local profiles_arr=()
+  local base_arr=()
+  local base_profile
+  IFS=',' read -r -a base_arr <<< "$base_profiles"
+  for base_profile in "${base_arr[@]}"; do
+    [[ -z "$base_profile" ]] && continue
+    profiles_arr+=("../../../config/test_profiles/${base_profile}.toml")
+  done
+
+  if [[ "$override_key" != "-" && -n "$override_key" ]]; then
+    local override_file="override_${manifest_key}.toml"
+    local override_path="$TMP_CONFIG_DIR/$override_file"
+    emit_override_profile "$override_key" "$override_path" || return 1
+    profiles_arr+=("$override_file")
+  fi
+
+  local profiles
+  profiles="$(IFS=','; echo "${profiles_arr[*]}")"
 
   local cfg_path="$TMP_CONFIG_DIR/${manifest_key}.toml"
   awk \

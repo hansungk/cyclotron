@@ -1,4 +1,0 @@
-# Baseline variant for operand-fetch queue fill test
-
-[operand_fetch]
-enabled = false
