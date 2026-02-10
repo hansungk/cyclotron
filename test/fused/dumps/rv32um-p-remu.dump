@@ -1,0 +1,24 @@
+
+../cyclotron/test/fused/rv32um-p-remu:     file format elf64-littleriscv
+
+
+Disassembly of section .text:
+
+0000000080000000 <_start>:
+    80000000:	00080117          	auipc	sp,0x80
+    80000004:	00010113          	mv	sp,sp
+    80000008:	006000ef          	jal	8000000e <main>
+    8000000c:	a001                	j	8000000c <_start+0xc>
+
+000000008000000e <main>:
+    8000000e:	1141                	addi	sp,sp,-16 # 8007fff0 <sink+0x7eff0>
+    80000010:	e422                	sd	s0,8(sp)
+    80000012:	0800                	addi	s0,sp,16
+    80000014:	00001797          	auipc	a5,0x1
+    80000018:	fec78793          	addi	a5,a5,-20 # 80001000 <sink>
+    8000001c:	639c                	ld	a5,0(a5)
+    8000001e:	00178713          	addi	a4,a5,1
+    80000022:	00001797          	auipc	a5,0x1
+    80000026:	fde78793          	addi	a5,a5,-34 # 80001000 <sink>
+    8000002a:	e398                	sd	a4,0(a5)
+    8000002c:	b7e5                	j	80000014 <main+0x6>
