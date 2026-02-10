@@ -135,7 +135,11 @@ impl Warp {
             c.emu_access(0xcc3, schedule.active_warps);
             c.emu_access(0xcc4, schedule.mask);
         }
+        self.frontend_nofetch(schedule, inst)
+    }
 
+    // Used for co-sim where RTL fetches the instruction.
+    pub fn frontend_nofetch(&mut self, schedule: Schedule, inst: u64) -> MicroOp {
         // decode
         let inst = DecodeUnit::decode(inst, schedule.pc);
         let tmask = schedule.mask;

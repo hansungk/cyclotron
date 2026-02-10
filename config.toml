@@ -3,16 +3,15 @@ num_lanes = 16
 num_warps = 4
 num_cores = 1
 num_regs = 256
-start_pc = 0x80000000
-smem_size = 65536
+start_pc = 0x10000000
 
 [mem]
 io_cout_addr = 0xFF080000
 io_cout_size = 64
 
 [sim]
-elf = "test/vecadd.elf"
-timeout = 5000000
+elf = "test/isa-tests/rv32ui-p-add"
+timeout = 1000000
 trace = false
 
 [timing]
