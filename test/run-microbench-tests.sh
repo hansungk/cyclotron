@@ -12,7 +12,7 @@ case "${1:-}" in
   "")
     ;;
   *)
-    echo "Usage: $0 [--debug-output]"
+    echo "Usage: $0 [--debug]"
     exit 2
     ;;
 esac
@@ -31,9 +31,9 @@ run_case() {
   local log_path="$3"
 
   if [[ "$DEBUG_OUTPUT" -eq 1 ]]; then
-    cargo run --release -- "$config_path" --binary-path "$elf_path"
+    cargo run --release -- "$config_path" --binary-path "$elf_path" --timing
   else
-    cargo run --release -- "$config_path" --binary-path "$elf_path" >"$log_path" 2>&1
+    cargo run --release -- "$config_path" --binary-path "$elf_path" --timing >"$log_path" 2>&1
   fi
   LATEST_RUN_DIR="$(ls -td performance_logs/run_* | sed -n '1p')"
 }

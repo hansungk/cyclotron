@@ -24,6 +24,8 @@ pub struct CyclotronArgs {
     pub log: Option<u64>,
     #[arg(long, help = "Generate instruction trace")]
     pub gen_trace: Option<bool>,
+    #[arg(long, help = "Enable timing model")]
+    pub timing: bool,
 }
 
 pub fn read_toml(filepath: &Path) -> String {
@@ -123,6 +125,9 @@ pub fn make_sim(toml_string: Option<&str>, cli_args: &Option<CyclotronArgs>) -> 
         sim_config.elf = args.binary_path.as_ref().cloned().unwrap_or(sim_config.elf);
         sim_config.log_level = args.log.unwrap_or(sim_config.log_level);
         sim_config.trace = args.gen_trace.unwrap_or(sim_config.trace);
+        if args.timing {
+            sim_config.timing = true;
+        }
         muon_config.num_lanes = args.num_lanes.unwrap_or(muon_config.num_lanes);
         muon_config.num_warps = args.num_warps.unwrap_or(muon_config.num_warps);
         muon_config.num_cores = args.num_cores.unwrap_or(muon_config.num_cores);

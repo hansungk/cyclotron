@@ -9,7 +9,7 @@ use crate::neutrino::neutrino::Neutrino;
 use crate::sim::flat_mem::FlatMemory;
 use crate::sim::log::Logger;
 use crate::sim::trace::Tracer;
-use crate::timeflow::{ClusterGmemGraph, CoreGraphConfig, GmemFlowConfig};
+use crate::timeflow::{ClusterGmemGraph, CoreGraphConfig};
 use crate::timeq::module_now;
 use std::iter::zip;
 use std::sync::{Arc, RwLock};
@@ -25,48 +25,22 @@ pub struct MuonCore {
 
     logger: Arc<Logger>,
     tracer: Arc<Tracer>,
-    timing_model: CoreTimingModel,
+    timing_mode: TimingMode,
+}
+
+enum TimingMode {
+    Disabled,
+    Enabled(CoreTimingModel),
 }
 
 impl MuonCore {
-    pub fn new(
+    fn build_core(
         config: Arc<MuonConfig>,
         cluster_id: usize,
         core_id: usize,
         logger: &Arc<Logger>,
         gmem: Arc<RwLock<FlatMemory>>,
-    ) -> Self {
-        let num_cores = config.num_cores.max(1);
-        let timing_core_id = cluster_id * num_cores + core_id;
-        let cluster_gmem = Arc::new(RwLock::new(ClusterGmemGraph::new(
-            GmemFlowConfig::default(),
-            1,
-            num_cores,
-        )));
-
-        Self::new_with_timing(
-            config,
-            cluster_id,
-            core_id,
-            logger,
-            gmem,
-            CoreGraphConfig::default(),
-            timing_core_id,
-            cluster_id,
-            cluster_gmem,
-        )
-    }
-
-    pub fn new_with_timing(
-        config: Arc<MuonConfig>,
-        cluster_id: usize,
-        core_id: usize,
-        logger: &Arc<Logger>,
-        gmem: Arc<RwLock<FlatMemory>>,
-        timing_config: CoreGraphConfig,
-        timing_core_id: usize,
-        timing_cluster_id: usize,
-        cluster_gmem: Arc<RwLock<ClusterGmemGraph>>,
+        timing_mode: TimingMode,
     ) -> Self {
         let num_warps = config.num_warps;
         let mut core = MuonCore {
@@ -92,14 +66,7 @@ impl MuonCore {
             shared_mem: FlatMemory::new_with_size(config.smem_size, None),
             logger: logger.clone(),
             tracer: Arc::new(Tracer::new(&config)),
-            timing_model: CoreTimingModel::new(
-                timing_config,
-                num_warps,
-                timing_core_id,
-                timing_cluster_id,
-                cluster_gmem,
-                logger.clone(),
-            ),
+            timing_mode,
         };
 
         info!(
@@ -111,6 +78,39 @@ impl MuonCore {
 
         core.init_conf(Arc::clone(&config));
         core
+    }
+
+    pub fn new(
+        config: Arc<MuonConfig>,
+        cluster_id: usize,
+        core_id: usize,
+        logger: &Arc<Logger>,
+        gmem: Arc<RwLock<FlatMemory>>,
+    ) -> Self {
+        Self::build_core(config, cluster_id, core_id, logger, gmem, TimingMode::Disabled)
+    }
+
+    pub fn new_timed(
+        config: Arc<MuonConfig>,
+        cluster_id: usize,
+        core_id: usize,
+        logger: &Arc<Logger>,
+        gmem: Arc<RwLock<FlatMemory>>,
+        timing_config: CoreGraphConfig,
+        timing_core_id: usize,
+        timing_cluster_id: usize,
+        cluster_gmem: Arc<RwLock<ClusterGmemGraph>>,
+    ) -> Self {
+        let num_warps = config.num_warps;
+        let timing_mode = TimingMode::Enabled(CoreTimingModel::new(
+            timing_config,
+            num_warps,
+            timing_core_id,
+            timing_cluster_id,
+            cluster_gmem,
+            logger.clone(),
+        ));
+        Self::build_core(config, cluster_id, core_id, logger, gmem, timing_mode)
     }
 
     /// Spawn a single warp to this core.
@@ -138,7 +138,12 @@ impl MuonCore {
     }
 
     pub fn has_timing_inflight(&self) -> bool {
-        self.timing_model.outstanding_gmem() > 0 || self.timing_model.outstanding_smem() > 0
+        match &self.timing_mode {
+            TimingMode::Disabled => false,
+            TimingMode::Enabled(timing_model) => {
+                timing_model.outstanding_gmem() > 0 || timing_model.outstanding_smem() > 0
+            }
+        }
     }
 
     /// Schedule all warps and get per-warp PC/tmasks.
@@ -150,23 +155,30 @@ impl MuonCore {
 
     pub fn frontend(&mut self, schedules: &[Option<Schedule>]) -> InstBuf {
         let now = module_now(&self.scheduler);
-        let warps = &mut self.warps;
-        let scheduler = &mut self.scheduler;
-        let timing_model = &mut self.timing_model;
-        let mut ibuf_entries = Vec::with_capacity(warps.len());
+        let mut ibuf_entries = Vec::with_capacity(self.warps.len());
 
-        for (wid, sched_opt) in schedules.iter().enumerate() {
-            let entry = match sched_opt {
-                Some(sched) => {
-                    if timing_model.allow_fetch(now, wid, sched.pc, scheduler) {
-                        Some(warps[wid].frontend(*sched))
-                    } else {
-                        None
-                    }
+        match &mut self.timing_mode {
+            TimingMode::Enabled(timing_model) => {
+                for (wid, sched_opt) in schedules.iter().enumerate() {
+                    let entry = match sched_opt {
+                        Some(sched) => {
+                            if timing_model.allow_fetch(now, wid, sched.pc, &mut self.scheduler) {
+                                Some(self.warps[wid].frontend(*sched))
+                            } else {
+                                None
+                            }
+                        }
+                        None => None,
+                    };
+                    ibuf_entries.push(entry);
                 }
-                None => None,
-            };
-            ibuf_entries.push(entry);
+            }
+            TimingMode::Disabled => {
+                for (wid, sched_opt) in schedules.iter().enumerate() {
+                    let entry = sched_opt.map(|sched| self.warps[wid].frontend(sched));
+                    ibuf_entries.push(entry);
+                }
+            }
         }
 
         InstBuf(ibuf_entries)
@@ -176,46 +188,67 @@ impl MuonCore {
     /// in the core backend.
     pub fn backend(&mut self, ibuf: &InstBuf, neutrino: &mut Neutrino) -> Result<(), ExecErr> {
         let now = module_now(&self.scheduler);
-        self.timing_model.tick(now, &mut self.scheduler);
-
-        let eligible = ibuf
-            .0
-            .iter()
-            .map(|entry| entry.is_some())
-            .collect::<Vec<_>>();
-        let issue_mask = self.timing_model.select_issue_mask(now, &eligible);
-        let active_warps = self.scheduler.active_warp_mask().count_ones();
-        let eligible_warps = eligible.iter().filter(|v| **v).count() as u32;
-        let issued_warps = issue_mask.iter().filter(|v| **v).count() as u32;
-        self.timing_model
-            .record_issue_stats(now, active_warps, eligible_warps, issued_warps);
-
         let mut writebacks: Vec<Option<Writeback>> = Vec::with_capacity(self.warps.len());
-        let warps = self.warps.iter_mut();
-        let ibuf_entries = ibuf.0.iter().copied();
 
-        for (wid, (warp, ibuf_entry)) in zip(warps, ibuf_entries).enumerate() {
-            let wb_opt = match ibuf_entry {
-                Some(ib) => {
-                    if !issue_mask.get(wid).copied().unwrap_or(false) {
-                        self.scheduler
-                            .set_resource_wait_until(wid, Some(now.saturating_add(1)));
-                        self.scheduler.replay_instruction(wid);
-                        None
-                    } else {
-                        warp.backend_timed(
+        match &mut self.timing_mode {
+            TimingMode::Enabled(timing_model) => {
+                timing_model.tick(now, &mut self.scheduler);
+
+                let eligible = ibuf
+                    .0
+                    .iter()
+                    .map(|entry| entry.is_some())
+                    .collect::<Vec<_>>();
+                let issue_mask = timing_model.select_issue_mask(now, &eligible);
+                let active_warps = self.scheduler.active_warp_mask().count_ones();
+                let eligible_warps = eligible.iter().filter(|v| **v).count() as u32;
+                let issued_warps = issue_mask.iter().filter(|v| **v).count() as u32;
+                timing_model.record_issue_stats(now, active_warps, eligible_warps, issued_warps);
+
+                let warps = self.warps.iter_mut();
+                let ibuf_entries = ibuf.0.iter().copied();
+
+                for (wid, (warp, ibuf_entry)) in zip(warps, ibuf_entries).enumerate() {
+                    let wb_opt = match ibuf_entry {
+                        Some(ib) => {
+                            if !issue_mask.get(wid).copied().unwrap_or(false) {
+                                self.scheduler
+                                    .set_resource_wait_until(wid, Some(now.saturating_add(1)));
+                                self.scheduler.replay_instruction(wid);
+                                None
+                            } else {
+                                warp.backend_timed(
+                                    ib,
+                                    &mut self.scheduler,
+                                    neutrino,
+                                    &mut self.shared_mem,
+                                    timing_model,
+                                    now,
+                                )?
+                            }
+                        }
+                        None => None,
+                    };
+                    writebacks.push(wb_opt);
+                }
+            }
+            TimingMode::Disabled => {
+                let warps = self.warps.iter_mut();
+                let ibuf_entries = ibuf.0.iter().copied();
+
+                for (warp, ibuf_entry) in zip(warps, ibuf_entries) {
+                    let wb_opt = match ibuf_entry {
+                        Some(ib) => Some(warp.backend(
                             ib,
                             &mut self.scheduler,
                             neutrino,
                             &mut self.shared_mem,
-                            &mut self.timing_model,
-                            now,
-                        )?
-                    }
+                        )?),
+                        None => None,
+                    };
+                    writebacks.push(wb_opt);
                 }
-                None => None,
-            };
-            writebacks.push(wb_opt);
+            }
         }
 
         let tracer = Arc::get_mut(&mut self.tracer).expect("failed to get tracer");
@@ -270,7 +303,10 @@ impl MuonCore {
     }
 
     pub fn timing_summary(&self) -> CorePerfSummary {
-        self.timing_model.perf_summary()
+        match &self.timing_mode {
+            TimingMode::Disabled => panic!("timing summary requested while timing mode is disabled"),
+            TimingMode::Enabled(timing_model) => timing_model.perf_summary(),
+        }
     }
 }
 

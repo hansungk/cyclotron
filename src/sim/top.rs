@@ -54,6 +54,7 @@ impl Sim {
                     timing_config,
                 },
                 mem_config,
+                timing_enabled: sim_config.timing,
             }),
             &logger,
         );
@@ -73,13 +74,15 @@ impl Sim {
             if self.top.finished() {
                 println!("simulation finished after {} cycles", cycle + 1);
 
-                let summaries = self
-                    .top
-                    .clusters
-                    .iter()
-                    .flat_map(|cluster| cluster.cores.iter().map(|core| core.timing_summary()))
-                    .collect::<Vec<_>>();
-                crate::sim::perf_log::write_summary(summaries);
+                if self.config.timing {
+                    let summaries = self
+                        .top
+                        .clusters
+                        .iter()
+                        .flat_map(|cluster| cluster.cores.iter().map(|core| core.timing_summary()))
+                        .collect::<Vec<_>>();
+                    crate::sim::perf_log::write_summary(summaries);
+                }
 
                 if let Some(tohost) = self.top.clusters[0].cores[0].scheduler.state().tohost {
                     if tohost != 0 {
@@ -98,13 +101,15 @@ impl Sim {
             self.top.tick_one();
         }
 
-        let summaries = self
-            .top
-            .clusters
-            .iter()
-            .flat_map(|cluster| cluster.cores.iter().map(|core| core.timing_summary()))
-            .collect::<Vec<_>>();
-        crate::sim::perf_log::write_summary(summaries);
+        if self.config.timing {
+            let summaries = self
+                .top
+                .clusters
+                .iter()
+                .flat_map(|cluster| cluster.cores.iter().map(|core| core.timing_summary()))
+                .collect::<Vec<_>>();
+            crate::sim::perf_log::write_summary(summaries);
+        }
 
         Err(0)
     }
@@ -139,6 +144,7 @@ pub struct CyclotronConfig {
     pub elf: PathBuf, // TODO: use sim
     pub cluster_config: ClusterConfig,
     pub mem_config: MemConfig,
+    pub timing_enabled: bool,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -153,7 +159,6 @@ pub struct CyclotronTop {
     pub clusters: Vec<Cluster>,
     pub timeout: u64,
     pub gmem: Arc<RwLock<FlatMemory>>,
-    pub gmem_timing: Arc<RwLock<crate::timeflow::ClusterGmemGraph>>,
 }
 
 impl CyclotronTop {
@@ -172,20 +177,25 @@ impl CyclotronTop {
 
         let num_clusters = 1;
         let cores_per_cluster = cluster_config.muon_config.num_cores.max(1);
-        let gmem_timing = Arc::new(RwLock::new(crate::timeflow::ClusterGmemGraph::new(
-            cluster_config.timing_config.memory.gmem.clone(),
-            num_clusters,
-            cores_per_cluster,
-        )));
-
-        for id in 0..num_clusters {
-            clusters.push(Cluster::new_with_timing(
-                cluster_config.clone(),
-                id,
-                logger,
-                gmem.clone(),
-                gmem_timing.clone(),
-            ));
+        if config.timing_enabled {
+            let gmem_timing = Arc::new(RwLock::new(crate::timeflow::ClusterGmemGraph::new(
+                cluster_config.timing_config.memory.gmem.clone(),
+                num_clusters,
+                cores_per_cluster,
+            )));
+            for id in 0..num_clusters {
+                clusters.push(Cluster::new_timed(
+                    cluster_config.clone(),
+                    id,
+                    logger,
+                    gmem.clone(),
+                    gmem_timing.clone(),
+                ));
+            }
+        } else {
+            for id in 0..num_clusters {
+                clusters.push(Cluster::new(cluster_config.clone(), id, logger, gmem.clone()));
+            }
         }
         CyclotronTop {
             cproc: CommandProcessor::new(
@@ -195,7 +205,6 @@ impl CyclotronTop {
             clusters,
             timeout: config.timeout,
             gmem,
-            gmem_timing,
         }
     }
 

@@ -18,6 +18,3 @@ in_order_issue = false
 [sim]
 log_level = 1
 timeout = 500000
-
-[timing]
-include = ["config/timing/isa_fast.toml"]
