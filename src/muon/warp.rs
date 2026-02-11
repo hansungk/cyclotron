@@ -42,6 +42,27 @@ impl ModuleBehaviors for Warp {
 
 module!(Warp, WarpState, MuonConfig,);
 
+/// Writeback result from the execute stage modulo memory load/stores,
+/// which will be handled in the mem stage.
+#[derive(Debug)]
+pub struct ExWriteback {
+    pub inst: IssuedInst,
+    pub tmask: u32,
+    pub rd_addr: u8,
+    pub rd_data: Vec<Option<u32>>,
+    pub mem_req: Vec<Option<MemRequest>>,
+    pub sched_wb: SchedulerWriteback,
+}
+
+#[derive(Clone, Debug)]
+pub struct MemRequest {
+    pub addr: u32,
+    pub data: u32,
+    pub size: u32,
+    pub is_store: bool,
+}
+
+
 #[derive(Debug)]
 pub struct Writeback {
     pub inst: IssuedInst,
@@ -198,8 +219,7 @@ impl Warp {
         }
     }
 
-    /// An EX-only library interface that accepts a single-warp issued
-    /// instruction and returns a writeback bundle.
+    /// Execute a single-warp issued instruction and return a writeback bundle.
     pub fn execute(
         &mut self,
         issued: IssuedInst,
@@ -219,6 +239,7 @@ impl Warp {
     }
 
     pub fn writeback(wb: &Writeback, rf: &mut [RegFile]) {
+        // note: scheduler writeback is done in-place
         let rd_addr = wb.rd_addr;
         for (lrf, ldata) in zip(rf, &wb.rd_data) {
             ldata.map(|data| lrf.write_gpr(rd_addr, data));

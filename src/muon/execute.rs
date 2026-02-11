@@ -2,7 +2,7 @@ use crate::base::mem::HasMemory;
 use crate::muon::csr::CSRFile;
 use crate::muon::decode::{sign_ext, IssuedInst, MicroOp, RegFile};
 use crate::muon::scheduler::{Scheduler, SchedulerWriteback};
-use crate::muon::warp::Writeback;
+use crate::muon::warp::{MemRequest, Writeback};
 use crate::neutrino::neutrino::Neutrino;
 use crate::sim::flat_mem::FlatMemory;
 use crate::utils::BitSlice;
@@ -119,13 +119,6 @@ pub struct InstDef<T>(pub &'static str, pub T);
 
 #[derive(Debug)]
 pub struct ExecuteUnit;
-
-#[derive(Clone)]
-struct MemWriteback {
-    addr: u32,
-    data: u32,
-    size: u32,
-}
 
 impl ExecuteUnit {
     pub fn alu(issued: &IssuedInst, lane: usize) -> Option<u32> {
@@ -443,6 +436,7 @@ impl ExecuteUnit {
 
         // TODO: split here after req issue and handle resp separately for decoupled mem
         // implementations
+        // req: addr, size, gmem/smem
 
         let load_data_bytes = if shared_load {
             smem.read_n::<4>(load_addr as usize).expect("load failed")
@@ -480,7 +474,7 @@ impl ExecuteUnit {
         lane: usize,
         gmem: &RwLock<FlatMemory>,
         smem: &mut FlatMemory,
-    ) -> Option<MemWriteback> {
+    ) -> Option<MemRequest> {
         static INSTS: phf::Map<(u8, u8), &'static str> = phf_map! {
             (0u8, 0u8) => "sb.global",
             (0u8, 1u8) => "sb.shared",
@@ -518,7 +512,12 @@ impl ExecuteUnit {
         }
         .expect("store failed");
 
-        Some(MemWriteback { addr, data, size })
+        Some(MemRequest {
+            addr,
+            data,
+            size,
+            is_store: true,
+        })
     }
 
     pub fn csr(issued_inst: &IssuedInst, lane: usize, csrf: &mut CSRFile) -> Option<u32> {
@@ -670,7 +669,7 @@ impl ExecuteUnit {
         debug!("ISSUE: {}, tmask: {:b}", issued, tmask);
 
         let empty = vec![None::<u32>; num_lanes];
-        let empty_mem = vec![None::<MemWriteback>; num_lanes];
+        let empty_mem = vec![None::<MemRequest>; num_lanes];
         let empty_swb = SchedulerWriteback::default();
 
         let (rd_wb, mem_wb, sched_wb) = match issued.opcode {
@@ -790,6 +789,7 @@ impl ExecuteUnit {
             tmask,
             rd_addr: issued_rd_addr,
             rd_data: rd_wb,
+            // TODO: mem_wb,
             sched_wb,
         };
 
