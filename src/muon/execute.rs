@@ -1,10 +1,8 @@
-use crate::base::mem::HasMemory;
 use crate::muon::csr::CSRFile;
 use crate::muon::decode::{sign_ext, IssuedInst, MicroOp, RegFile};
 use crate::muon::scheduler::{Scheduler, SchedulerWriteback};
-use crate::muon::warp::{ExWriteback, MemRequest};
+use crate::muon::warp::{ExWriteback, MemRequest, MemResponse};
 use crate::neutrino::neutrino::Neutrino;
-use crate::sim::flat_mem::FlatMemory;
 use crate::utils::BitSlice;
 use log::{debug, error};
 use num_derive::FromPrimitive;
@@ -12,8 +10,6 @@ use num_traits::ToPrimitive;
 pub use num_traits::WrappingAdd;
 use phf::phf_map;
 use std::fmt::Debug;
-use std::ops::DerefMut;
-use std::sync::RwLock;
 
 #[derive(Debug, Clone)]
 pub struct Opcode;
@@ -424,11 +420,13 @@ impl ExecuteUnit {
         let logsize = issued_inst.f3 & 3;
         let size = 1u32 << logsize;
         let addr = alu_result;
+        let sext = !issued_inst.f3.bit(2);
 
         Some(MemRequest {
             addr,
             data: None,
             size,
+            is_sext: sext,
             is_store: false,
             is_smem: shared_load,
         })
@@ -465,6 +463,7 @@ impl ExecuteUnit {
             addr,
             data: Some(data),
             size,
+            is_sext: false,
             is_store: true,
             is_smem: shared_store,
         })
@@ -738,40 +737,24 @@ impl ExecuteUnit {
         writeback
     }
 
-    pub fn mem(
+    /// Generate rd writeback for the memory load responses handled after EX & came back from
+    /// memory.
+    pub fn mem_writeback(
         req: &MemRequest,
-        sext: bool,
-        gmem: &RwLock<FlatMemory>,
-        smem: &mut FlatMemory,
+        resp: &MemResponse,
     ) -> Option<u32> {
-        // TODO: Store!
-
-        let addr = req.addr;
-        let size = req.size;
-        assert_eq!(addr >> 2, (addr + size - 1) >> 2, "misaligned load");
-
-        let addr_aligned = addr >> 2 << 2;
-        let bit_offset = ((addr & 3) * 8) as usize;
-        let mut gmem = gmem.write().expect("lock poisoned");
-        let mem = if req.is_smem { smem } else { gmem.deref_mut() };
-
         if req.is_store {
-            let data = req.data.expect("store req missing a data field");
-            let data_bytes = data.to_le_bytes();
-
-            match size {
-                1 => mem.write(addr as usize, &data_bytes[0..1]), // store byte
-                2 => mem.write(addr as usize, &data_bytes[0..2]), // store half
-                4 => mem.write(addr as usize, &data_bytes[0..4]), // store word
-                _ => panic!("unimplemented store size"),
-            }
-            .expect("store failed");
-
             None
         } else {
-            let load_data_bytes = mem.read_n::<4>(addr_aligned as usize).expect("load failed");
+            let addr = req.addr;
+            let size = req.size;
+            assert_eq!(addr >> 2, (addr + size - 1) >> 2, "misaligned load");
 
+            let bit_offset = ((addr & 3) * 8) as usize;
+
+            let load_data_bytes = resp.data.expect("mem load response doesn't contain data");
             let raw_load = u32::from_le_bytes(load_data_bytes);
+            let sext = req.is_sext;
             let opt_sext = |f: fn(u32) -> i32, x: u32| {
                 if sext {
                     f(x) as u32

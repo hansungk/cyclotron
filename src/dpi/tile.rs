@@ -8,9 +8,10 @@ use std::slice::{from_raw_parts, from_raw_parts_mut};
 /// next warp/PC to schedule, are we waiting for a IMEM/DMEM response to come
 /// back, etc.
 #[derive(Default)]
-pub struct CyclotronPipelineContext {
+pub struct PipelineContext {
     last_warp: usize,
     next_schedule: Option<Schedule>,
+    outstanding_mem: bool,
 }
 
 #[no_mangle]
@@ -63,11 +64,19 @@ pub unsafe extern "C" fn cyclotron_tile_tick_rs(
     let dmem_req_bits_address = unsafe { from_raw_parts_mut(dmem_req_bits_address_vec, num_lanes) };
     let dmem_req_bits_size = unsafe { from_raw_parts_mut(dmem_req_bits_size_vec, num_lanes) };
     let dmem_req_bits_tag = unsafe { from_raw_parts_mut(dmem_req_bits_tag_vec, num_lanes) };
+    let dmem_req_bits_data = unsafe { from_raw_parts_mut(dmem_req_bits_data_vec, num_lanes) };
+    let dmem_req_bits_mask = unsafe { from_raw_parts_mut(dmem_req_bits_mask_vec, num_lanes) };
     let dmem_resp_ready = unsafe { from_raw_parts_mut(dmem_resp_ready_vec, num_lanes) };
+    let dmem_resp_valid = unsafe { from_raw_parts(dmem_resp_valid_vec, num_lanes) };
+    let dmem_resp_bits_tag = unsafe { from_raw_parts(dmem_resp_bits_tag_vec, num_lanes) };
+    let dmem_resp_bits_data = unsafe { from_raw_parts(dmem_resp_bits_data_vec, num_lanes) };
     let finished = unsafe { finished_ptr.as_mut().expect("pointer was null") };
 
     *imem_req_valid = 0u8;
     *imem_resp_ready = 1u8; // cyclotron never stalls
+    for ready in dmem_resp_ready {
+        *ready = 1u8;
+    }
 
     // A difference between Cyclotron-as-a-Tile and the ISA model is that the ISA model advances
     // all active warps for each cycle, whereas CaaT serializes them and advances one warp at a
@@ -123,7 +132,6 @@ pub unsafe extern "C" fn cyclotron_tile_tick_rs(
 
         // MEM
         // abort if downstream not ready
-        // TODO: how to handle replay?
         let dmem_all_ready = dmem_req_ready.iter().all(|ready| *ready == 1u8);
         if dmem_all_ready {
             let mem_reqs = ex_writeback.mem_req;
@@ -131,22 +139,32 @@ pub unsafe extern "C" fn cyclotron_tile_tick_rs(
                 match req {
                     Some(req) => {
                         dmem_req_valid[l] = 1u8;
+                        dmem_req_bits_store[l] = 0; // TODO
                         dmem_req_bits_address[l] = req.addr;
                         // single outstanding req
-                        dmem_req_bits_tag[l] = 0;
                         dmem_req_bits_size[l] = 2; // 32-bit word
+                        dmem_req_bits_tag[l] = 0;
+                        dmem_req_bits_data[l] = 0; // TODO
+                        dmem_req_bits_mask[l] = 0xf; // TODO
                         // TODO: data, tag
+
+                        pipe_context.outstanding_mem = true;
                     },
                     None => {
                         dmem_req_valid[l] = 0u8;
                         dmem_req_bits_store[l] = 0;
                         dmem_req_bits_address[l] = 0;
-                        dmem_req_bits_tag[l] = 0;
                         dmem_req_bits_size[l] = 2; // 32-bit word
+                        dmem_req_bits_tag[l] = 0;
+                        dmem_req_bits_data[l] = 0;
+                        dmem_req_bits_mask[l] = 0;
                         // TODO: data, tag
                     }
                 }
             }
+
+        } else {
+            panic!("dmem is not ready!");
         }
 
         // TODO: fake writeback
@@ -159,8 +177,17 @@ pub unsafe extern "C" fn cyclotron_tile_tick_rs(
         };
         warp.writeback(&writeback);
 
-        // instruction is retired; clear next-cycle schedule
+        // TODO: properly stall at MEM; shouldn't replay EX upon mem stall
+        //
+        // instruction is fetched; clear next-cycle schedule
         pipe_context.next_schedule = None;
+    }
+
+    // MEM: handle response after stalling
+    if pipe_context.outstanding_mem {
+        todo!("work your ass");
+
+        pipe_context.outstanding_mem = false;
     }
 
     // move to fetching the next instruction

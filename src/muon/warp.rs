@@ -13,6 +13,7 @@ use crate::sim::log::Logger;
 use std::fmt::Debug;
 use std::fmt::{Display, Formatter};
 use std::iter::zip;
+use std::ops::DerefMut;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{Arc, RwLock};
 
@@ -59,8 +60,14 @@ pub struct MemRequest {
     pub addr: u32,
     pub data: Option<u32>,
     pub size: u32,
+    pub is_sext: bool,
     pub is_store: bool,
     pub is_smem: bool,
+}
+
+pub struct MemResponse {
+    pub data: Option<[u8; 4]>,
+    pub is_sext: bool,
 }
 
 #[derive(Debug)]
@@ -284,9 +291,12 @@ impl Warp {
 
         // MEM stage; serve address-generated memory requests from EX
         // TODO: support RTL mem in here
-        let rd_mem = ex_wb.mem_req.iter().map(|oreq| {
-            oreq.as_ref()
-                .and_then(|req| ExecuteUnit::mem(req, true, &self.gmem, smem))
+        let rd_mem = ex_wb.mem_req.iter().map(|oreq| match oreq {
+            Some(req) => {
+                let resp = self.mem_response(req, smem);
+                ExecuteUnit::mem_writeback(req, &resp)
+            }
+            None => None,
         });
 
         // consolidate rd's from EX and MEM
@@ -326,6 +336,46 @@ impl Warp {
         ExecuteUnit::execute(
             issued, core_id, self.wid, tmask, rf, csrf, scheduler, neutrino,
         )
+    }
+
+    // TODO: handle RTL response
+    pub fn mem_response(&mut self, mem_req: &MemRequest, smem: &mut FlatMemory) -> MemResponse {
+        let mut gmem = self.gmem.write().expect("lock poisoned");
+        let mem = if mem_req.is_smem {
+            smem
+        } else {
+            gmem.deref_mut()
+        };
+
+        let addr = mem_req.addr;
+        let addr_aligned = addr >> 2 << 2;
+        let size = mem_req.size;
+
+        if mem_req.is_store {
+            let store_data = mem_req.data.expect("store req missing a data field");
+            let store_data_bytes = store_data.to_le_bytes();
+
+            match size {
+                1 => mem.write(addr as usize, &store_data_bytes[0..1]), // store byte
+                2 => mem.write(addr as usize, &store_data_bytes[0..2]), // store half
+                4 => mem.write(addr as usize, &store_data_bytes[0..4]), // store word
+                _ => panic!("unimplemented store size"),
+            }
+            .expect("store failed");
+
+            MemResponse {
+                data: None,
+                is_sext: mem_req.is_sext, // pass-through
+            }
+        } else {
+            let load_data = mem.read_n::<4>(addr_aligned as usize).expect("load failed");
+
+            // byte-masking will be handled in Execute::mem
+            MemResponse {
+                data: Some(load_data),
+                is_sext: mem_req.is_sext, // pass-through
+            }
+        }
     }
 
     pub fn writeback(&mut self, wb: &Writeback) {

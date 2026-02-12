@@ -6,7 +6,7 @@ use crate::muon::decode::{DecodedInst, MicroOp};
 use crate::sim::top::Sim;
 use crate::sim::trace;
 use crate::ui::CyclotronArgs;
-use crate::dpi::tile::CyclotronPipelineContext;
+use crate::dpi::tile::PipelineContext;
 use log::debug;
 use std::collections::VecDeque;
 use std::ffi::CStr;
@@ -28,7 +28,7 @@ struct Context {
     // to be used for diff-testing against RTL issue
     issue_queue: Vec<IssueQueue>,
     sim_be: Sim, // cyclotron instance for the backend model
-    pipeline_context: CyclotronPipelineContext,
+    pipeline_context: PipelineContext,
     cycles_after_cyclotron_finished: usize,
     rtl_finished: Vec<bool>,
     difftested_insts: usize,
@@ -104,7 +104,7 @@ pub extern "C" fn cyclotron_init_rs(c_elfname: *const c_char) {
         sim_isa,
         issue_queue: Vec::new(),
         sim_be,
-        pipeline_context: CyclotronPipelineContext::default(),
+        pipeline_context: PipelineContext::default(),
         cycles_after_cyclotron_finished: 0,
         rtl_finished: vec![false; NUM_CLUSTERS * CORES_PER_CLUSTER],
         difftested_insts: 0,
