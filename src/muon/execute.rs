@@ -2,7 +2,7 @@ use crate::base::mem::HasMemory;
 use crate::muon::csr::CSRFile;
 use crate::muon::decode::{sign_ext, IssuedInst, MicroOp, RegFile};
 use crate::muon::scheduler::{Scheduler, SchedulerWriteback};
-use crate::muon::warp::{MemRequest, Writeback};
+use crate::muon::warp::{MemRequest, ExWriteback};
 use crate::neutrino::neutrino::Neutrino;
 use crate::sim::flat_mem::FlatMemory;
 use crate::utils::BitSlice;
@@ -394,9 +394,7 @@ impl ExecuteUnit {
     fn load(
         issued_inst: &IssuedInst,
         lane: usize,
-        gmem: &RwLock<FlatMemory>,
-        smem: &FlatMemory,
-    ) -> Option<u32> {
+    ) -> Option<MemRequest> {
         static INSTS: phf::Map<(u8, u8), &'static str> = phf_map! {
             (0u8, 0u8) => "lb.global",
             (0u8, 1u8) => "lb.shared",
@@ -426,54 +424,22 @@ impl ExecuteUnit {
             [issued_inst.rs1_data[lane].unwrap(), issued_inst.imm32]
         );
 
-        let load_size = issued_inst.f3 & 3;
-        let load_addr = alu_result >> 2 << 2;
-        assert_eq!(
-            alu_result >> 2,
-            (alu_result + (1 << load_size) - 1) >> 2,
-            "misaligned load"
-        );
+        let logsize = issued_inst.f3 & 3;
+        let size = 1u32 << logsize;
+        let addr = alu_result;
 
-        // TODO: split here after req issue and handle resp separately for decoupled mem
-        // implementations
-        // req: addr, size, gmem/smem
-
-        let load_data_bytes = if shared_load {
-            smem.read_n::<4>(load_addr as usize).expect("load failed")
-        } else {
-            gmem.read()
-                .expect("lock poisoned")
-                .read_n::<4>(load_addr as usize)
-                .expect("load failed")
-        };
-
-        let raw_load = u32::from_le_bytes(load_data_bytes);
-        let offset = ((alu_result & 3) * 8) as usize;
-        let sext = !issued_inst.f3.bit(2);
-        let opt_sext = |f: fn(u32) -> i32, x: u32| {
-            if sext {
-                f(x) as u32
-            } else {
-                x
-            }
-        };
-        let masked_load = match load_size {
-            0 => opt_sext(sign_ext::<8>, raw_load.sel(7 + offset, offset)), // load byte
-            1 => opt_sext(sign_ext::<16>, raw_load.sel(15 + offset, offset)), // load half
-            2 => raw_load,                                                  // load word
-            _ => panic!("unimplemented load type"),
-        };
-        // info!("load f3={} M[0x{:08x}] -> raw 0x{:08x} masked 0x{:08x}",
-        //         issued_inst.f3, load_addr, raw_load, masked_load);
-
-        Some(masked_load)
+        Some(MemRequest {
+            addr,
+            data: None,
+            size,
+            is_store: false,
+            is_smem: shared_load,
+        })
     }
 
     fn store(
         issued_inst: &IssuedInst,
         lane: usize,
-        gmem: &RwLock<FlatMemory>,
-        smem: &mut FlatMemory,
     ) -> Option<MemRequest> {
         static INSTS: phf::Map<(u8, u8), &'static str> = phf_map! {
             (0u8, 0u8) => "sb.global",
@@ -496,27 +462,17 @@ impl ExecuteUnit {
             [issued_inst.rs1_data[lane].unwrap(), issued_inst.imm32]
         );
 
-        let mut gmem = gmem.write().expect("lock poisoned");
-        let mem = if shared_store { smem } else { gmem.deref_mut() };
-
         let addr = alu_result;
         let data = issued_inst.rs2_data[lane].unwrap();
-        let data_bytes = data.to_le_bytes();
         let logsize = issued_inst.f3 & 3;
         let size = 1u32 << logsize;
-        match logsize {
-            0 => mem.write(addr as usize, &data_bytes[0..1]), // store byte
-            1 => mem.write(addr as usize, &data_bytes[0..2]), // store half
-            2 => mem.write(addr as usize, &data_bytes[0..4]), // store word
-            _ => panic!("unimplemented store size"),
-        }
-        .expect("store failed");
 
         Some(MemRequest {
             addr,
-            data,
+            data: Some(data),
             size,
             is_store: true,
+            is_smem: shared_store,
         })
     }
 
@@ -659,9 +615,7 @@ impl ExecuteUnit {
         csrf: &mut [CSRFile],
         scheduler: &mut Scheduler,
         neutrino: &mut Neutrino,
-        gmem: &RwLock<FlatMemory>,
-        smem: &mut FlatMemory,
-    ) -> Writeback {
+    ) -> ExWriteback {
         let num_lanes = rf.len();
         // lane id of first active thread
         let first_lid = tmask.trailing_zeros() as usize;
@@ -672,7 +626,7 @@ impl ExecuteUnit {
         let empty_mem = vec![None::<MemRequest>; num_lanes];
         let empty_swb = SchedulerWriteback::default();
 
-        let (rd_wb, mem_wb, sched_wb) = match issued.opcode {
+        let (rd_wb, mem_req, sched_wb) = match issued.opcode {
             Opcode::OP | Opcode::OP_IMM | Opcode::LUI | Opcode::AUIPC => (
                 Self::collect_lanes(|lane| ExecuteUnit::alu(&issued, lane), tmask, rf),
                 empty_mem,
@@ -711,18 +665,18 @@ impl ExecuteUnit {
                 )
             }
             Opcode::LOAD => (
+                empty,
                 Self::collect_lanes(
-                    |lane| ExecuteUnit::load(&issued, lane, gmem, smem),
+                    |lane| ExecuteUnit::load(&issued, lane),
                     tmask,
                     rf,
                 ),
-                empty_mem,
                 empty_swb,
             ),
             Opcode::STORE => (
                 empty,
                 Self::collect_lanes(
-                    |lane| ExecuteUnit::store(&issued, lane, gmem, smem),
+                    |lane| ExecuteUnit::store(&issued, lane),
                     tmask,
                     rf,
                 ),
@@ -784,17 +738,76 @@ impl ExecuteUnit {
         };
 
         let issued_rd_addr = issued.rd_addr;
-        let writeback = Writeback {
+        let writeback = ExWriteback {
             inst: issued,
             tmask,
             rd_addr: issued_rd_addr,
             rd_data: rd_wb,
-            // TODO: mem_wb,
+            mem_req,
             sched_wb,
         };
 
-        debug!("WRITEBACK: {}", writeback);
+        // debug!("WRITEBACK: {}", writeback);
 
         writeback
     }
+
+    pub fn mem(
+        req: &MemRequest,
+        sext: bool,
+        gmem: &RwLock<FlatMemory>,
+        smem: &mut FlatMemory
+    ) -> Option<u32> {
+        // TODO: Store!
+
+        let addr = req.addr;
+        let size = req.size;
+        assert_eq!(
+            addr >> 2,
+            (addr + size - 1) >> 2,
+            "misaligned load"
+        );
+
+        let addr_aligned = addr >> 2 << 2;
+        let bit_offset = ((addr & 3) * 8) as usize;
+        let mut gmem = gmem.write().expect("lock poisoned");
+        let mem = if req.is_smem { smem } else { gmem.deref_mut() };
+
+        if req.is_store {
+            let data = req.data.expect("store req missing a data field");
+            let data_bytes = data.to_le_bytes();
+
+            match size {
+                1 => mem.write(addr as usize, &data_bytes[0..1]), // store byte
+                2 => mem.write(addr as usize, &data_bytes[0..2]), // store half
+                4 => mem.write(addr as usize, &data_bytes[0..4]), // store word
+                _ => panic!("unimplemented store size"),
+            }
+                .expect("store failed");
+
+            None
+        } else {
+            let load_data_bytes = mem.read_n::<4>(addr_aligned as usize).expect("load failed");
+
+            let raw_load = u32::from_le_bytes(load_data_bytes);
+            let opt_sext = |f: fn(u32) -> i32, x: u32| {
+                if sext {
+                    f(x) as u32
+                } else {
+                    x
+                }
+            };
+            let rd = match size {
+                1 => opt_sext(sign_ext::<8>, raw_load.sel(7 + bit_offset, bit_offset)), // load byte
+                2 => opt_sext(sign_ext::<16>, raw_load.sel(15 + bit_offset, bit_offset)), // load half
+                4 => raw_load,                                                  // load word
+                _ => panic!("unimplemented load type"),
+            };
+
+            // info!("load f3={} M[0x{:08x}] -> raw 0x{:08x} masked 0x{:08x}",
+            //         issued_inst.f3, addr_aligned, raw_load, rd);
+            Some(rd)
+        }
+    }
+
 }

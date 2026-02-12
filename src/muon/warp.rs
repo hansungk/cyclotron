@@ -57,11 +57,11 @@ pub struct ExWriteback {
 #[derive(Clone, Debug)]
 pub struct MemRequest {
     pub addr: u32,
-    pub data: u32,
+    pub data: Option<u32>,
     pub size: u32,
     pub is_store: bool,
+    pub is_smem: bool,
 }
-
 
 #[derive(Debug)]
 pub struct Writeback {
@@ -232,10 +232,30 @@ impl Warp {
         let rf = self.base.state.reg_file.as_mut_slice();
         let csrf = self.base.state.csr_file.as_mut_slice();
 
-        let writeback = ExecuteUnit::execute(
-            issued, core_id, self.wid, tmask, rf, csrf, scheduler, neutrino, &self.gmem, smem,
+        // ALU/FPU/AddrGen stage
+        let ex_wb = ExecuteUnit::execute(
+            issued, core_id, self.wid, tmask, rf, csrf, scheduler, neutrino
         );
-        writeback
+
+        // MEM stage; serve address-generated memory requests from EX
+        let rd_mem = ex_wb.mem_req.iter().map(|oreq| {
+            oreq.as_ref().and_then(|req| ExecuteUnit::mem(req, true, &self.gmem, smem))
+        });
+
+        // consolidate rd's from EX and MEM
+        let rd_merged = zip(ex_wb.rd_data, rd_mem).map(|(lrd_ex, lrd_mem)| {
+            assert!(lrd_mem.is_none() || lrd_ex.is_none(),
+                "mem req generated for a lane that already has an EX rd writeback");
+            lrd_mem.or(lrd_ex)
+        }).collect::<Vec<_>>();
+
+        Writeback {
+            inst: ex_wb.inst,
+            tmask: ex_wb.tmask,
+            rd_addr: ex_wb.rd_addr,
+            rd_data: rd_merged,
+            sched_wb: ex_wb.sched_wb,
+        }
     }
 
     pub fn writeback(wb: &Writeback, rf: &mut [RegFile]) {
