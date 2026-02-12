@@ -2,7 +2,7 @@ use crate::base::mem::HasMemory;
 use crate::muon::csr::CSRFile;
 use crate::muon::decode::{sign_ext, IssuedInst, MicroOp, RegFile};
 use crate::muon::scheduler::{Scheduler, SchedulerWriteback};
-use crate::muon::warp::{MemRequest, ExWriteback};
+use crate::muon::warp::{ExWriteback, MemRequest};
 use crate::neutrino::neutrino::Neutrino;
 use crate::sim::flat_mem::FlatMemory;
 use crate::utils::BitSlice;
@@ -391,10 +391,7 @@ impl ExecuteUnit {
         taken.then_some(branch_target)
     }
 
-    fn load(
-        issued_inst: &IssuedInst,
-        lane: usize,
-    ) -> Option<MemRequest> {
+    fn load(issued_inst: &IssuedInst, lane: usize) -> Option<MemRequest> {
         static INSTS: phf::Map<(u8, u8), &'static str> = phf_map! {
             (0u8, 0u8) => "lb.global",
             (0u8, 1u8) => "lb.shared",
@@ -437,10 +434,7 @@ impl ExecuteUnit {
         })
     }
 
-    fn store(
-        issued_inst: &IssuedInst,
-        lane: usize,
-    ) -> Option<MemRequest> {
+    fn store(issued_inst: &IssuedInst, lane: usize) -> Option<MemRequest> {
         static INSTS: phf::Map<(u8, u8), &'static str> = phf_map! {
             (0u8, 0u8) => "sb.global",
             (0u8, 1u8) => "sb.shared",
@@ -666,20 +660,12 @@ impl ExecuteUnit {
             }
             Opcode::LOAD => (
                 empty,
-                Self::collect_lanes(
-                    |lane| ExecuteUnit::load(&issued, lane),
-                    tmask,
-                    rf,
-                ),
+                Self::collect_lanes(|lane| ExecuteUnit::load(&issued, lane), tmask, rf),
                 empty_swb,
             ),
             Opcode::STORE => (
                 empty,
-                Self::collect_lanes(
-                    |lane| ExecuteUnit::store(&issued, lane),
-                    tmask,
-                    rf,
-                ),
+                Self::collect_lanes(|lane| ExecuteUnit::store(&issued, lane), tmask, rf),
                 empty_swb,
             ),
             Opcode::MISC_MEM => {
@@ -756,17 +742,13 @@ impl ExecuteUnit {
         req: &MemRequest,
         sext: bool,
         gmem: &RwLock<FlatMemory>,
-        smem: &mut FlatMemory
+        smem: &mut FlatMemory,
     ) -> Option<u32> {
         // TODO: Store!
 
         let addr = req.addr;
         let size = req.size;
-        assert_eq!(
-            addr >> 2,
-            (addr + size - 1) >> 2,
-            "misaligned load"
-        );
+        assert_eq!(addr >> 2, (addr + size - 1) >> 2, "misaligned load");
 
         let addr_aligned = addr >> 2 << 2;
         let bit_offset = ((addr & 3) * 8) as usize;
@@ -783,7 +765,7 @@ impl ExecuteUnit {
                 4 => mem.write(addr as usize, &data_bytes[0..4]), // store word
                 _ => panic!("unimplemented store size"),
             }
-                .expect("store failed");
+            .expect("store failed");
 
             None
         } else {
@@ -800,7 +782,7 @@ impl ExecuteUnit {
             let rd = match size {
                 1 => opt_sext(sign_ext::<8>, raw_load.sel(7 + bit_offset, bit_offset)), // load byte
                 2 => opt_sext(sign_ext::<16>, raw_load.sel(15 + bit_offset, bit_offset)), // load half
-                4 => raw_load,                                                  // load word
+                4 => raw_load, // load word
                 _ => panic!("unimplemented load type"),
             };
 
@@ -809,5 +791,4 @@ impl ExecuteUnit {
             Some(rd)
         }
     }
-
 }

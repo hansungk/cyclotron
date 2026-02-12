@@ -1,6 +1,8 @@
 use crate::base::behavior::*;
 use crate::dpi::CELL;
 use crate::muon::scheduler::Schedule;
+use crate::muon::warp::Writeback;
+use std::slice::{from_raw_parts, from_raw_parts_mut};
 
 /// Holds the current control state of the Cyclotron pipeline, e.g. what's the
 /// next warp/PC to schedule, are we waiting for a IMEM/DMEM response to come
@@ -21,18 +23,18 @@ pub unsafe extern "C" fn cyclotron_tile_tick_rs(
     imem_resp_valid: u8,
     imem_resp_bits_tag: u64,
     imem_resp_bits_data: u64,
-    _dmem_req_valid_vec: *mut u8,
-    _dmem_req_ready_vec: *const u8,
-    _dmem_req_bits_store_vec: *mut u8,
-    _dmem_req_bits_address_vec: *mut u32,
-    _dmem_req_bits_size_vec: *mut u8,
-    _dmem_req_bits_tag_vec: *mut u32,
-    _dmem_req_bits_data_vec: *mut u32,
-    _dmem_req_bits_mask_vec: *mut u8,
-    _dmem_resp_ready_vec: *mut u8,
-    _dmem_resp_valid_vec: *const u8,
-    _dmem_resp_bits_tag_vec: *const u32,
-    _dmem_resp_bits_data_vec: *const u32,
+    dmem_req_valid_vec: *mut u8,
+    dmem_req_ready_vec: *const u8,
+    dmem_req_bits_store_vec: *mut u8,
+    dmem_req_bits_address_vec: *mut u32,
+    dmem_req_bits_size_vec: *mut u8,
+    dmem_req_bits_tag_vec: *mut u32,
+    dmem_req_bits_data_vec: *mut u32,
+    dmem_req_bits_mask_vec: *mut u8,
+    dmem_resp_ready_vec: *mut u8,
+    dmem_resp_valid_vec: *const u8,
+    dmem_resp_bits_tag_vec: *const u32,
+    dmem_resp_bits_data_vec: *const u32,
     finished_ptr: *mut u8,
 ) {
     let mut context_guard = CELL.write().unwrap();
@@ -45,6 +47,7 @@ pub unsafe extern "C" fn cyclotron_tile_tick_rs(
     let top = &mut sim.top;
     let config = top.clusters[0].cores[0].conf();
     let num_warps = config.num_warps;
+    let num_lanes = config.num_lanes;
 
     let imem_req_valid = unsafe { imem_req_valid_ptr.as_mut().expect("pointer was null") };
     let imem_req_bits_address = unsafe {
@@ -54,6 +57,13 @@ pub unsafe extern "C" fn cyclotron_tile_tick_rs(
     };
     let imem_req_bits_tag = unsafe { imem_req_bits_tag_ptr.as_mut().expect("pointer was null") };
     let imem_resp_ready = unsafe { imem_resp_ready_ptr.as_mut().expect("pointer was null") };
+    let dmem_req_ready = unsafe { from_raw_parts(dmem_req_ready_vec, num_lanes) };
+    let dmem_req_valid = unsafe { from_raw_parts_mut(dmem_req_valid_vec, num_lanes) };
+    let dmem_req_bits_store = unsafe { from_raw_parts_mut(dmem_req_bits_store_vec, num_lanes) };
+    let dmem_req_bits_address = unsafe { from_raw_parts_mut(dmem_req_bits_address_vec, num_lanes) };
+    let dmem_req_bits_size = unsafe { from_raw_parts_mut(dmem_req_bits_size_vec, num_lanes) };
+    let dmem_req_bits_tag = unsafe { from_raw_parts_mut(dmem_req_bits_tag_vec, num_lanes) };
+    let dmem_resp_ready = unsafe { from_raw_parts_mut(dmem_resp_ready_vec, num_lanes) };
     let finished = unsafe { finished_ptr.as_mut().expect("pointer was null") };
 
     *imem_req_valid = 0u8;
@@ -63,6 +73,12 @@ pub unsafe extern "C" fn cyclotron_tile_tick_rs(
     // all active warps for each cycle, whereas CaaT serializes them and advances one warp at a
     // cycle.  So here, CaaT needs to store the pipeline state & do simple warp scheduling to keep
     // track of individual warps' progress.
+    //
+    // Pipelining scheme:
+    //
+    // I0(alu): F | DXMW
+    // I1(mem):         F | DXM | W
+    // I2(...):                    F |
 
     // start by scheduling threadblocks, if any
     top.schedule_clusters();
@@ -85,32 +101,74 @@ pub unsafe extern "C" fn cyclotron_tile_tick_rs(
             );
         }
 
-        // execute the fetched warp
+        // decode the fetched instruction
         let inst: u64 = imem_resp_bits_data;
         let sched = pipe_context.next_schedule.unwrap();
         let uop = core.warps[sched.warp].frontend_nofetch(sched, inst);
 
-        // clear sched bookkeep
+        let warp = &mut core.warps[sched.warp];
+
+        // warp.backend(
+        //         uop,
+        //         &mut core.scheduler,
+        //         neutrino,
+        //         &mut core.shared_mem, // TODO: sharedmem
+        //     )
+        //     .expect("cyclotron: backend() failed");
+
+        // collector/EX(alu, fpu)
+        let ex_writeback = warp
+            .backend_beforemem(uop, &mut core.scheduler, neutrino)
+            .expect("cyclotron: execute() failed");
+
+        // MEM
+        // abort if downstream not ready
+        // TODO: how to handle replay?
+        let dmem_all_ready = dmem_req_ready.iter().all(|ready| *ready == 1u8);
+        if dmem_all_ready {
+            let mem_reqs = ex_writeback.mem_req;
+            for (l, req) in mem_reqs.iter().enumerate() {
+                match req {
+                    Some(req) => {
+                        dmem_req_valid[l] = 1u8;
+                        dmem_req_bits_address[l] = req.addr;
+                        // single outstanding req
+                        dmem_req_bits_tag[l] = 0;
+                        dmem_req_bits_size[l] = 2; // 32-bit word
+                        // TODO: data, tag
+                    },
+                    None => {
+                        dmem_req_valid[l] = 0u8;
+                        dmem_req_bits_store[l] = 0;
+                        dmem_req_bits_address[l] = 0;
+                        dmem_req_bits_tag[l] = 0;
+                        dmem_req_bits_size[l] = 2; // 32-bit word
+                        // TODO: data, tag
+                    }
+                }
+            }
+        }
+
+        // TODO: fake writeback
+        let writeback = Writeback {
+            inst: ex_writeback.inst,
+            tmask: ex_writeback.tmask,
+            rd_addr: ex_writeback.rd_addr,
+            rd_data: ex_writeback.rd_data,
+            sched_wb: ex_writeback.sched_wb,
+        };
+        warp.writeback(&writeback);
+
+        // instruction is retired; clear next-cycle schedule
         pipe_context.next_schedule = None;
-
-        core.warps[sched.warp]
-            .backend(
-                uop,
-                &mut core.scheduler,
-                neutrino,
-                &mut core.shared_mem, // TODO: sharedmem
-            )
-            .expect("cyclotron: backend() failed");
-
-        // TODO: memory instruction
     }
+
+    // move to fetching the next instruction
 
     // before we tick the next warp's schedule, abort if imem is blocked
     if imem_req_ready == 0 {
         return;
     }
-
-    // at this point, an instruction is retired; move to fetching the next instruction
 
     // warp fetch scheduling
     let mut warp = 0;
