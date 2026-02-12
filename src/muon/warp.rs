@@ -185,7 +185,10 @@ impl Warp {
         let pc = uop.inst.pc;
         let tmask = uop.tmask;
 
-        // TODO: verify that this step doesnt modify
+        assert!(
+            scheduler.state().thread_masks[self.wid] == tmask,
+            "scheduler tmask was not set correctly"
+        );
         scheduler.state_mut().thread_masks[self.wid] = tmask;
 
         // operand collection
@@ -235,8 +238,10 @@ impl Warp {
         let pc = uop.inst.pc;
         let tmask = uop.tmask;
 
-        // TODO: verify that this step doesnt modify
-        scheduler.state_mut().thread_masks[self.wid] = tmask;
+        assert!(
+            scheduler.state().thread_masks[self.wid] == tmask,
+            "scheduler tmask was not set correctly"
+        );
 
         // operand collection
         let issued = self.collect(&uop);
