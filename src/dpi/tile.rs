@@ -16,7 +16,7 @@ pub struct PipelineContext {
     staged_mem_resps: Vec<Option<MemResponse>>,
 }
 
-#[derive(PartialEq)]
+#[derive(PartialEq, Debug)]
 enum PipelineState {
     Execute,
     Mem,
@@ -214,11 +214,6 @@ pub unsafe extern "C" fn cyclotron_tile_tick_rs(
             let warp = &mut core.warps[warp_id];
             let mem_resps = &pipe_context.staged_mem_resps;
 
-            if mem_resps[0].is_some() {
-                let first_lane = &mem_resps[0];
-                println!("mem_resp: {:?}", first_lane.as_ref().unwrap().data);
-            }
-
             // MEM
             let writeback = warp.mem(ex_wb, &mut core.shared_mem, Some(mem_resps));
 
@@ -228,6 +223,9 @@ pub unsafe extern "C" fn cyclotron_tile_tick_rs(
 
             pipe_context.state = PipelineState::ScheduleNext;
             pipe_context.pending_ex_writeback = None;
+            for resp in &mut pipe_context.staged_mem_resps {
+                *resp = None;
+            }
         }
     }
 
