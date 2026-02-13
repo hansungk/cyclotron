@@ -203,7 +203,8 @@ impl Warp {
 
         // execute
         let writeback = catch_unwind(AssertUnwindSafe(|| {
-            self.execute(issued, tmask, scheduler, neutrino, smem)
+            let ex_wb = self.execute_nomem(issued, tmask, scheduler, neutrino);
+            self.mem(ex_wb, smem)
         }));
 
         // writeback
@@ -288,38 +289,11 @@ impl Warp {
         smem: &mut FlatMemory,
     ) -> Writeback {
         let ex_wb = self.execute_nomem(issued, tmask, scheduler, neutrino);
-
-        // MEM stage; serve address-generated memory requests from EX
-        // TODO: support RTL mem in here
-        let rd_mem = ex_wb.mem_req.iter().map(|oreq| match oreq {
-            Some(req) => {
-                let resp = self.mem_response(req, smem);
-                ExecuteUnit::mem_writeback(req, &resp)
-            }
-            None => None,
-        });
-
-        // consolidate rd's from EX and MEM
-        let rd_merged = zip(ex_wb.rd_data, rd_mem)
-            .map(|(lrd_ex, lrd_mem)| {
-                assert!(
-                    lrd_mem.is_none() || lrd_ex.is_none(),
-                    "mem req generated for a lane that already has an EX rd writeback"
-                );
-                lrd_mem.or(lrd_ex)
-            })
-            .collect::<Vec<_>>();
-
-        Writeback {
-            inst: ex_wb.inst,
-            tmask: ex_wb.tmask,
-            rd_addr: ex_wb.rd_addr,
-            rd_data: rd_merged,
-            sched_wb: ex_wb.sched_wb,
-        }
+        self.mem(ex_wb, smem)
     }
 
-    /// Execute, but stop at mem request issue.
+    /// Execute stage, but only generates mem requests without serving them with the internal
+    /// gmem/smem.
     /// Used for co-sim with decoupled memory.
     pub fn execute_nomem(
         &mut self,
@@ -336,6 +310,38 @@ impl Warp {
         ExecuteUnit::execute(
             issued, core_id, self.wid, tmask, rf, csrf, scheduler, neutrino,
         )
+    }
+
+    /// Memory stage; serve the memory requests produced in EX.
+    /// Consumes `ex_writeback` and transforms it into `Writeback`.
+    pub fn mem(&mut self, ex_writeback: ExWriteback, smem: &mut FlatMemory) -> Writeback {
+        // TODO: support RTL mem in here
+        let rd_mem = ex_writeback.mem_req.iter().map(|oreq| match oreq {
+            Some(req) => {
+                let resp = self.mem_response(req, smem);
+                ExecuteUnit::mem_writeback(req, &resp)
+            }
+            None => None,
+        });
+
+        // consolidate rd's from EX and MEM
+        let rd_merged = zip(ex_writeback.rd_data, rd_mem)
+            .map(|(lrd_ex, lrd_mem)| {
+                assert!(
+                    lrd_mem.is_none() || lrd_ex.is_none(),
+                    "mem req generated for a lane that already has an EX rd writeback"
+                );
+                lrd_mem.or(lrd_ex)
+            })
+            .collect::<Vec<_>>();
+
+        Writeback {
+            inst: ex_writeback.inst,
+            tmask: ex_writeback.tmask,
+            rd_addr: ex_writeback.rd_addr,
+            rd_data: rd_merged,
+            sched_wb: ex_writeback.sched_wb,
+        }
     }
 
     // TODO: handle RTL response
