@@ -27,7 +27,7 @@ pub struct DecodedInst {
 }
 
 /// Instruction bundle after operand collection, i.e. rs_addr -> rs_data
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct IssuedInst {
     pub opcode: u8,
     pub opext: u8,

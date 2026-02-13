@@ -65,6 +65,7 @@ pub struct MemRequest {
     pub is_smem: bool,
 }
 
+#[derive(Clone, Debug)]
 pub struct MemResponse {
     pub data: Option<[u8; 4]>,
     pub is_sext: bool,
@@ -204,7 +205,7 @@ impl Warp {
         // execute
         let writeback = catch_unwind(AssertUnwindSafe(|| {
             let ex_wb = self.execute_nomem(issued, tmask, scheduler, neutrino);
-            self.mem(ex_wb, smem)
+            self.mem(&ex_wb, smem, None)
         }));
 
         // writeback
@@ -289,7 +290,7 @@ impl Warp {
         smem: &mut FlatMemory,
     ) -> Writeback {
         let ex_wb = self.execute_nomem(issued, tmask, scheduler, neutrino);
-        self.mem(ex_wb, smem)
+        self.mem(&ex_wb, smem, None)
     }
 
     /// Execute stage, but only generates mem requests without serving them with the internal
@@ -313,30 +314,48 @@ impl Warp {
     }
 
     /// Memory stage; serve the memory requests produced in EX.
-    /// Consumes `ex_writeback` and transforms it into `Writeback`.
-    pub fn mem(&mut self, ex_writeback: ExWriteback, smem: &mut FlatMemory) -> Writeback {
-        // TODO: support RTL mem in here
-        let rd_mem = ex_writeback.mem_req.iter().map(|oreq| match oreq {
-            Some(req) => {
-                let resp = self.mem_response(req, smem);
-                ExecuteUnit::mem_writeback(req, &resp)
-            }
-            None => None,
-        });
+    /// If `external_mem_resp` is given, handle mem requests with an explicit memory response supplied by an
+    /// external memory model e.g. RTL, instead of using internal gmem/smem.
+    /// TODO: handle RTL response
+    pub fn mem(
+        &mut self,
+        ex_writeback: &ExWriteback,
+        smem: &mut FlatMemory,
+        external_mem_resp: Option<&Vec<Option<MemResponse>>>,
+    ) -> Writeback {
+        let external_mem = external_mem_resp.is_some();
+
+        let rd_mem = ex_writeback
+            .mem_req
+            .iter()
+            .enumerate()
+            .map(|(i, oreq)| match oreq {
+                Some(req) => {
+                    let resp = if external_mem {
+                        external_mem_resp.unwrap()[i]
+                            .as_ref()
+                            .expect("missing mem response for a lane")
+                    } else {
+                        &self.mem_response(req, smem)
+                    };
+                    ExecuteUnit::mem_writeback(req, resp)
+                }
+                None => None,
+            });
 
         // consolidate rd's from EX and MEM
-        let rd_merged = zip(ex_writeback.rd_data, rd_mem)
+        let rd_merged = zip(&ex_writeback.rd_data, rd_mem)
             .map(|(lrd_ex, lrd_mem)| {
                 assert!(
                     lrd_mem.is_none() || lrd_ex.is_none(),
                     "mem req generated for a lane that already has an EX rd writeback"
                 );
-                lrd_mem.or(lrd_ex)
+                lrd_mem.or(*lrd_ex)
             })
             .collect::<Vec<_>>();
 
         Writeback {
-            inst: ex_writeback.inst,
+            inst: ex_writeback.inst.clone(),
             tmask: ex_writeback.tmask,
             rd_addr: ex_writeback.rd_addr,
             rd_data: rd_merged,
@@ -344,7 +363,7 @@ impl Warp {
         }
     }
 
-    // TODO: handle RTL response
+    /// Handle a per-lane memory request and generate a MemResponse.
     pub fn mem_response(&mut self, mem_req: &MemRequest, smem: &mut FlatMemory) -> MemResponse {
         let mut gmem = self.gmem.write().expect("lock poisoned");
         let mem = if mem_req.is_smem {

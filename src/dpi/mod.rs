@@ -94,17 +94,19 @@ pub extern "C" fn cyclotron_init_rs(c_elfname: *const c_char) {
     assert_single_core(&sim_be);
 
     let final_elfname = sim_isa.config.elf.as_path();
-    // TODO: print config summary
     println!(
         "Cyclotron: created sim object with ELF file: {}",
         final_elfname.display()
     );
 
+    // TODO: print config summary
+    let config = sim_isa.top.clusters[0].cores[0].conf().clone();
+
     let mut c = Context {
         sim_isa,
         issue_queue: Vec::new(),
         sim_be,
-        pipeline_context: PipelineContext::default(),
+        pipeline_context: PipelineContext::new(config.num_lanes),
         cycles_after_cyclotron_finished: 0,
         rtl_finished: vec![false; NUM_CLUSTERS * CORES_PER_CLUSTER],
         difftested_insts: 0,
@@ -112,7 +114,6 @@ pub extern "C" fn cyclotron_init_rs(c_elfname: *const c_char) {
     c.sim_isa.top.reset();
     c.sim_be.top.reset();
 
-    let config = &c.sim_isa.top.clusters[0].cores[0].conf().clone();
     c.issue_queue = vec![VecDeque::new(); config.num_warps];
 
     let mut context = CELL.write().unwrap();

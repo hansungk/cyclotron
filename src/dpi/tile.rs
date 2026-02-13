@@ -1,19 +1,29 @@
 use crate::base::behavior::*;
 use crate::dpi::CELL;
 use crate::muon::scheduler::Schedule;
-use crate::muon::warp::{ExWriteback, MemRequest, MemResponse, Writeback};
+use crate::muon::warp::{ExWriteback, MemResponse};
 use std::iter::zip;
 use std::slice::{from_raw_parts, from_raw_parts_mut};
 
 /// Holds the current control state of the Cyclotron pipeline, e.g. what's the
 /// next warp/PC to schedule, are we waiting for a IMEM/DMEM response to come
 /// back, etc.
-#[derive(Default)]
 pub struct PipelineContext {
     last_warp: usize,
     next_schedule: Option<Schedule>,
-    outstanding_mem_req: Option<Vec<Option<MemRequest>>>,
+    pending_ex_writeback: Option<ExWriteback>,
     staged_mem_resps: Vec<Option<MemResponse>>,
+}
+
+impl PipelineContext {
+    pub fn new(num_lanes: usize) -> Self {
+        PipelineContext {
+            last_warp: 0,
+            next_schedule: None,
+            pending_ex_writeback: None,
+            staged_mem_resps: vec![None; num_lanes],
+        }
+    }
 }
 
 #[no_mangle]
@@ -98,7 +108,6 @@ pub unsafe extern "C" fn cyclotron_tile_tick_rs(
     let neutrino = &mut cluster.neutrino;
     let core = &mut cluster.cores[0];
 
-    let mut ex_writeback: Option<ExWriteback> = None;
     let mut warp_id = 0usize;
 
     // wait for previous fetch imem req to come back
@@ -130,18 +139,16 @@ pub unsafe extern "C" fn cyclotron_tile_tick_rs(
         //     .expect("cyclotron: backend() failed");
 
         // collector/EX(alu, fpu)
-        ex_writeback = Some(
-            warp.backend_beforemem(uop, &mut core.scheduler, neutrino)
-                .expect("cyclotron: execute() failed"),
-        );
+        let ex_writeback = warp
+            .backend_beforemem(uop, &mut core.scheduler, neutrino)
+            .expect("cyclotron: execute() failed");
         warp_id = sched.warp;
 
         // MEM
         // abort if downstream not ready
         let dmem_all_ready = dmem_req_ready.iter().all(|ready| *ready == 1u8);
         if dmem_all_ready {
-            let mem_req = &ex_writeback.as_ref().unwrap().mem_req;
-            let mut any_lane_valid = false;
+            let mem_req = &ex_writeback.mem_req;
             for (i, req) in mem_req.iter().enumerate() {
                 match req {
                     Some(req) => {
@@ -153,9 +160,6 @@ pub unsafe extern "C" fn cyclotron_tile_tick_rs(
                         dmem_req_bits_tag[i] = 0;
                         dmem_req_bits_data[i] = 0; // TODO
                         dmem_req_bits_mask[i] = 0xf; // TODO
-                                                     // TODO: data, tag
-
-                        any_lane_valid = true;
                     }
                     None => {
                         dmem_req_valid[i] = 0u8;
@@ -169,24 +173,20 @@ pub unsafe extern "C" fn cyclotron_tile_tick_rs(
                     }
                 }
             }
-            if any_lane_valid {
-                pipe_context.outstanding_mem_req = Some(mem_req.clone());
-            }
         } else {
             panic!("dmem is not ready!");
         }
 
-        // TODO: properly stall at MEM; shouldn't replay EX upon mem stall
-        //
-        // instruction is fetched; clear next-cycle schedule
+        // instruction is fetched & executed; clear next-cycle schedule
+        pipe_context.pending_ex_writeback = Some(ex_writeback);
         pipe_context.next_schedule = None;
     }
 
     // MEM: handle response after stalling
-    if let Some(mem_req) = &pipe_context.outstanding_mem_req {
+    if let Some(ex_wb) = &pipe_context.pending_ex_writeback {
         // per-lane responses may come back at different times; need to stage them so that the
         // individual resps don't get lost before all of them comes back
-
+        let mem_req = &ex_wb.mem_req;
         for (i, req) in mem_req.iter().enumerate() {
             if dmem_resp_valid[i] != 1u8 {
                 continue;
@@ -212,23 +212,20 @@ pub unsafe extern "C" fn cyclotron_tile_tick_rs(
             }
         }
         if all_reqs_responded {
-            println!("cyclotron_tile: all lanes dmem req responded!");
-            pipe_context.outstanding_mem_req = None;
-        }
-    }
+            let warp = &mut core.warps[warp_id];
+            let mem_resps = &pipe_context.staged_mem_resps;
 
-    // Writeback
-    if let Some(ex_wb) = ex_writeback {
-        // TODO: fake writeback
-        let writeback = Writeback {
-            inst: ex_wb.inst,
-            tmask: ex_wb.tmask,
-            rd_addr: ex_wb.rd_addr,
-            rd_data: ex_wb.rd_data,
-            sched_wb: ex_wb.sched_wb,
-        };
-        let warp = &mut core.warps[warp_id];
-        warp.writeback(&writeback);
+            // MEM
+            let writeback = warp.mem(ex_wb, &mut core.shared_mem, Some(mem_resps));
+
+            // WB
+            // TODO: this should run even if no mem went out
+            warp.writeback(&writeback);
+
+            pipe_context.pending_ex_writeback = None;
+        } else {
+            println!("cyclotron_tile: stalling until all dmem lanes responded");
+        }
     }
 
     // move to fetching the next instruction
