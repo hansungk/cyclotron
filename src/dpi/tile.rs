@@ -11,8 +11,16 @@ use std::slice::{from_raw_parts, from_raw_parts_mut};
 pub struct PipelineContext {
     last_warp: usize,
     next_schedule: Option<Schedule>,
+    state: PipelineState,
     pending_ex_writeback: Option<ExWriteback>,
     staged_mem_resps: Vec<Option<MemResponse>>,
+}
+
+#[derive(PartialEq)]
+enum PipelineState {
+    Execute,
+    Mem,
+    ScheduleNext,
 }
 
 impl PipelineContext {
@@ -20,6 +28,7 @@ impl PipelineContext {
         PipelineContext {
             last_warp: 0,
             next_schedule: None,
+            state: PipelineState::ScheduleNext,
             pending_ex_writeback: None,
             staged_mem_resps: vec![None; num_lanes],
         }
@@ -84,10 +93,21 @@ pub unsafe extern "C" fn cyclotron_tile_tick_rs(
     let dmem_resp_bits_data = unsafe { from_raw_parts(dmem_resp_bits_data_vec, num_lanes) };
     let finished = unsafe { finished_ptr.as_mut().expect("pointer was null") };
 
-    *imem_req_valid = 0u8;
-    *imem_resp_ready = 1u8; // cyclotron never stalls
-    for ready in dmem_resp_ready {
-        *ready = 1u8;
+    // pin to default
+    *imem_req_valid = 0;
+    *imem_req_bits_address = 0;
+    *imem_req_bits_tag = 0;
+    // cyclotron never stalls
+    *imem_resp_ready = 1;
+    for i in 0..num_lanes {
+        dmem_req_valid[i] = 0;
+        dmem_req_bits_store[i] = 0;
+        dmem_req_bits_address[i] = 0;
+        dmem_req_bits_size[i] = 0;
+        dmem_req_bits_tag[i] = 0;
+        dmem_req_bits_data[i] = 0;
+        dmem_req_bits_mask[i] = 0;
+        dmem_resp_ready[i] = 1;
     }
 
     // A difference between Cyclotron-as-a-Tile and the ISA model is that the ISA model advances
@@ -111,11 +131,7 @@ pub unsafe extern "C" fn cyclotron_tile_tick_rs(
     let mut warp_id = 0usize;
 
     // wait for previous fetch imem req to come back
-    if pipe_context.next_schedule.is_some() {
-        if imem_resp_valid == 0 {
-            return;
-        }
-
+    if pipe_context.state == PipelineState::Execute && imem_resp_valid != 0 {
         // note we are only sending out 1 outstanding imem req at a time
         if imem_resp_bits_tag != 0 {
             panic!(
@@ -130,14 +146,6 @@ pub unsafe extern "C" fn cyclotron_tile_tick_rs(
         let uop = core.warps[sched.warp].frontend_nofetch(sched, inst);
         let warp = &mut core.warps[sched.warp];
 
-        // warp.backend(
-        //         uop,
-        //         &mut core.scheduler,
-        //         neutrino,
-        //         &mut core.shared_mem, // TODO: sharedmem
-        //     )
-        //     .expect("cyclotron: backend() failed");
-
         // collector/EX(alu, fpu)
         let ex_writeback = warp
             .backend_beforemem(uop, &mut core.scheduler, neutrino)
@@ -150,40 +158,31 @@ pub unsafe extern "C" fn cyclotron_tile_tick_rs(
         if dmem_all_ready {
             let mem_req = &ex_writeback.mem_req;
             for (i, req) in mem_req.iter().enumerate() {
-                match req {
-                    Some(req) => {
-                        dmem_req_valid[i] = 1u8;
-                        dmem_req_bits_store[i] = 0; // TODO
-                        dmem_req_bits_address[i] = req.addr;
-                        // single outstanding req
-                        dmem_req_bits_size[i] = 2; // 32-bit word
-                        dmem_req_bits_tag[i] = 0;
-                        dmem_req_bits_data[i] = 0; // TODO
-                        dmem_req_bits_mask[i] = 0xf; // TODO
-                    }
-                    None => {
-                        dmem_req_valid[i] = 0u8;
-                        dmem_req_bits_store[i] = 0;
-                        dmem_req_bits_address[i] = 0;
-                        dmem_req_bits_size[i] = 2; // 32-bit word
-                        dmem_req_bits_tag[i] = 0;
-                        dmem_req_bits_data[i] = 0;
-                        dmem_req_bits_mask[i] = 0;
-                        // TODO: data, tag
-                    }
+                if let Some(req) = req {
+                    dmem_req_valid[i] = 1u8;
+                    dmem_req_bits_store[i] = 0; // TODO
+                    dmem_req_bits_address[i] = req.addr;
+                    // single outstanding req
+                    dmem_req_bits_size[i] = 2; // 32-bit word
+                    dmem_req_bits_tag[i] = 0;
+                    dmem_req_bits_data[i] = 0; // TODO
+                    dmem_req_bits_mask[i] = 0xf; // TODO
                 }
             }
         } else {
             panic!("dmem is not ready!");
         }
 
-        // instruction is fetched & executed; clear next-cycle schedule
+        // instruction is fetched & executed
+        pipe_context.state = PipelineState::Mem;
         pipe_context.pending_ex_writeback = Some(ex_writeback);
         pipe_context.next_schedule = None;
     }
 
     // MEM: handle response after stalling
-    if let Some(ex_wb) = &pipe_context.pending_ex_writeback {
+    if pipe_context.state == PipelineState::Mem {
+        let ex_wb = pipe_context.pending_ex_writeback.as_ref().expect("ex_writeback empty at MEM stage!");
+
         // per-lane responses may come back at different times; need to stage them so that the
         // individual resps don't get lost before all of them comes back
         let mem_req = &ex_wb.mem_req;
@@ -215,6 +214,11 @@ pub unsafe extern "C" fn cyclotron_tile_tick_rs(
             let warp = &mut core.warps[warp_id];
             let mem_resps = &pipe_context.staged_mem_resps;
 
+            if mem_resps[0].is_some() {
+                let first_lane = &mem_resps[0];
+                println!("mem_resp: {:?}", first_lane.as_ref().unwrap().data);
+            }
+
             // MEM
             let writeback = warp.mem(ex_wb, &mut core.shared_mem, Some(mem_resps));
 
@@ -222,40 +226,40 @@ pub unsafe extern "C" fn cyclotron_tile_tick_rs(
             // TODO: this should run even if no mem went out
             warp.writeback(&writeback);
 
+            pipe_context.state = PipelineState::ScheduleNext;
             pipe_context.pending_ex_writeback = None;
-        } else {
-            println!("cyclotron_tile: stalling until all dmem lanes responded");
         }
     }
 
-    // move to fetching the next instruction
-
-    // before we tick the next warp's schedule, abort if imem is blocked
-    if imem_req_ready == 0 {
-        return;
-    }
-
-    // warp fetch scheduling
-    let mut warp = 0;
-    let mut sched = None;
-    for i in 0..num_warps {
-        // round-robin
-        warp = (pipe_context.last_warp + i + 1) % num_warps;
-        sched = core.scheduler.schedule(warp);
-        if sched.is_some() {
-            break;
+    if pipe_context.state == PipelineState::ScheduleNext {
+        // before we tick the next warp's schedule, abort if imem is blocked
+        if imem_req_ready == 0 {
+            return;
         }
-    }
 
-    if let Some(s) = sched {
-        let pc = s.pc;
-        *imem_req_valid = 1u8;
-        *imem_req_bits_address = pc;
-        *imem_req_bits_tag = 0;
+        // warp fetch scheduling
+        let mut warp = 0;
+        let mut sched = None;
+        for i in 0..num_warps {
+            // round-robin
+            warp = (pipe_context.last_warp + i + 1) % num_warps;
+            sched = core.scheduler.schedule(warp);
+            if sched.is_some() {
+                break;
+            }
+        }
 
-        // update pipeline context for the next cycle
-        pipe_context.last_warp = warp;
-        pipe_context.next_schedule = sched;
+        if let Some(s) = sched {
+            let pc = s.pc;
+            *imem_req_valid = 1u8;
+            *imem_req_bits_address = pc;
+            *imem_req_bits_tag = 0;
+
+            // update pipeline context for the next cycle
+            pipe_context.state = PipelineState::Execute;
+            pipe_context.last_warp = warp;
+            pipe_context.next_schedule = sched;
+        }
     }
 
     *finished = sim.finished() as u8;
