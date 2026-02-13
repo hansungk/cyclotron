@@ -220,6 +220,15 @@ impl ExecuteUnit {
             }
         }
 
+        fn fp_op_3(a: u32, b: u32, c: u32, op: fn(f32, f32, f32) -> f32) -> u32 {
+            let result = op(f32::from_bits(a), f32::from_bits(b), f32::from_bits(c)).to_bits();
+            if [0xffc00000, 0x7fffffff, 0xffffffff].contains(&result) {
+                0x7fc00000 // risc-v only ever generates this qNaNf
+            } else {
+                result
+            }
+        }
+
         fn fcmp_op(a: u32, b: u32, op: fn(f32, f32) -> bool) -> u32 {
             op(f32::from_bits(a), f32::from_bits(b)) as u32
         }
@@ -334,16 +343,16 @@ impl ExecuteUnit {
             Opcode::MADD | Opcode::MSUB | Opcode::NM_ADD | Opcode::NM_SUB => {
                 let imp = match issued_inst.opcode {
                     Opcode::MADD => InstImp("fmadd.s", |[a, b, c]| {
-                        fp_op(fp_op(a, b, |x, y| x * y), c, |x, y| x + y)
+                        fp_op_3(a, b, c, |x, y, z| f32::mul_add(x, y, z))
                     }),
                     Opcode::MSUB => InstImp("fmsub.s", |[a, b, c]| {
-                        fp_op(fp_op(a, b, |x, y| x * y), c, |x, y| x - y)
+                        fp_op_3(a, b, c, |x, y, z| f32::mul_add(x, y, -z))
                     }),
                     Opcode::NM_ADD => InstImp("fnmadd.s", |[a, b, c]| {
-                        fp_op(fp_op(a, b, |x, y| x * y), c, |x, y| -x - y)
+                        fp_op_3(a, b, c, |x, y, z| f32::mul_add(-x, y, -z))
                     }),
                     Opcode::NM_SUB => InstImp("fnmsub.s", |[a, b, c]| {
-                        fp_op(fp_op(a, b, |x, y| x * y), c, |x, y| -x + y)
+                        fp_op_3(a, b, c, |x, y, z| f32::mul_add(-x, y, z))
                     }),
                     _ => {
                         panic!()
