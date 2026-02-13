@@ -260,5 +260,12 @@ pub unsafe extern "C" fn cyclotron_tile_tick_rs(
         }
     }
 
-    *finished = sim.finished() as u8;
+    let sim_finished = sim.finished();
+    if sim_finished {
+        if context.cycles_after_cyclotron_finished == 0 {
+            sim.check_tohost().expect("cyclotron: isa-test failed");
+        }
+    }
+    let rtl_finished = context.finish_after_timeout(sim_finished);
+    *finished = rtl_finished as u8;
 }

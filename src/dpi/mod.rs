@@ -34,6 +34,23 @@ struct Context {
     difftested_insts: usize,
 }
 
+impl Context {
+    pub fn finish_after_timeout(&mut self, sim_finished: bool) -> bool {
+        // give some time for the RTL to settle after the sim frontend finished
+        if sim_finished {
+            if self.cycles_after_cyclotron_finished == 0 {
+                println!("Cyclotron: model finished execution");
+            }
+            self.cycles_after_cyclotron_finished += 1;
+        }
+        if self.cycles_after_cyclotron_finished == FINISH_COUNTDOWN && self.difftested_insts > 0 {
+            println!("DIFFTEST: PASS: {} instructions", self.difftested_insts);
+        }
+
+        self.cycles_after_cyclotron_finished >= FINISH_COUNTDOWN
+    }
+}
+
 // must be large enough to let the core pipeline entirely drain
 const FINISH_COUNTDOWN: usize = 100;
 
@@ -409,18 +426,8 @@ pub unsafe extern "C" fn cyclotron_frontend_rs(
         }
     }
 
-    // give some time for the RTL to finish after the sim frontend finished
-    if sim.finished() {
-        if context.cycles_after_cyclotron_finished == 0 {
-            println!("Cyclotron: model finished execution");
-        }
-        context.cycles_after_cyclotron_finished += 1;
-    }
-    if context.cycles_after_cyclotron_finished == FINISH_COUNTDOWN && context.difftested_insts > 0 {
-        println!("DIFFTEST: PASS: {} instructions", context.difftested_insts);
-    }
-
-    *finished = (context.cycles_after_cyclotron_finished >= FINISH_COUNTDOWN) as u8;
+    let sim_finished = sim.finished();
+    *finished = context.finish_after_timeout(sim_finished) as u8;
 }
 
 /// Issue a decoded instruction bundle to the backend model, and get the writeback bundle back.

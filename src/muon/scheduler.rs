@@ -286,6 +286,10 @@ impl Scheduler {
         })
     }
 
+    pub fn tohost(&self) -> Option<u32> {
+        self.state().tohost
+    }
+
     pub fn neutrino_stall(&mut self, stalls: Vec<bool>) {
         self.state_mut().stalled_warps = stalls.to_u32();
     }

@@ -1,6 +1,5 @@
 use crate::base::behavior::*;
 use crate::base::mem::HasMemory;
-use crate::base::module::IsModule;
 use crate::cluster::Cluster;
 use crate::command_proc::CommandProcessor;
 use crate::muon::config::MuonConfig;
@@ -54,20 +53,24 @@ impl Sim {
         for cycle in 0..self.top.timeout {
             if self.top.finished() {
                 println!("simulation finished after {} cycles", cycle + 1);
-                if let Some(tohost) = self.top.clusters[0].cores[0].scheduler.state().tohost {
-                    if tohost != 0 {
-                        let case = tohost >> 1;
-                        println!("Cyclotron: isa-test failed with tohost={}, case={}", tohost, case);
-                        return Err(tohost);
-                    } else {
-                        println!("Cyclotron: isa-test reached tohost");
-                    }
-                }
-                return Ok(());
+                return self.check_tohost();
             }
             self.top.tick_one();
         }
         Err(0)
+    }
+
+    pub fn check_tohost(&self) -> Result<(), u32> {
+        if let Some(tohost) = self.top.clusters[0].cores[0].scheduler.tohost() {
+            if tohost != 0 {
+                let case = tohost >> 1;
+                println!("Cyclotron: isa-test failed with tohost={}, case={}", tohost, case);
+                return Err(tohost);
+            } else {
+                println!("Cyclotron: isa-test passed with tohost={}", tohost);
+            }
+        }
+        return Ok(());
     }
 
     /// Advances all cores by one instruction.
