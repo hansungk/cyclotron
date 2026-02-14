@@ -1,12 +1,12 @@
 // #![allow(dead_code, unreachable_code)]
 use crate::base::behavior::*;
 use crate::base::module::IsModule;
+use crate::dpi::tile::PipelineContext;
 use crate::muon::core::MuonCore;
 use crate::muon::decode::{DecodedInst, MicroOp};
 use crate::sim::top::Sim;
 use crate::sim::trace;
 use crate::ui::CyclotronArgs;
-use crate::dpi::tile::PipelineContext;
 use log::debug;
 use std::collections::VecDeque;
 use std::ffi::CStr;
@@ -110,14 +110,14 @@ pub extern "C" fn cyclotron_init_rs(c_elfname: *const c_char) {
     assert_single_core(&sim_isa);
     assert_single_core(&sim_be);
 
-    let final_elfname = sim_isa.config.elf.as_path();
-    println!(
-        "Cyclotron: created sim object with ELF file: {}",
-        final_elfname.display()
-    );
-
-    // TODO: print config summary
     let config = sim_isa.top.clusters[0].cores[0].conf().clone();
+    let num_clusters = sim_isa.top.clusters.len();
+    println!(
+        "Cyclotron: created sim object with config: [clusters={} cores={} warps={} lanes={}]",
+        num_clusters, config.num_cores, config.num_warps, config.num_lanes
+    );
+    let final_elfname = sim_isa.config.elf.as_path();
+    println!("Cyclotron: loading ELF file: {}", final_elfname.display());
 
     let mut c = Context {
         sim_isa,
@@ -156,7 +156,9 @@ pub unsafe fn cyclotron_imem_rs(
     imem_resp_bits_data_ptr: *mut u64,
 ) {
     let mut context_guard = CELL.write().unwrap();
-    let context = context_guard.as_mut().expect("DPI context not initialized!");
+    let context = context_guard
+        .as_mut()
+        .expect("DPI context not initialized!");
     let sim = &mut context.sim_be;
     let cluster = &mut sim.top.clusters[0];
     let core = &mut cluster.cores[0];
@@ -164,7 +166,8 @@ pub unsafe fn cyclotron_imem_rs(
     let imem_req_ready = unsafe { imem_req_ready_ptr.as_mut().expect("pointer was null") };
     let imem_resp_valid = unsafe { imem_resp_valid_ptr.as_mut().expect("pointer was null") };
     let imem_resp_bits_tag = unsafe { imem_resp_bits_tag_ptr.as_mut().expect("pointer was null") };
-    let imem_resp_bits_data = unsafe { imem_resp_bits_data_ptr.as_mut().expect("pointer was null") };
+    let imem_resp_bits_data =
+        unsafe { imem_resp_bits_data_ptr.as_mut().expect("pointer was null") };
 
     *imem_req_ready = imem_resp_ready;
 
@@ -191,7 +194,9 @@ pub unsafe extern "C" fn cyclotron_fetch_rs(
     resp_bits_inst_ptr: *mut u64,
 ) {
     let mut context_guard = CELL.write().unwrap();
-    let context = context_guard.as_mut().expect("DPI context not initialized!");
+    let context = context_guard
+        .as_mut()
+        .expect("DPI context not initialized!");
     let sim = &mut context.sim_isa;
     let core = &mut sim.top.clusters[0].cores[0];
 
@@ -231,7 +236,9 @@ pub unsafe extern "C" fn cyclotron_gmem_rs(
     resp_bits_data_ptr: *mut u32,
 ) {
     let mut context_guard = CELL.write().unwrap();
-    let context = context_guard.as_mut().expect("DPI context not initialized!");
+    let context = context_guard
+        .as_mut()
+        .expect("DPI context not initialized!");
     let sim = &mut context.sim_be;
 
     let core = &mut sim.top.clusters[0].cores[0];
@@ -350,7 +357,9 @@ pub unsafe extern "C" fn cyclotron_frontend_rs(
     finished_ptr: *mut u8,
 ) {
     let mut context_guard = CELL.write().unwrap();
-    let context = context_guard.as_mut().expect("DPI context not initialized!");
+    let context = context_guard
+        .as_mut()
+        .expect("DPI context not initialized!");
     let sim = &mut context.sim_isa;
 
     let core = &mut sim.top.clusters[0].cores[0];
@@ -473,7 +482,9 @@ pub unsafe fn cyclotron_backend_rs(
     finished_ptr: *mut u8,
 ) {
     let mut context_guard = CELL.write().unwrap();
-    let context = context_guard.as_mut().expect("DPI context not initialized!");
+    let context = context_guard
+        .as_mut()
+        .expect("DPI context not initialized!");
     let sim = &mut context.sim_be;
     let cluster = &mut sim.top.clusters[0];
     let core = &mut cluster.cores[0];
@@ -491,23 +502,51 @@ pub unsafe fn cyclotron_backend_rs(
     let writeback_wid = unsafe { writeback_wid_ptr.as_mut().expect("pointer was null") };
     // let writeback_rd_addr = unsafe { writeback_rd_addr_ptr.as_mut().expect("pointer was null") };
     // let writeback_rd_data = unsafe { std::slice::from_raw_parts_mut(writeback_rd_data_ptr, config.num_lanes) };
-    let writeback_set_pc_valid = unsafe { writeback_set_pc_valid_ptr.as_mut().expect("pointer was null") };
+    let writeback_set_pc_valid = unsafe {
+        writeback_set_pc_valid_ptr
+            .as_mut()
+            .expect("pointer was null")
+    };
     let writeback_set_pc = unsafe { writeback_set_pc_ptr.as_mut().expect("pointer was null") };
-    let writeback_set_tmask_valid =
-        unsafe { writeback_set_tmask_valid_ptr.as_mut().expect("pointer was null") };
-    let writeback_set_tmask = unsafe { writeback_set_tmask_ptr.as_mut().expect("pointer was null") };
-    let writeback_wspawn_valid = unsafe { writeback_wspawn_valid_ptr.as_mut().expect("pointer was null") };
-    let writeback_wspawn_count = unsafe { writeback_wspawn_count_ptr.as_mut().expect("pointer was null") };
-    let writeback_wspawn_pc = unsafe { writeback_wspawn_pc_ptr.as_mut().expect("pointer was null") };
-    let writeback_ipdom_valid = unsafe { writeback_ipdom_valid_ptr.as_mut().expect("pointer was null") };
+    let writeback_set_tmask_valid = unsafe {
+        writeback_set_tmask_valid_ptr
+            .as_mut()
+            .expect("pointer was null")
+    };
+    let writeback_set_tmask =
+        unsafe { writeback_set_tmask_ptr.as_mut().expect("pointer was null") };
+    let writeback_wspawn_valid = unsafe {
+        writeback_wspawn_valid_ptr
+            .as_mut()
+            .expect("pointer was null")
+    };
+    let writeback_wspawn_count = unsafe {
+        writeback_wspawn_count_ptr
+            .as_mut()
+            .expect("pointer was null")
+    };
+    let writeback_wspawn_pc =
+        unsafe { writeback_wspawn_pc_ptr.as_mut().expect("pointer was null") };
+    let writeback_ipdom_valid = unsafe {
+        writeback_ipdom_valid_ptr
+            .as_mut()
+            .expect("pointer was null")
+    };
     let writeback_ipdom_restored_mask = unsafe {
         writeback_ipdom_restored_mask_ptr
             .as_mut()
             .expect("pointer was null")
     };
-    let writeback_ipdom_else_mask =
-        unsafe { writeback_ipdom_else_mask_ptr.as_mut().expect("pointer was null") };
-    let writeback_ipdom_else_pc = unsafe { writeback_ipdom_else_pc_ptr.as_mut().expect("pointer was null") };
+    let writeback_ipdom_else_mask = unsafe {
+        writeback_ipdom_else_mask_ptr
+            .as_mut()
+            .expect("pointer was null")
+    };
+    let writeback_ipdom_else_pc = unsafe {
+        writeback_ipdom_else_pc_ptr
+            .as_mut()
+            .expect("pointer was null")
+    };
     let finished = unsafe { finished_ptr.as_mut().expect("pointer was null") };
 
     if issue_valid != 1 {
@@ -584,8 +623,16 @@ pub unsafe fn cyclotron_backend_rs(
         .ipdom_push
         .map(|x| x.restored_mask)
         .unwrap_or(0);
-    *writeback_ipdom_else_mask = writeback.sched_wb.ipdom_push.map(|x| x.else_mask).unwrap_or(0);
-    *writeback_ipdom_else_pc = writeback.sched_wb.ipdom_push.map(|x| x.else_pc).unwrap_or(0);
+    *writeback_ipdom_else_mask = writeback
+        .sched_wb
+        .ipdom_push
+        .map(|x| x.else_mask)
+        .unwrap_or(0);
+    *writeback_ipdom_else_pc = writeback
+        .sched_wb
+        .ipdom_push
+        .map(|x| x.else_pc)
+        .unwrap_or(0);
     *finished = writeback.sched_wb.tohost.is_some() as u8;
 
     // for (data_pin, owb) in zip(writeback_rd_data, writeback.rd_data) {
@@ -613,7 +660,9 @@ pub unsafe extern "C" fn cyclotron_difftest_reg_rs(
     rs3_data_raw: *const u32,
 ) {
     let mut context_guard = CELL.write().unwrap();
-    let context = context_guard.as_mut().expect("DPI context not initialized!");
+    let context = context_guard
+        .as_mut()
+        .expect("DPI context not initialized!");
     let sim = &mut context.sim_isa;
     let config = sim.top.clusters[0].cores[0].conf().clone();
 
@@ -736,7 +785,10 @@ pub unsafe extern "C" fn cyclotron_difftest_reg_rs(
 
     context.difftested_insts += 1;
     if context.difftested_insts % 100 == 0 {
-        println!("DIFFTEST: Checked {} instructions", context.difftested_insts);
+        println!(
+            "DIFFTEST: Checked {} instructions",
+            context.difftested_insts
+        );
     }
 }
 
@@ -760,7 +812,10 @@ struct RegMatchError {
     model: u32,
 }
 
-fn compare_vector_reg_data(regs_rtl: &[u32], regs_model: &[Option<u32>]) -> Result<(), RegMatchError> {
+fn compare_vector_reg_data(
+    regs_rtl: &[u32],
+    regs_model: &[Option<u32>],
+) -> Result<(), RegMatchError> {
     for (i, (rtl, model)) in zip(regs_rtl, regs_model).enumerate() {
         // TODO: instead of skipping None, compare with tmask
         if let Some(m) = model {
@@ -852,5 +907,5 @@ pub unsafe extern "C" fn profile_perf_counters_rs(
     println!("+-----------------------+");
 }
 
-mod tile;
 mod mem_model;
+mod tile;
