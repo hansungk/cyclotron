@@ -748,10 +748,7 @@ impl ExecuteUnit {
 
     /// Generate rd writeback for the memory load responses handled after EX & came back from
     /// memory.
-    pub fn mem_writeback(
-        req: &MemRequest,
-        resp: &MemResponse,
-    ) -> Option<u32> {
+    pub fn mem_writeback(req: &MemRequest, resp: &MemResponse) -> Option<u32> {
         if req.is_store {
             None
         } else {

@@ -112,8 +112,8 @@ pub unsafe extern "C" fn cyclotron_tile_tick_rs(
 
     // A difference between Cyclotron-as-a-Tile and the ISA model is that the ISA model advances
     // all active warps for each cycle, whereas CaaT serializes them and advances one warp at a
-    // cycle.  So here, CaaT needs to store the pipeline state & do simple warp scheduling to keep
-    // track of individual warps' progress.
+    // cycle.  So here, CaaT needs to sequence the pipeline state & do simple warp scheduling to
+    // keep track of individual warps' progress.
     //
     // Pipelining scheme:
     //
@@ -160,13 +160,16 @@ pub unsafe extern "C" fn cyclotron_tile_tick_rs(
             for (i, req) in mem_req.iter().enumerate() {
                 if let Some(req) = req {
                     dmem_req_valid[i] = 1u8;
-                    dmem_req_bits_store[i] = 0; // TODO
+                    dmem_req_bits_store[i] = req.is_store as u8;
                     dmem_req_bits_address[i] = req.addr;
-                    // single outstanding req
-                    dmem_req_bits_size[i] = 2; // 32-bit word
-                    dmem_req_bits_tag[i] = 0;
-                    dmem_req_bits_data[i] = 0; // TODO
-                    dmem_req_bits_mask[i] = 0xf; // TODO
+                    dmem_req_bits_size[i] = logsize(req.size);
+                    dmem_req_bits_tag[i] = 0; // 1 outstanding
+                    dmem_req_bits_data[i] = if req.is_store {
+                        make_tilelink_data(req.addr, req.data.expect("no data for store req"))
+                    } else {
+                        0
+                    };
+                    dmem_req_bits_mask[i] = make_tilelink_mask(req.addr, req.size);
                 }
             }
         } else {
@@ -181,7 +184,10 @@ pub unsafe extern "C" fn cyclotron_tile_tick_rs(
 
     // MEM: handle response after stalling
     if pipe_context.state == PipelineState::Mem {
-        let ex_wb = pipe_context.pending_ex_writeback.as_ref().expect("ex_writeback empty at MEM stage!");
+        let ex_wb = pipe_context
+            .pending_ex_writeback
+            .as_ref()
+            .expect("ex_writeback empty at MEM stage!");
 
         // per-lane responses may come back at different times; need to stage them so that the
         // individual resps don't get lost before all of them comes back
@@ -198,7 +204,6 @@ pub unsafe extern "C" fn cyclotron_tile_tick_rs(
                 data: (!req.is_store).then_some(data),
                 is_sext: req.is_sext,
             };
-            // TODO: don't think staged_mem_resps is initialized to the correct length
             pipe_context.staged_mem_resps[i] = Some(resp);
         }
 
@@ -210,6 +215,7 @@ pub unsafe extern "C" fn cyclotron_tile_tick_rs(
                 break;
             }
         }
+        // note this remains true when no lane had a req go out
         if all_reqs_responded {
             let warp = &mut core.warps[warp_id];
             let mem_resps = &pipe_context.staged_mem_resps;
@@ -218,7 +224,6 @@ pub unsafe extern "C" fn cyclotron_tile_tick_rs(
             let writeback = warp.mem(ex_wb, &mut core.shared_mem, Some(mem_resps));
 
             // WB
-            // TODO: this should run even if no mem went out
             warp.writeback(&writeback);
 
             pipe_context.state = PipelineState::ScheduleNext;
@@ -266,6 +271,33 @@ pub unsafe extern "C" fn cyclotron_tile_tick_rs(
             sim.check_tohost().expect("cyclotron: isa-test failed");
         }
     }
-    let rtl_finished = context.finish_after_timeout(sim_finished);
-    *finished = rtl_finished as u8;
+    *finished = context.finish_after_timeout(sim_finished) as u8;
+}
+
+fn logsize(size: u32) -> u8 {
+    match size {
+        4 => 2u8,
+        2 => 1u8,
+        1 => 0u8,
+        _ => panic!("unsupported size"),
+    }
+}
+
+fn make_tilelink_mask(addr: u32, size: u32) -> u8 {
+    let alignment = 4;
+    let offset = addr % alignment;
+    assert!(addr % size == 0, "misaligned access");
+    let mask = match size {
+        4 => 0xfu8,
+        2 => 0x3u8,
+        1 => 0x1u8,
+        _ => panic!("unsupported size"),
+    } << offset;
+    mask
+}
+
+fn make_tilelink_data(addr: u32, data: u32) -> u32 {
+    let alignment = 4;
+    let offset = addr % alignment;
+    data << (offset * 8)
 }
