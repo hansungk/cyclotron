@@ -30,7 +30,7 @@ struct Context {
     sim_be: Sim, // cyclotron instance for the backend model
     pipeline_context: PipelineContext,
     cycles_after_cyclotron_finished: usize,
-    rtl_finished: Vec<bool>,
+    prev_rtl_finished: Vec<bool>,
     difftested_insts: usize,
 }
 
@@ -125,7 +125,7 @@ pub extern "C" fn cyclotron_init_rs(c_elfname: *const c_char) {
         sim_be,
         pipeline_context: PipelineContext::new(config.num_lanes),
         cycles_after_cyclotron_finished: 0,
-        rtl_finished: vec![false; NUM_CLUSTERS * CORES_PER_CLUSTER],
+        prev_rtl_finished: vec![false; NUM_CLUSTERS * CORES_PER_CLUSTER],
         difftested_insts: 0,
     };
     c.sim_isa.top.reset();
@@ -851,21 +851,19 @@ pub unsafe extern "C" fn profile_perf_counters_rs(
     per_warp_stalls_busy_ptr: *const u64,
     finished: u8,
 ) {
-    if finished != 1 {
-        return;
-    }
-
     let mut context_guard = CELL.write().unwrap();
     let context = context_guard.as_mut().expect("DPI context not initialized!");
     let sim = &mut context.sim_isa;
     let core = &mut sim.top.clusters[0].cores[0];
     let config = core.conf().clone();
-
     let global_core_id = cluster_id as usize * CORES_PER_CLUSTER + core_id as usize;
-    if context.rtl_finished[global_core_id] {
+
+    // only report at rising-edge
+    let prev_rtl_finished = context.prev_rtl_finished[global_core_id];
+    context.prev_rtl_finished[global_core_id] = finished == 1;
+    if !(finished == 1 && !prev_rtl_finished) {
         return;
     }
-    context.rtl_finished[global_core_id] = true;
 
     let per_warp_cycles_decoded = unsafe { std::slice::from_raw_parts(per_warp_cycles_decoded_ptr, config.num_warps) };
     let per_warp_cycles_issued = unsafe { std::slice::from_raw_parts(per_warp_cycles_issued_ptr, config.num_warps) };
