@@ -886,6 +886,11 @@ pub unsafe extern "C" fn profile_perf_counters_rs(
 
     println!("");
     println!("Muon [cluster {} core {}] finished execution.", cluster_id, core_id);
+    // filter out bogus finishes, e.g. right after reset drop but before softreset goes up.
+    if inst_retired == 0 {
+        println!("Kernel had no instructions run; Skipping performance report.");
+        println!("");
+    }
     println!("");
     println!("+-----------------------+");
     println!(" Muon Performance Report");
