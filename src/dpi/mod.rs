@@ -8,6 +8,8 @@ use crate::sim::top::Sim;
 use crate::sim::trace;
 use crate::ui::CyclotronArgs;
 use log::debug;
+use rusqlite::Connection;
+use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::ffi::CStr;
 use std::iter::zip;
@@ -63,6 +65,10 @@ type IssueQueue = VecDeque<IssueQueueLine>;
 
 /// Global singleton to maintain simulator context across independent DPI calls.
 static CELL: RwLock<Option<Context>> = RwLock::new(None);
+thread_local! {
+    /// Connection doesn't implement Sync, so can't live inside CELL
+    static TRACE_CONN: RefCell<Option<Connection>> = RefCell::new(None);
+}
 
 pub fn assert_single_core(sim: &Sim) {
     assert!(
@@ -638,6 +644,67 @@ pub unsafe fn cyclotron_backend_rs(
     // for (data_pin, owb) in zip(writeback_rd_data, writeback.rd_data) {
     //     *data_pin = owb.unwrap_or(0);
     // }
+}
+
+#[no_mangle]
+/// Capture instruction and memory trace in RTL into a SQL database.
+pub unsafe extern "C" fn cyclotron_trace_rs(
+    valid: u8,
+    pc: u32,
+    warp_id: u32,
+    tmask: u32,
+    rs1_enable: u8,
+    rs1_address: u8,
+    rs1_data_raw: *const u32,
+    rs2_enable: u8,
+    rs2_address: u8,
+    rs2_data_raw: *const u32,
+    rs3_enable: u8,
+    rs3_address: u8,
+    rs3_data_raw: *const u32,
+) {
+    if valid == 0 {
+        return;
+    }
+
+    let context_guard = CELL.read().unwrap();
+    let context = context_guard
+        .as_ref()
+        .expect("DPI context not initialized!");
+    let config = context.sim_isa.top.clusters[0].cores[0].conf().clone();
+
+    let rs1_data = unsafe { std::slice::from_raw_parts(rs1_data_raw, config.num_lanes) };
+    let rs2_data = unsafe { std::slice::from_raw_parts(rs2_data_raw, config.num_lanes) };
+    let rs3_data = unsafe { std::slice::from_raw_parts(rs3_data_raw, config.num_lanes) };
+    // maybe convert these to Trace::Line?
+
+    TRACE_CONN.with(|t| {
+        let mut conn_opt = t.borrow_mut();
+        if conn_opt.is_none() {
+            let trace_db_path = std::env::var("CYCLOTRON_TRACE_DB")
+                .unwrap_or("cyclotron_trace.sqlite".to_string());
+            let conn =
+                Connection::open(&trace_db_path).expect("failed to open sqlite trace database");
+            conn.execute(
+                "CREATE TABLE inst (
+                    id    INTEGER PRIMARY KEY AUTOINCREMENT,
+                    pc    INTEGER NOT NULL,
+                    warp  INTEGER
+                )",
+                (),
+            )
+            .expect("failed to create inst table");
+            *conn_opt = Some(conn);
+        }
+
+        conn_opt
+            .as_ref()
+            .expect("trace connection not initialized")
+            .execute("INSERT INTO inst (pc, warp) VALUES (?1, ?2)", (pc, warp_id))
+            .expect("failed to insert to inst");
+    });
+
+    // TODO: create sql indices
 }
 
 #[no_mangle]

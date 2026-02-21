@@ -3,12 +3,11 @@ name = "cyclotron"
 version = "0.1.0"
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
 libc = "0.2.152"
 rand = "0.8.5"
 goblin = "0.5"
+rusqlite = { version = "0.38.0", features = ["bundled"] }
 log = { version = "0.4.22", features = ["max_level_debug", "release_max_level_warn"] }
 num = "0.4.3"
 num-derive = "0.4.2"
