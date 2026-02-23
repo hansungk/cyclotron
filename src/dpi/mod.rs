@@ -26,11 +26,15 @@ const CORES_PER_CLUSTER: usize = 16;
 const NUM_CLUSTERS: usize = 16;
 
 struct Context {
-    sim_isa: Sim, // cyclotron instance for the ISA model
-    // holds fetch/decoded, but not issued, instructions
-    // to be used for diff-testing against RTL issue
+    /// cyclotron instance for the ISA model
+    sim_isa: Sim,
+    /// holds fetch/decoded, but not issued, instructions to be used for diff-testing against RTL
+    /// issue
     issue_queue: Vec<IssueQueue>,
-    sim_be: Sim, // cyclotron instance for the backend model
+    /// cyclotron instance for the backend model
+    sim_be: Sim,
+    /// load/store queue used to match req-resp for memory tracing
+    trace_memory_queue: MemQueue,
     pipeline_context: PipelineContext,
     cycles_after_cyclotron_finished: usize,
     prev_rtl_finished: Vec<bool>,
@@ -63,6 +67,18 @@ struct IssueQueueLine {
     checked: bool,
 }
 type IssueQueue = VecDeque<IssueQueueLine>;
+
+#[derive(Clone)]
+struct MemQueueLine {
+    store: bool,
+    address: u32,
+    size: u8,
+    tag: u32,
+    lane: u32,
+    data: Option<u32>,
+    checked: bool,
+}
+type MemQueue = VecDeque<MemQueueLine>;
 
 /// Global singleton to maintain simulator context across independent DPI calls.
 static CELL: RwLock<Option<Context>> = RwLock::new(None);
@@ -130,6 +146,7 @@ pub extern "C" fn cyclotron_init_rs(c_elfname: *const c_char) {
         sim_isa,
         issue_queue: Vec::new(),
         sim_be,
+        trace_memory_queue: VecDeque::new(),
         pipeline_context: PipelineContext::new(config.num_lanes),
         cycles_after_cyclotron_finished: 0,
         prev_rtl_finished: vec![false; NUM_CLUSTERS * CORES_PER_CLUSTER],
@@ -653,15 +670,15 @@ pub unsafe extern "C" fn cyclotron_trace_rs(
     inst_valid: u8,
     inst_pc: u32,
     inst_warp_id: u32,
-    inst_tmask: u32,
-    inst_rs1_enable: u8,
-    inst_rs1_address: u8,
+    _inst_tmask: u32,
+    _inst_rs1_enable: u8,
+    _inst_rs1_address: u8,
     inst_rs1_data_vec: *const u32,
-    inst_rs2_enable: u8,
-    inst_rs2_address: u8,
+    _inst_rs2_enable: u8,
+    _inst_rs2_address: u8,
     inst_rs2_data_vec: *const u32,
-    inst_rs3_enable: u8,
-    inst_rs3_address: u8,
+    _inst_rs3_enable: u8,
+    _inst_rs3_address: u8,
     inst_rs3_data_vec: *const u32,
     dmem_req_valid_vec: *const u8,
     dmem_req_bits_store_vec: *const u8,
@@ -684,9 +701,9 @@ pub unsafe extern "C" fn cyclotron_trace_rs(
     smem_resp_bits_tag_vec: *const u32,
     smem_resp_bits_data_vec: *const u32,
 ) {
-    let context_guard = CELL.read().unwrap();
+    let mut context_guard = CELL.write().unwrap();
     let context = context_guard
-        .as_ref()
+        .as_mut()
         .expect("DPI context not initialized!");
     let config = context.sim_isa.top.clusters[0].cores[0].conf().clone();
     let num_lanes = config.num_lanes;
@@ -699,23 +716,23 @@ pub unsafe extern "C" fn cyclotron_trace_rs(
     let dmem_req_bits_store = unsafe { from_raw_parts(dmem_req_bits_store_vec, num_lanes) };
     let dmem_req_bits_address = unsafe { from_raw_parts(dmem_req_bits_address_vec, num_lanes) };
     let dmem_req_bits_size = unsafe { from_raw_parts(dmem_req_bits_size_vec, num_lanes) };
-    let _dmem_req_bits_tag = unsafe { from_raw_parts(dmem_req_bits_tag_vec, num_lanes) };
+    let dmem_req_bits_tag = unsafe { from_raw_parts(dmem_req_bits_tag_vec, num_lanes) };
     let dmem_req_bits_data = unsafe { from_raw_parts(dmem_req_bits_data_vec, num_lanes) };
     let _dmem_req_bits_mask = unsafe { from_raw_parts(dmem_req_bits_mask_vec, num_lanes) };
-    let _dmem_resp_valid = unsafe { from_raw_parts(dmem_resp_valid_vec, num_lanes) };
-    let _dmem_resp_bits_tag = unsafe { from_raw_parts(dmem_resp_bits_tag_vec, num_lanes) };
-    let _dmem_resp_bits_data = unsafe { from_raw_parts(dmem_resp_bits_data_vec, num_lanes) };
+    let dmem_resp_valid = unsafe { from_raw_parts(dmem_resp_valid_vec, num_lanes) };
+    let dmem_resp_bits_tag = unsafe { from_raw_parts(dmem_resp_bits_tag_vec, num_lanes) };
+    let dmem_resp_bits_data = unsafe { from_raw_parts(dmem_resp_bits_data_vec, num_lanes) };
 
     let smem_req_valid = unsafe { from_raw_parts(smem_req_valid_vec, num_lanes) };
     let smem_req_bits_store = unsafe { from_raw_parts(smem_req_bits_store_vec, num_lanes) };
     let smem_req_bits_address = unsafe { from_raw_parts(smem_req_bits_address_vec, num_lanes) };
     let smem_req_bits_size = unsafe { from_raw_parts(smem_req_bits_size_vec, num_lanes) };
-    let _smem_req_bits_tag = unsafe { from_raw_parts(smem_req_bits_tag_vec, num_lanes) };
+    let smem_req_bits_tag = unsafe { from_raw_parts(smem_req_bits_tag_vec, num_lanes) };
     let smem_req_bits_data = unsafe { from_raw_parts(smem_req_bits_data_vec, num_lanes) };
     let _smem_req_bits_mask = unsafe { from_raw_parts(smem_req_bits_mask_vec, num_lanes) };
-    let _smem_resp_valid = unsafe { from_raw_parts(smem_resp_valid_vec, num_lanes) };
-    let _smem_resp_bits_tag = unsafe { from_raw_parts(smem_resp_bits_tag_vec, num_lanes) };
-    let _smem_resp_bits_data = unsafe { from_raw_parts(smem_resp_bits_data_vec, num_lanes) };
+    let smem_resp_valid = unsafe { from_raw_parts(smem_resp_valid_vec, num_lanes) };
+    let smem_resp_bits_tag = unsafe { from_raw_parts(smem_resp_bits_tag_vec, num_lanes) };
+    let smem_resp_bits_data = unsafe { from_raw_parts(smem_resp_bits_data_vec, num_lanes) };
 
     TRACE_CONN.with(|t| {
         let mut conn_opt = t.borrow_mut();
@@ -735,53 +752,157 @@ pub unsafe extern "C" fn cyclotron_trace_rs(
                 .expect("failed to insert to inst");
         }
 
-        // dmem
-        record_mem_to_db(
+        // record dmem
+        record_mem_bundle(
             conn_opt.as_ref().expect("trace connection not initialized"),
+            &mut context.trace_memory_queue,
             dmem_req_valid,
             dmem_req_bits_store,
             dmem_req_bits_address,
             dmem_req_bits_size,
+            dmem_req_bits_tag,
             dmem_req_bits_data,
+            dmem_resp_valid,
+            dmem_resp_bits_tag,
+            dmem_resp_bits_data,
         );
 
-        // smem
-        record_mem_to_db(
+        // record smem
+        record_mem_bundle(
             conn_opt.as_ref().expect("trace connection not initialized"),
+            &mut context.trace_memory_queue,
             smem_req_valid,
             smem_req_bits_store,
             smem_req_bits_address,
             smem_req_bits_size,
+            smem_req_bits_tag,
             smem_req_bits_data,
+            smem_resp_valid,
+            smem_resp_bits_tag,
+            smem_resp_bits_data,
         );
     });
 
     // TODO: create sql indices
 }
 
-fn record_mem_to_db(
+fn record_mem_bundle(
     conn: &Connection,
-    valid: &[u8],
-    store: &[u8],
-    address: &[u32],
-    logsize: &[u8],
-    data: &[u32],
+    queue: &mut MemQueue,
+    req_valid: &[u8],
+    req_store: &[u8],
+    req_address: &[u32],
+    req_size: &[u8],
+    req_tag: &[u32],
+    req_data: &[u32],
+    resp_valid: &[u8],
+    resp_tag: &[u32],
+    resp_data: &[u32],
 ) {
-    let num_lanes = valid.len();
-    for i in 0..num_lanes {
-        if valid[i] == 0 {
+    // request
+    for i in 0..req_valid.len() {
+        if req_valid[i] == 0 {
             continue;
         }
-        let is_store = store[i];
-        let data = if is_store != 0 { data[i] } else { 0 };
-        let size = 1 << logsize[i];
-        conn.execute(
-            "INSERT INTO dmem (store, address, size, data, lane)
-                            VALUES (?1, ?2, ?3, ?4, ?5)",
-            (store[i], address[i], size, data, i as u32),
-        )
-        .expect("failed to insert to inst");
+        let store = req_store[i] != 0;
+        let address = req_address[i];
+        let size = 1 << req_size[i];
+        let tag = req_tag[i];
+        let data = store.then_some(req_data[i]);
+        push_memory_queue(
+            queue,
+            MemQueueLine {
+                store,
+                address,
+                size,
+                tag,
+                lane: i as u32,
+                data,
+                checked: false,
+            },
+        );
     }
+
+    // response
+    for i in 0..resp_valid.len() {
+        if resp_valid[i] == 0 {
+            continue;
+        }
+        let tag = resp_tag[i];
+        let lane = i as u32;
+        let data = resp_data[i];
+        match_response_in_mem_queue(queue, tag, lane, data);
+    }
+
+    let reqs_with_matched_resps = pop_oldest_reqs_in_mem_queue(queue);
+    for req in &reqs_with_matched_resps {
+        record_mem_req_to_db(conn, req);
+    }
+}
+
+fn push_memory_queue(queue: &mut MemQueue, req: MemQueueLine) {
+    queue.push_back(req);
+}
+
+fn match_response_in_mem_queue(
+    queue: &mut MemQueue,
+    resp_tag: u32,
+    resp_lane: u32,
+    resp_data: u32,
+) {
+    // iter_mut() equals the enqueue order
+    let mut one_or_more_match = false;
+    for line in queue.iter_mut() {
+        if line.checked {
+            continue;
+        }
+        if !(line.tag == resp_tag && line.lane == resp_lane) {
+            continue;
+        }
+
+        if !line.store {
+            assert!(line.data.is_none(), "load req already has data?");
+            line.data = Some(resp_data);
+        }
+
+        line.checked = true;
+        one_or_more_match = true;
+        break;
+    }
+
+    if !one_or_more_match {
+        println!(
+            "mem trace fail: could not find a matching req for a resp with tag:{}",
+            resp_tag
+        );
+    }
+}
+
+/// Pop and return all matched lines at the front of the memory queue.
+fn pop_oldest_reqs_in_mem_queue(queue: &mut MemQueue) -> Vec<MemQueueLine> {
+    let mut oldest_checked_reqs: Vec<MemQueueLine> = Vec::new();
+    for line in queue.iter() {
+        if line.checked == true {
+            oldest_checked_reqs.push(line.clone());
+        } else {
+            break;
+        }
+    }
+    for _ in 0..oldest_checked_reqs.len() {
+        queue.pop_front();
+    }
+
+    oldest_checked_reqs
+}
+
+fn record_mem_req_to_db(conn: &Connection, line: &MemQueueLine) {
+    let data = line.data.unwrap_or(0);
+    conn.execute(
+        "INSERT INTO dmem (store, address, size, data, lane)
+                            VALUES (?1, ?2, ?3, ?4, ?5)",
+        (line.store, line.address, line.size, data, line.lane),
+    )
+    .expect("failed to insert to inst");
 }
 
 fn create_new_db_overwrite() -> Connection {
@@ -887,7 +1008,7 @@ pub unsafe extern "C" fn cyclotron_difftest_reg_rs(
 
     // iter_mut() order equals the enqueue order, which equals the program order.  This way we
     // match RTL against the oldest same-PC model instruction
-    let mut checked = false;
+    let mut one_or_more_match = false;
     for line in isq.iter_mut() {
         if line.inst.pc != pc {
             continue;
@@ -952,11 +1073,11 @@ pub unsafe extern "C" fn cyclotron_difftest_reg_rs(
         }
 
         line.checked = true;
-        checked = true;
+        one_or_more_match = true;
         break;
     }
 
-    if !checked {
+    if !one_or_more_match {
         println!(
             "DIFFTEST fail: pc mismatch: rtl reached instruction unseen by model, pc:{:x}, warp:{}",
             pc, warp_id
