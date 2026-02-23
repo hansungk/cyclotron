@@ -1,13 +1,15 @@
 // #![allow(dead_code, unreachable_code)]
 use crate::base::behavior::*;
 use crate::base::module::IsModule;
+use crate::dpi::tile::PipelineContext;
 use crate::muon::core::MuonCore;
 use crate::muon::decode::{DecodedInst, MicroOp};
 use crate::sim::top::Sim;
 use crate::sim::trace;
 use crate::ui::CyclotronArgs;
-use crate::dpi::tile::CyclotronPipelineContext;
 use log::debug;
+use rusqlite::Connection;
+use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::ffi::CStr;
 use std::iter::zip;
@@ -28,10 +30,27 @@ struct Context {
     // to be used for diff-testing against RTL issue
     issue_queue: Vec<IssueQueue>,
     sim_be: Sim, // cyclotron instance for the backend model
-    pipeline_context: CyclotronPipelineContext,
+    pipeline_context: PipelineContext,
     cycles_after_cyclotron_finished: usize,
-    rtl_finished: Vec<bool>,
+    prev_rtl_finished: Vec<bool>,
     difftested_insts: usize,
+}
+
+impl Context {
+    pub fn finish_after_timeout(&mut self, sim_finished: bool) -> bool {
+        // give some time for the RTL to settle after the sim frontend finished
+        if sim_finished {
+            if self.cycles_after_cyclotron_finished == 0 {
+                println!("Cyclotron: model finished execution");
+            }
+            self.cycles_after_cyclotron_finished += 1;
+        }
+        if self.cycles_after_cyclotron_finished == FINISH_COUNTDOWN && self.difftested_insts > 0 {
+            println!("DIFFTEST: PASS: {} instructions", self.difftested_insts);
+        }
+
+        self.cycles_after_cyclotron_finished >= FINISH_COUNTDOWN
+    }
 }
 
 // must be large enough to let the core pipeline entirely drain
@@ -46,6 +65,10 @@ type IssueQueue = VecDeque<IssueQueueLine>;
 
 /// Global singleton to maintain simulator context across independent DPI calls.
 static CELL: RwLock<Option<Context>> = RwLock::new(None);
+thread_local! {
+    /// Connection doesn't implement Sync, so can't live inside CELL
+    static TRACE_CONN: RefCell<Option<Connection>> = RefCell::new(None);
+}
 
 pub fn assert_single_core(sim: &Sim) {
     assert!(
@@ -93,26 +116,27 @@ pub extern "C" fn cyclotron_init_rs(c_elfname: *const c_char) {
     assert_single_core(&sim_isa);
     assert_single_core(&sim_be);
 
-    let final_elfname = sim_isa.config.elf.as_path();
-    // TODO: print config summary
+    let config = sim_isa.top.clusters[0].cores[0].conf().clone();
+    let num_clusters = sim_isa.top.clusters.len();
     println!(
-        "Cyclotron: created sim object with ELF file: {}",
-        final_elfname.display()
+        "Cyclotron: created sim object with config: [clusters={} cores={} warps={} lanes={}]",
+        num_clusters, config.num_cores, config.num_warps, config.num_lanes
     );
+    let final_elfname = sim_isa.config.elf.as_path();
+    println!("Cyclotron: loading ELF file: {}", final_elfname.display());
 
     let mut c = Context {
         sim_isa,
         issue_queue: Vec::new(),
         sim_be,
-        pipeline_context: CyclotronPipelineContext::default(),
+        pipeline_context: PipelineContext::new(config.num_lanes),
         cycles_after_cyclotron_finished: 0,
-        rtl_finished: vec![false; NUM_CLUSTERS * CORES_PER_CLUSTER],
+        prev_rtl_finished: vec![false; NUM_CLUSTERS * CORES_PER_CLUSTER],
         difftested_insts: 0,
     };
     c.sim_isa.top.reset();
     c.sim_be.top.reset();
 
-    let config = &c.sim_isa.top.clusters[0].cores[0].conf().clone();
     c.issue_queue = vec![VecDeque::new(); config.num_warps];
 
     let mut context = CELL.write().unwrap();
@@ -138,7 +162,9 @@ pub unsafe fn cyclotron_imem_rs(
     imem_resp_bits_data_ptr: *mut u64,
 ) {
     let mut context_guard = CELL.write().unwrap();
-    let context = context_guard.as_mut().expect("DPI context not initialized!");
+    let context = context_guard
+        .as_mut()
+        .expect("DPI context not initialized!");
     let sim = &mut context.sim_be;
     let cluster = &mut sim.top.clusters[0];
     let core = &mut cluster.cores[0];
@@ -146,7 +172,8 @@ pub unsafe fn cyclotron_imem_rs(
     let imem_req_ready = unsafe { imem_req_ready_ptr.as_mut().expect("pointer was null") };
     let imem_resp_valid = unsafe { imem_resp_valid_ptr.as_mut().expect("pointer was null") };
     let imem_resp_bits_tag = unsafe { imem_resp_bits_tag_ptr.as_mut().expect("pointer was null") };
-    let imem_resp_bits_data = unsafe { imem_resp_bits_data_ptr.as_mut().expect("pointer was null") };
+    let imem_resp_bits_data =
+        unsafe { imem_resp_bits_data_ptr.as_mut().expect("pointer was null") };
 
     *imem_req_ready = imem_resp_ready;
 
@@ -173,7 +200,9 @@ pub unsafe extern "C" fn cyclotron_fetch_rs(
     resp_bits_inst_ptr: *mut u64,
 ) {
     let mut context_guard = CELL.write().unwrap();
-    let context = context_guard.as_mut().expect("DPI context not initialized!");
+    let context = context_guard
+        .as_mut()
+        .expect("DPI context not initialized!");
     let sim = &mut context.sim_isa;
     let core = &mut sim.top.clusters[0].cores[0];
 
@@ -213,7 +242,9 @@ pub unsafe extern "C" fn cyclotron_gmem_rs(
     resp_bits_data_ptr: *mut u32,
 ) {
     let mut context_guard = CELL.write().unwrap();
-    let context = context_guard.as_mut().expect("DPI context not initialized!");
+    let context = context_guard
+        .as_mut()
+        .expect("DPI context not initialized!");
     let sim = &mut context.sim_be;
 
     let core = &mut sim.top.clusters[0].cores[0];
@@ -332,7 +363,9 @@ pub unsafe extern "C" fn cyclotron_frontend_rs(
     finished_ptr: *mut u8,
 ) {
     let mut context_guard = CELL.write().unwrap();
-    let context = context_guard.as_mut().expect("DPI context not initialized!");
+    let context = context_guard
+        .as_mut()
+        .expect("DPI context not initialized!");
     let sim = &mut context.sim_isa;
 
     let core = &mut sim.top.clusters[0].cores[0];
@@ -408,18 +441,8 @@ pub unsafe extern "C" fn cyclotron_frontend_rs(
         }
     }
 
-    // give some time for the RTL to finish after the sim frontend finished
-    if sim.finished() {
-        if context.cycles_after_cyclotron_finished == 0 {
-            println!("Cyclotron: model finished execution");
-        }
-        context.cycles_after_cyclotron_finished += 1;
-    }
-    if context.cycles_after_cyclotron_finished == FINISH_COUNTDOWN && context.difftested_insts > 0 {
-        println!("DIFFTEST: PASS: {} instructions", context.difftested_insts);
-    }
-
-    *finished = (context.cycles_after_cyclotron_finished >= FINISH_COUNTDOWN) as u8;
+    let sim_finished = sim.finished();
+    *finished = context.finish_after_timeout(sim_finished) as u8;
 }
 
 /// Issue a decoded instruction bundle to the backend model, and get the writeback bundle back.
@@ -465,7 +488,9 @@ pub unsafe fn cyclotron_backend_rs(
     finished_ptr: *mut u8,
 ) {
     let mut context_guard = CELL.write().unwrap();
-    let context = context_guard.as_mut().expect("DPI context not initialized!");
+    let context = context_guard
+        .as_mut()
+        .expect("DPI context not initialized!");
     let sim = &mut context.sim_be;
     let cluster = &mut sim.top.clusters[0];
     let core = &mut cluster.cores[0];
@@ -483,23 +508,51 @@ pub unsafe fn cyclotron_backend_rs(
     let writeback_wid = unsafe { writeback_wid_ptr.as_mut().expect("pointer was null") };
     // let writeback_rd_addr = unsafe { writeback_rd_addr_ptr.as_mut().expect("pointer was null") };
     // let writeback_rd_data = unsafe { std::slice::from_raw_parts_mut(writeback_rd_data_ptr, config.num_lanes) };
-    let writeback_set_pc_valid = unsafe { writeback_set_pc_valid_ptr.as_mut().expect("pointer was null") };
+    let writeback_set_pc_valid = unsafe {
+        writeback_set_pc_valid_ptr
+            .as_mut()
+            .expect("pointer was null")
+    };
     let writeback_set_pc = unsafe { writeback_set_pc_ptr.as_mut().expect("pointer was null") };
-    let writeback_set_tmask_valid =
-        unsafe { writeback_set_tmask_valid_ptr.as_mut().expect("pointer was null") };
-    let writeback_set_tmask = unsafe { writeback_set_tmask_ptr.as_mut().expect("pointer was null") };
-    let writeback_wspawn_valid = unsafe { writeback_wspawn_valid_ptr.as_mut().expect("pointer was null") };
-    let writeback_wspawn_count = unsafe { writeback_wspawn_count_ptr.as_mut().expect("pointer was null") };
-    let writeback_wspawn_pc = unsafe { writeback_wspawn_pc_ptr.as_mut().expect("pointer was null") };
-    let writeback_ipdom_valid = unsafe { writeback_ipdom_valid_ptr.as_mut().expect("pointer was null") };
+    let writeback_set_tmask_valid = unsafe {
+        writeback_set_tmask_valid_ptr
+            .as_mut()
+            .expect("pointer was null")
+    };
+    let writeback_set_tmask =
+        unsafe { writeback_set_tmask_ptr.as_mut().expect("pointer was null") };
+    let writeback_wspawn_valid = unsafe {
+        writeback_wspawn_valid_ptr
+            .as_mut()
+            .expect("pointer was null")
+    };
+    let writeback_wspawn_count = unsafe {
+        writeback_wspawn_count_ptr
+            .as_mut()
+            .expect("pointer was null")
+    };
+    let writeback_wspawn_pc =
+        unsafe { writeback_wspawn_pc_ptr.as_mut().expect("pointer was null") };
+    let writeback_ipdom_valid = unsafe {
+        writeback_ipdom_valid_ptr
+            .as_mut()
+            .expect("pointer was null")
+    };
     let writeback_ipdom_restored_mask = unsafe {
         writeback_ipdom_restored_mask_ptr
             .as_mut()
             .expect("pointer was null")
     };
-    let writeback_ipdom_else_mask =
-        unsafe { writeback_ipdom_else_mask_ptr.as_mut().expect("pointer was null") };
-    let writeback_ipdom_else_pc = unsafe { writeback_ipdom_else_pc_ptr.as_mut().expect("pointer was null") };
+    let writeback_ipdom_else_mask = unsafe {
+        writeback_ipdom_else_mask_ptr
+            .as_mut()
+            .expect("pointer was null")
+    };
+    let writeback_ipdom_else_pc = unsafe {
+        writeback_ipdom_else_pc_ptr
+            .as_mut()
+            .expect("pointer was null")
+    };
     let finished = unsafe { finished_ptr.as_mut().expect("pointer was null") };
 
     if issue_valid != 1 {
@@ -576,13 +629,82 @@ pub unsafe fn cyclotron_backend_rs(
         .ipdom_push
         .map(|x| x.restored_mask)
         .unwrap_or(0);
-    *writeback_ipdom_else_mask = writeback.sched_wb.ipdom_push.map(|x| x.else_mask).unwrap_or(0);
-    *writeback_ipdom_else_pc = writeback.sched_wb.ipdom_push.map(|x| x.else_pc).unwrap_or(0);
+    *writeback_ipdom_else_mask = writeback
+        .sched_wb
+        .ipdom_push
+        .map(|x| x.else_mask)
+        .unwrap_or(0);
+    *writeback_ipdom_else_pc = writeback
+        .sched_wb
+        .ipdom_push
+        .map(|x| x.else_pc)
+        .unwrap_or(0);
     *finished = writeback.sched_wb.tohost.is_some() as u8;
 
     // for (data_pin, owb) in zip(writeback_rd_data, writeback.rd_data) {
     //     *data_pin = owb.unwrap_or(0);
     // }
+}
+
+#[no_mangle]
+/// Capture instruction and memory trace in RTL into a SQL database.
+pub unsafe extern "C" fn cyclotron_trace_rs(
+    valid: u8,
+    pc: u32,
+    warp_id: u32,
+    tmask: u32,
+    rs1_enable: u8,
+    rs1_address: u8,
+    rs1_data_raw: *const u32,
+    rs2_enable: u8,
+    rs2_address: u8,
+    rs2_data_raw: *const u32,
+    rs3_enable: u8,
+    rs3_address: u8,
+    rs3_data_raw: *const u32,
+) {
+    if valid == 0 {
+        return;
+    }
+
+    let context_guard = CELL.read().unwrap();
+    let context = context_guard
+        .as_ref()
+        .expect("DPI context not initialized!");
+    let config = context.sim_isa.top.clusters[0].cores[0].conf().clone();
+
+    let rs1_data = unsafe { std::slice::from_raw_parts(rs1_data_raw, config.num_lanes) };
+    let rs2_data = unsafe { std::slice::from_raw_parts(rs2_data_raw, config.num_lanes) };
+    let rs3_data = unsafe { std::slice::from_raw_parts(rs3_data_raw, config.num_lanes) };
+    // maybe convert these to Trace::Line?
+
+    TRACE_CONN.with(|t| {
+        let mut conn_opt = t.borrow_mut();
+        if conn_opt.is_none() {
+            let trace_db_path = std::env::var("CYCLOTRON_TRACE_DB")
+                .unwrap_or("cyclotron_trace.sqlite".to_string());
+            let conn =
+                Connection::open(&trace_db_path).expect("failed to open sqlite trace database");
+            conn.execute(
+                "CREATE TABLE inst (
+                    id    INTEGER PRIMARY KEY AUTOINCREMENT,
+                    pc    INTEGER NOT NULL,
+                    warp  INTEGER
+                )",
+                (),
+            )
+            .expect("failed to create inst table");
+            *conn_opt = Some(conn);
+        }
+
+        conn_opt
+            .as_ref()
+            .expect("trace connection not initialized")
+            .execute("INSERT INTO inst (pc, warp) VALUES (?1, ?2)", (pc, warp_id))
+            .expect("failed to insert to inst");
+    });
+
+    // TODO: create sql indices
 }
 
 #[no_mangle]
@@ -605,7 +727,9 @@ pub unsafe extern "C" fn cyclotron_difftest_reg_rs(
     rs3_data_raw: *const u32,
 ) {
     let mut context_guard = CELL.write().unwrap();
-    let context = context_guard.as_mut().expect("DPI context not initialized!");
+    let context = context_guard
+        .as_mut()
+        .expect("DPI context not initialized!");
     let sim = &mut context.sim_isa;
     let config = sim.top.clusters[0].cores[0].conf().clone();
 
@@ -728,7 +852,10 @@ pub unsafe extern "C" fn cyclotron_difftest_reg_rs(
 
     context.difftested_insts += 1;
     if context.difftested_insts % 100 == 0 {
-        println!("DIFFTEST: Checked {} instructions", context.difftested_insts);
+        println!(
+            "DIFFTEST: Checked {} instructions",
+            context.difftested_insts
+        );
     }
 }
 
@@ -752,7 +879,10 @@ struct RegMatchError {
     model: u32,
 }
 
-fn compare_vector_reg_data(regs_rtl: &[u32], regs_model: &[Option<u32>]) -> Result<(), RegMatchError> {
+fn compare_vector_reg_data(
+    regs_rtl: &[u32],
+    regs_model: &[Option<u32>],
+) -> Result<(), RegMatchError> {
     for (i, (rtl, model)) in zip(regs_rtl, regs_model).enumerate() {
         // TODO: instead of skipping None, compare with tmask
         if let Some(m) = model {
@@ -788,21 +918,19 @@ pub unsafe extern "C" fn profile_perf_counters_rs(
     per_warp_stalls_busy_ptr: *const u64,
     finished: u8,
 ) {
-    if finished != 1 {
-        return;
-    }
-
     let mut context_guard = CELL.write().unwrap();
     let context = context_guard.as_mut().expect("DPI context not initialized!");
     let sim = &mut context.sim_isa;
     let core = &mut sim.top.clusters[0].cores[0];
     let config = core.conf().clone();
-
     let global_core_id = cluster_id as usize * CORES_PER_CLUSTER + core_id as usize;
-    if context.rtl_finished[global_core_id] {
+
+    // only report at rising-edge
+    let prev_rtl_finished = context.prev_rtl_finished[global_core_id];
+    context.prev_rtl_finished[global_core_id] = finished == 1;
+    if !(finished == 1 && !prev_rtl_finished) {
         return;
     }
-    context.rtl_finished[global_core_id] = true;
 
     let per_warp_cycles_decoded = unsafe { std::slice::from_raw_parts(per_warp_cycles_decoded_ptr, config.num_warps) };
     let per_warp_cycles_issued = unsafe { std::slice::from_raw_parts(per_warp_cycles_issued_ptr, config.num_warps) };
@@ -825,6 +953,11 @@ pub unsafe extern "C" fn profile_perf_counters_rs(
 
     println!("");
     println!("Muon [cluster {} core {}] finished execution.", cluster_id, core_id);
+    // filter out bogus finishes, e.g. right after reset drop but before softreset goes up.
+    if inst_retired == 0 {
+        println!("Kernel had no instructions run; Skipping performance report.");
+        println!("");
+    }
     println!("");
     println!("+-----------------------+");
     println!(" Muon Performance Report");
@@ -844,5 +977,5 @@ pub unsafe extern "C" fn profile_perf_counters_rs(
     println!("+-----------------------+");
 }
 
-mod tile;
 mod mem_model;
+mod tile;

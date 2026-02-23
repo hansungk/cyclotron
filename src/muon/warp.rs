@@ -17,6 +17,7 @@ use crate::utils::BitSlice;
 use std::fmt::Debug;
 use std::fmt::{Display, Formatter};
 use std::iter::zip;
+use std::ops::DerefMut;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{Arc, RwLock};
 
@@ -45,6 +46,34 @@ impl ModuleBehaviors for Warp {
 }
 
 module!(Warp, WarpState, MuonConfig,);
+
+/// Writeback result from the execute stage modulo memory load/stores,
+/// which will be handled in the mem stage.
+#[derive(Debug)]
+pub struct ExWriteback {
+    pub inst: IssuedInst,
+    pub tmask: u32,
+    pub rd_addr: u8,
+    pub rd_data: Vec<Option<u32>>,
+    pub mem_req: Vec<Option<MemRequest>>,
+    pub sched_wb: SchedulerWriteback,
+}
+
+#[derive(Clone, Debug)]
+pub struct MemRequest {
+    pub addr: u32,
+    pub data: Option<u32>,
+    pub size: u32,
+    pub is_sext: bool,
+    pub is_store: bool,
+    pub is_smem: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct MemResponse {
+    pub data: Option<[u8; 4]>,
+    pub is_sext: bool,
+}
 
 #[derive(Debug)]
 pub struct Writeback {
@@ -91,13 +120,21 @@ impl Display for Writeback {
 }
 
 impl Warp {
-    pub fn new(config: Arc<MuonConfig>, logger: &Arc<Logger>, gmem: Arc<RwLock<FlatMemory>>) -> Warp {
+    pub fn new(
+        config: Arc<MuonConfig>,
+        logger: &Arc<Logger>,
+        gmem: Arc<RwLock<FlatMemory>>,
+    ) -> Warp {
         let num_lanes = config.num_lanes;
         let mut me = Warp {
             base: ModuleBase {
                 state: WarpState {
-                    reg_file: (0..num_lanes).map(|i| RegFile::new(config.clone(), i)).collect(),
-                    csr_file: (0..num_lanes).map(|i| CSRFile::new(config.clone(), i)).collect(),
+                    reg_file: (0..num_lanes)
+                        .map(|i| RegFile::new(config.clone(), i))
+                        .collect(),
+                    csr_file: (0..num_lanes)
+                        .map(|i| CSRFile::new(config.clone(), i))
+                        .collect(),
                 },
                 ..ModuleBase::default()
             },
@@ -153,27 +190,28 @@ impl Warp {
         neutrino: &mut Neutrino,
         smem: &mut FlatMemory,
     ) -> Result<Writeback, ExecErr> {
-        let decoded = uop.inst;
-        let pc = decoded.pc;
+        let pc = uop.inst.pc;
         let tmask = uop.tmask;
 
-        // TODO: verify that this step doesnt modify
+        assert!(
+            scheduler.state().thread_masks[self.wid] == tmask,
+            "scheduler tmask was not set correctly"
+        );
         scheduler.state_mut().thread_masks[self.wid] = tmask;
 
         // operand collection
-        let rf = self.base.state.reg_file.as_slice();
-        let issued = ExecuteUnit::collect(&uop, rf);
+        let issued = self.collect(&uop);
 
         // execute
         let writeback = catch_unwind(AssertUnwindSafe(|| {
-            self.execute(issued, tmask, scheduler, neutrino, smem)
+            let ex_wb = self.execute_nomem(issued, tmask, scheduler, neutrino);
+            self.mem(&ex_wb, smem, None)
         }));
 
         // writeback
         match writeback {
             Ok(writeback) => {
-                let rf_mut = self.base.state.reg_file.as_mut_slice();
-                Self::writeback(&writeback, rf_mut);
+                self.writeback(&writeback);
 
                 info!(
                     self.logger,
@@ -211,7 +249,6 @@ impl Warp {
         let pc = decoded.pc;
         let tmask = uop.tmask;
 
-        // TODO: verify that this step doesnt modify
         scheduler.state_mut().thread_masks[self.wid] = tmask;
 
         if decoded.opcode == Opcode::LOAD || decoded.opcode == Opcode::STORE {
@@ -279,10 +316,7 @@ impl Warp {
             }
         }
 
-        // operand collection
-        let rf = self.base.state.reg_file.as_slice();
-        let issued = ExecuteUnit::collect(&uop, rf);
-
+        let issued = self.collect(&uop);
         let active_lanes = tmask.count_ones();
         if timing_model
             .issue_execute(now, self.wid, &issued, active_lanes, scheduler)
@@ -291,16 +325,13 @@ impl Warp {
             return Ok(None);
         }
 
-        // execute
         let writeback = catch_unwind(AssertUnwindSafe(|| {
             self.execute(issued, tmask, scheduler, neutrino, smem)
         }));
 
-        // writeback
         match writeback {
             Ok(writeback) => {
-                let rf_mut = self.base.state.reg_file.as_mut_slice();
-                Self::writeback(&writeback, rf_mut);
+                self.writeback(&writeback);
 
                 info!(
                     self.logger,
@@ -325,8 +356,51 @@ impl Warp {
         }
     }
 
-    /// An EX-only library interface that accepts a single-warp issued
-    /// instruction and returns a writeback bundle.
+    /// COLL/EX/MEM req stage before mem request is served.
+    /// Used for co-sim with decoupled memory.
+    pub fn backend_beforemem(
+        &mut self,
+        uop: MicroOp,
+        scheduler: &mut Scheduler,
+        neutrino: &mut Neutrino,
+    ) -> Result<ExWriteback, ExecErr> {
+        let pc = uop.inst.pc;
+        let tmask = uop.tmask;
+
+        assert!(
+            scheduler.state().thread_masks[self.wid] == tmask,
+            "scheduler tmask was not set correctly"
+        );
+
+        // operand collection
+        let issued = self.collect(&uop);
+
+        // execute
+        let ex_writeback = catch_unwind(AssertUnwindSafe(|| {
+            self.execute_nomem(issued, tmask, scheduler, neutrino)
+        }));
+
+        // writeback
+        match ex_writeback {
+            Ok(wb) => Ok(wb),
+            Err(payload) => {
+                let message = payload.downcast::<String>().ok().map(|s| *s);
+                Err(ExecErr {
+                    pc,
+                    warp_id: self.wid,
+                    message,
+                })
+            }
+        }
+    }
+
+    /// Collect source operand values from the regfile.
+    pub fn collect(&mut self, uop: &MicroOp) -> IssuedInst {
+        let rf = self.base.state.reg_file.as_slice();
+        ExecuteUnit::collect(&uop, rf)
+    }
+
+    /// Execute a single-warp issued instruction and return a writeback bundle.
     pub fn execute(
         &mut self,
         issued: IssuedInst,
@@ -335,25 +409,124 @@ impl Warp {
         neutrino: &mut Neutrino,
         smem: &mut FlatMemory,
     ) -> Writeback {
+        let ex_wb = self.execute_nomem(issued, tmask, scheduler, neutrino);
+        self.mem(&ex_wb, smem, None)
+    }
+
+    /// Execute stage, but only generates mem requests without serving them with the internal
+    /// gmem/smem.
+    /// Used for co-sim with decoupled memory.
+    pub fn execute_nomem(
+        &mut self,
+        issued: IssuedInst,
+        tmask: u32,
+        scheduler: &mut Scheduler,
+        neutrino: &mut Neutrino,
+    ) -> ExWriteback {
         let core_id = self.conf().lane_config.core_id;
         let rf = self.base.state.reg_file.as_mut_slice();
         let csrf = self.base.state.csr_file.as_mut_slice();
 
+        // ALU/FPU/AddrGen stage
         ExecuteUnit::execute(
-            issued,
-            core_id,
-            self.wid,
-            tmask,
-            rf,
-            csrf,
-            scheduler,
-            neutrino,
-            &self.gmem,
-            smem,
+            issued, core_id, self.wid, tmask, rf, csrf, scheduler, neutrino,
         )
     }
 
-    pub fn writeback(wb: &Writeback, rf: &mut [RegFile]) {
+    /// Memory stage; serve the memory requests produced in EX.
+    /// If `external_mem_resp` is given, handle mem requests with an explicit memory response supplied by an
+    /// external memory model e.g. RTL, instead of using internal gmem/smem.
+    /// TODO: handle RTL response
+    pub fn mem(
+        &mut self,
+        ex_writeback: &ExWriteback,
+        smem: &mut FlatMemory,
+        external_mem_resp: Option<&Vec<Option<MemResponse>>>,
+    ) -> Writeback {
+        let external_mem = external_mem_resp.is_some();
+
+        let rd_mem = ex_writeback
+            .mem_req
+            .iter()
+            .enumerate()
+            .map(|(i, oreq)| match oreq {
+                Some(req) => {
+                    let resp = if external_mem {
+                        external_mem_resp.unwrap()[i]
+                            .as_ref()
+                            .expect("missing mem response for a lane")
+                    } else {
+                        &self.mem_response(req, smem)
+                    };
+                    ExecuteUnit::mem_writeback(req, resp)
+                }
+                None => None,
+            });
+
+        // consolidate rd's from EX and MEM
+        let rd_merged = zip(&ex_writeback.rd_data, rd_mem)
+            .map(|(lrd_ex, lrd_mem)| {
+                assert!(
+                    lrd_mem.is_none() || lrd_ex.is_none(),
+                    "mem req generated for a lane that already has an EX rd writeback"
+                );
+                lrd_mem.or(*lrd_ex)
+            })
+            .collect::<Vec<_>>();
+
+        Writeback {
+            inst: ex_writeback.inst.clone(),
+            tmask: ex_writeback.tmask,
+            rd_addr: ex_writeback.rd_addr,
+            rd_data: rd_merged,
+            sched_wb: ex_writeback.sched_wb,
+        }
+    }
+
+    /// Handle a per-lane memory request and generate a MemResponse.
+    pub fn mem_response(&mut self, mem_req: &MemRequest, smem: &mut FlatMemory) -> MemResponse {
+        let mut gmem = self.gmem.write().expect("lock poisoned");
+        let mem = if mem_req.is_smem {
+            smem
+        } else {
+            gmem.deref_mut()
+        };
+
+        let addr = mem_req.addr;
+        let addr_aligned = addr >> 2 << 2;
+        let size = mem_req.size;
+
+        if mem_req.is_store {
+            let store_data = mem_req.data.expect("store req missing a data field");
+            let store_data_bytes = store_data.to_le_bytes();
+
+            match size {
+                1 => mem.write(addr as usize, &store_data_bytes[0..1]), // store byte
+                2 => mem.write(addr as usize, &store_data_bytes[0..2]), // store half
+                4 => mem.write(addr as usize, &store_data_bytes[0..4]), // store word
+                _ => panic!("unimplemented store size"),
+            }
+            .expect("store failed");
+
+            MemResponse {
+                data: None,
+                is_sext: mem_req.is_sext, // pass-through
+            }
+        } else {
+            let load_data = mem.read_n::<4>(addr_aligned as usize).expect("load failed");
+
+            // byte-masking will be handled in Execute::mem
+            MemResponse {
+                data: Some(load_data),
+                is_sext: mem_req.is_sext, // pass-through
+            }
+        }
+    }
+
+    pub fn writeback(&mut self, wb: &Writeback) {
+        let rf = self.base.state.reg_file.as_mut_slice();
+
+        // note: scheduler writeback is done in-place
         let rd_addr = wb.rd_addr;
         for (lrf, ldata) in zip(rf, &wb.rd_data) {
             ldata.map(|data| lrf.write_gpr(rd_addr, data));

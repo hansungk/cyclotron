@@ -90,7 +90,8 @@ impl Scheduler {
     }
 
     fn all_one_bitmask(&self) -> u32 {
-        (1u32 << self.conf().num_lanes) - 1
+        // hack: left shifting by 32 undefined for u32. ideally use u64 everywhere
+        if self.conf().num_lanes >= 32 { u32::MAX } else { (1u32 << self.conf().num_lanes) - 1 }
     }
 
     pub fn spawn_single_warp(&mut self) {
@@ -307,6 +308,10 @@ impl Scheduler {
 
     pub fn get_schedule(&mut self, wid: usize) -> Option<Schedule> {
         self.schedule(wid)
+    }
+
+    pub fn tohost(&self) -> Option<u32> {
+        self.state().tohost
     }
 
     pub fn neutrino_stall(&mut self, stalls: Vec<bool>) {
