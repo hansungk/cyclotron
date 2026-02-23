@@ -696,11 +696,11 @@ pub unsafe extern "C" fn cyclotron_trace_rs(
     let _inst_rs3_data = unsafe { from_raw_parts(inst_rs3_data_vec, num_lanes) };
 
     let dmem_req_valid = unsafe { from_raw_parts(dmem_req_valid_vec, num_lanes) };
-    let _dmem_req_bits_store = unsafe { from_raw_parts(dmem_req_bits_store_vec, num_lanes) };
+    let dmem_req_bits_store = unsafe { from_raw_parts(dmem_req_bits_store_vec, num_lanes) };
     let dmem_req_bits_address = unsafe { from_raw_parts(dmem_req_bits_address_vec, num_lanes) };
-    let _dmem_req_bits_size = unsafe { from_raw_parts(dmem_req_bits_size_vec, num_lanes) };
+    let dmem_req_bits_size = unsafe { from_raw_parts(dmem_req_bits_size_vec, num_lanes) };
     let _dmem_req_bits_tag = unsafe { from_raw_parts(dmem_req_bits_tag_vec, num_lanes) };
-    let _dmem_req_bits_data = unsafe { from_raw_parts(dmem_req_bits_data_vec, num_lanes) };
+    let dmem_req_bits_data = unsafe { from_raw_parts(dmem_req_bits_data_vec, num_lanes) };
     let _dmem_req_bits_mask = unsafe { from_raw_parts(dmem_req_bits_mask_vec, num_lanes) };
     let _dmem_resp_valid = unsafe { from_raw_parts(dmem_resp_valid_vec, num_lanes) };
     let _dmem_resp_bits_tag = unsafe { from_raw_parts(dmem_resp_bits_tag_vec, num_lanes) };
@@ -717,44 +717,103 @@ pub unsafe extern "C" fn cyclotron_trace_rs(
     let _smem_resp_bits_tag = unsafe { from_raw_parts(smem_resp_bits_tag_vec, num_lanes) };
     let _smem_resp_bits_data = unsafe { from_raw_parts(smem_resp_bits_data_vec, num_lanes) };
 
-    if dmem_req_valid[0] != 0 {
-        println!("dmem req valid: addr={}", dmem_req_bits_address[0]);
-    }
-
-    if inst_valid == 0 {
-        return;
-    }
-
     TRACE_CONN.with(|t| {
         let mut conn_opt = t.borrow_mut();
         if conn_opt.is_none() {
-            let trace_db_path =
-                std::env::var("CYCLOTRON_TRACE_DB").unwrap_or("cyclotron_trace.sqlite".to_string());
-            let conn =
-                Connection::open(&trace_db_path).expect("failed to open sqlite trace database");
-            conn.execute(
-                "CREATE TABLE inst (
+            *conn_opt = Some(create_new_db_overwrite());
+        }
+
+        // record inst
+        if inst_valid == 0 {
+            conn_opt
+                .as_ref()
+                .expect("trace connection not initialized")
+                .execute(
+                    "INSERT INTO inst (pc, warp) VALUES (?1, ?2)",
+                    (inst_pc, inst_warp_id),
+                )
+                .expect("failed to insert to inst");
+        }
+
+        // record dmem
+        for i in 0..num_lanes {
+            if dmem_req_valid[i] == 0 {
+                continue;
+            }
+            let is_store = dmem_req_bits_store[i];
+            let data = if is_store != 0 {
+                dmem_req_bits_data[i]
+            } else {
+                0
+            };
+            conn_opt
+                .as_ref()
+                .expect("trace connection not initialized")
+                .execute(
+                    "INSERT INTO dmem (store, address, size, data, lane)
+                            VALUES (?1, ?2, ?3, ?4, ?5)",
+                    (
+                        dmem_req_bits_store[i],
+                        dmem_req_bits_address[i],
+                        dmem_req_bits_size[i],
+                        data,
+                        i as u32,
+                    ),
+                )
+                .expect("failed to insert to inst");
+        }
+    });
+
+    // TODO: create sql indices
+}
+
+fn create_new_db_overwrite() -> Connection {
+    let db_path =
+        std::env::var("CYCLOTRON_TRACE_DB").unwrap_or("cyclotron_trace.sqlite".to_string());
+    match std::fs::remove_file(&db_path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => panic!("failed to remove existing trace database file {db_path}: {e}"),
+    }
+    let conn = Connection::open(&db_path).expect("failed to open sqlite trace database");
+
+    conn.execute(
+        "CREATE TABLE inst (
                     id    INTEGER PRIMARY KEY AUTOINCREMENT,
                     pc    INTEGER NOT NULL,
                     warp  INTEGER
                 )",
-                (),
-            )
-            .expect("failed to create inst table");
-            *conn_opt = Some(conn);
-        }
+        (),
+    )
+    .expect("failed to create inst table");
 
-        conn_opt
-            .as_ref()
-            .expect("trace connection not initialized")
-            .execute(
-                "INSERT INTO inst (pc, warp) VALUES (?1, ?2)",
-                (inst_pc, inst_warp_id),
-            )
-            .expect("failed to insert to inst");
-    });
+    conn.execute(
+        "CREATE TABLE dmem (
+                    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+                    store   INTEGER NOT NULL CHECK (store IN (0,1)),
+                    address INTEGER NOT NULL,
+                    size    INTEGER NOT NULL,
+                    data    INTEGER NOT NULL,
+                    lane    INTEGER
+                )",
+        (),
+    )
+    .expect("failed to create dmem table");
 
-    // TODO: create sql indices
+    conn.execute(
+        "CREATE TABLE smem (
+                    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+                    store   INTEGER NOT NULL CHECK (store IN (0,1)),
+                    address INTEGER NOT NULL,
+                    size    INTEGER NOT NULL,
+                    data    INTEGER NOT NULL,
+                    lane    INTEGER
+                )",
+        (),
+    )
+    .expect("failed to create smem table");
+
+    conn
 }
 
 #[no_mangle]
