@@ -706,12 +706,12 @@ pub unsafe extern "C" fn cyclotron_trace_rs(
     let _dmem_resp_bits_tag = unsafe { from_raw_parts(dmem_resp_bits_tag_vec, num_lanes) };
     let _dmem_resp_bits_data = unsafe { from_raw_parts(dmem_resp_bits_data_vec, num_lanes) };
 
-    let _smem_req_valid = unsafe { from_raw_parts(smem_req_valid_vec, num_lanes) };
-    let _smem_req_bits_store = unsafe { from_raw_parts(smem_req_bits_store_vec, num_lanes) };
-    let _smem_req_bits_address = unsafe { from_raw_parts(smem_req_bits_address_vec, num_lanes) };
-    let _smem_req_bits_size = unsafe { from_raw_parts(smem_req_bits_size_vec, num_lanes) };
+    let smem_req_valid = unsafe { from_raw_parts(smem_req_valid_vec, num_lanes) };
+    let smem_req_bits_store = unsafe { from_raw_parts(smem_req_bits_store_vec, num_lanes) };
+    let smem_req_bits_address = unsafe { from_raw_parts(smem_req_bits_address_vec, num_lanes) };
+    let smem_req_bits_size = unsafe { from_raw_parts(smem_req_bits_size_vec, num_lanes) };
     let _smem_req_bits_tag = unsafe { from_raw_parts(smem_req_bits_tag_vec, num_lanes) };
-    let _smem_req_bits_data = unsafe { from_raw_parts(smem_req_bits_data_vec, num_lanes) };
+    let smem_req_bits_data = unsafe { from_raw_parts(smem_req_bits_data_vec, num_lanes) };
     let _smem_req_bits_mask = unsafe { from_raw_parts(smem_req_bits_mask_vec, num_lanes) };
     let _smem_resp_valid = unsafe { from_raw_parts(smem_resp_valid_vec, num_lanes) };
     let _smem_resp_bits_tag = unsafe { from_raw_parts(smem_resp_bits_tag_vec, num_lanes) };
@@ -735,36 +735,53 @@ pub unsafe extern "C" fn cyclotron_trace_rs(
                 .expect("failed to insert to inst");
         }
 
-        // record dmem
-        for i in 0..num_lanes {
-            if dmem_req_valid[i] == 0 {
-                continue;
-            }
-            let is_store = dmem_req_bits_store[i];
-            let data = if is_store != 0 {
-                dmem_req_bits_data[i]
-            } else {
-                0
-            };
-            conn_opt
-                .as_ref()
-                .expect("trace connection not initialized")
-                .execute(
-                    "INSERT INTO dmem (store, address, size, data, lane)
-                            VALUES (?1, ?2, ?3, ?4, ?5)",
-                    (
-                        dmem_req_bits_store[i],
-                        dmem_req_bits_address[i],
-                        dmem_req_bits_size[i],
-                        data,
-                        i as u32,
-                    ),
-                )
-                .expect("failed to insert to inst");
-        }
+        // dmem
+        record_mem_to_db(
+            conn_opt.as_ref().expect("trace connection not initialized"),
+            dmem_req_valid,
+            dmem_req_bits_store,
+            dmem_req_bits_address,
+            dmem_req_bits_size,
+            dmem_req_bits_data,
+        );
+
+        // smem
+        record_mem_to_db(
+            conn_opt.as_ref().expect("trace connection not initialized"),
+            smem_req_valid,
+            smem_req_bits_store,
+            smem_req_bits_address,
+            smem_req_bits_size,
+            smem_req_bits_data,
+        );
     });
 
     // TODO: create sql indices
+}
+
+fn record_mem_to_db(
+    conn: &Connection,
+    valid: &[u8],
+    store: &[u8],
+    address: &[u32],
+    logsize: &[u8],
+    data: &[u32],
+) {
+    let num_lanes = valid.len();
+    for i in 0..num_lanes {
+        if valid[i] == 0 {
+            continue;
+        }
+        let is_store = store[i];
+        let data = if is_store != 0 { data[i] } else { 0 };
+        let size = 1 << logsize[i];
+        conn.execute(
+            "INSERT INTO dmem (store, address, size, data, lane)
+                            VALUES (?1, ?2, ?3, ?4, ?5)",
+            (store[i], address[i], size, data, i as u32),
+        )
+        .expect("failed to insert to inst");
+    }
 }
 
 fn create_new_db_overwrite() -> Connection {
@@ -781,7 +798,7 @@ fn create_new_db_overwrite() -> Connection {
         "CREATE TABLE inst (
                     id    INTEGER PRIMARY KEY AUTOINCREMENT,
                     pc    INTEGER NOT NULL,
-                    warp  INTEGER
+                    warp  INTEGER NOT NULL
                 )",
         (),
     )
@@ -794,7 +811,7 @@ fn create_new_db_overwrite() -> Connection {
                     address INTEGER NOT NULL,
                     size    INTEGER NOT NULL,
                     data    INTEGER NOT NULL,
-                    lane    INTEGER
+                    lane    INTEGER NOT NULL
                 )",
         (),
     )
@@ -807,7 +824,7 @@ fn create_new_db_overwrite() -> Connection {
                     address INTEGER NOT NULL,
                     size    INTEGER NOT NULL,
                     data    INTEGER NOT NULL,
-                    lane    INTEGER
+                    lane    INTEGER NOT NULL
                 )",
         (),
     )
