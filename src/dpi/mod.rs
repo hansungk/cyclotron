@@ -15,6 +15,7 @@ use std::ffi::CStr;
 use std::iter::zip;
 use std::os::raw::c_char;
 use std::path::PathBuf;
+use std::slice::from_raw_parts;
 use std::sync::RwLock;
 
 use env_logger::Builder;
@@ -649,40 +650,86 @@ pub unsafe fn cyclotron_backend_rs(
 #[no_mangle]
 /// Capture instruction and memory trace in RTL into a SQL database.
 pub unsafe extern "C" fn cyclotron_trace_rs(
-    valid: u8,
-    pc: u32,
-    warp_id: u32,
-    tmask: u32,
-    rs1_enable: u8,
-    rs1_address: u8,
-    rs1_data_raw: *const u32,
-    rs2_enable: u8,
-    rs2_address: u8,
-    rs2_data_raw: *const u32,
-    rs3_enable: u8,
-    rs3_address: u8,
-    rs3_data_raw: *const u32,
+    inst_valid: u8,
+    inst_pc: u32,
+    inst_warp_id: u32,
+    inst_tmask: u32,
+    inst_rs1_enable: u8,
+    inst_rs1_address: u8,
+    inst_rs1_data_vec: *const u32,
+    inst_rs2_enable: u8,
+    inst_rs2_address: u8,
+    inst_rs2_data_vec: *const u32,
+    inst_rs3_enable: u8,
+    inst_rs3_address: u8,
+    inst_rs3_data_vec: *const u32,
+    dmem_req_valid_vec: *const u8,
+    dmem_req_bits_store_vec: *const u8,
+    dmem_req_bits_address_vec: *const u32,
+    dmem_req_bits_size_vec: *const u8,
+    dmem_req_bits_tag_vec: *const u32,
+    dmem_req_bits_data_vec: *const u32,
+    dmem_req_bits_mask_vec: *const u8,
+    dmem_resp_valid_vec: *const u8,
+    dmem_resp_bits_tag_vec: *const u32,
+    dmem_resp_bits_data_vec: *const u32,
+    smem_req_valid_vec: *const u8,
+    smem_req_bits_store_vec: *const u8,
+    smem_req_bits_address_vec: *const u32,
+    smem_req_bits_size_vec: *const u8,
+    smem_req_bits_tag_vec: *const u32,
+    smem_req_bits_data_vec: *const u32,
+    smem_req_bits_mask_vec: *const u8,
+    smem_resp_valid_vec: *const u8,
+    smem_resp_bits_tag_vec: *const u32,
+    smem_resp_bits_data_vec: *const u32,
 ) {
-    if valid == 0 {
-        return;
-    }
-
     let context_guard = CELL.read().unwrap();
     let context = context_guard
         .as_ref()
         .expect("DPI context not initialized!");
     let config = context.sim_isa.top.clusters[0].cores[0].conf().clone();
+    let num_lanes = config.num_lanes;
 
-    let rs1_data = unsafe { std::slice::from_raw_parts(rs1_data_raw, config.num_lanes) };
-    let rs2_data = unsafe { std::slice::from_raw_parts(rs2_data_raw, config.num_lanes) };
-    let rs3_data = unsafe { std::slice::from_raw_parts(rs3_data_raw, config.num_lanes) };
-    // maybe convert these to Trace::Line?
+    let _inst_rs1_data = unsafe { from_raw_parts(inst_rs1_data_vec, num_lanes) };
+    let _inst_rs2_data = unsafe { from_raw_parts(inst_rs2_data_vec, num_lanes) };
+    let _inst_rs3_data = unsafe { from_raw_parts(inst_rs3_data_vec, num_lanes) };
+
+    let dmem_req_valid = unsafe { from_raw_parts(dmem_req_valid_vec, num_lanes) };
+    let _dmem_req_bits_store = unsafe { from_raw_parts(dmem_req_bits_store_vec, num_lanes) };
+    let dmem_req_bits_address = unsafe { from_raw_parts(dmem_req_bits_address_vec, num_lanes) };
+    let _dmem_req_bits_size = unsafe { from_raw_parts(dmem_req_bits_size_vec, num_lanes) };
+    let _dmem_req_bits_tag = unsafe { from_raw_parts(dmem_req_bits_tag_vec, num_lanes) };
+    let _dmem_req_bits_data = unsafe { from_raw_parts(dmem_req_bits_data_vec, num_lanes) };
+    let _dmem_req_bits_mask = unsafe { from_raw_parts(dmem_req_bits_mask_vec, num_lanes) };
+    let _dmem_resp_valid = unsafe { from_raw_parts(dmem_resp_valid_vec, num_lanes) };
+    let _dmem_resp_bits_tag = unsafe { from_raw_parts(dmem_resp_bits_tag_vec, num_lanes) };
+    let _dmem_resp_bits_data = unsafe { from_raw_parts(dmem_resp_bits_data_vec, num_lanes) };
+
+    let _smem_req_valid = unsafe { from_raw_parts(smem_req_valid_vec, num_lanes) };
+    let _smem_req_bits_store = unsafe { from_raw_parts(smem_req_bits_store_vec, num_lanes) };
+    let _smem_req_bits_address = unsafe { from_raw_parts(smem_req_bits_address_vec, num_lanes) };
+    let _smem_req_bits_size = unsafe { from_raw_parts(smem_req_bits_size_vec, num_lanes) };
+    let _smem_req_bits_tag = unsafe { from_raw_parts(smem_req_bits_tag_vec, num_lanes) };
+    let _smem_req_bits_data = unsafe { from_raw_parts(smem_req_bits_data_vec, num_lanes) };
+    let _smem_req_bits_mask = unsafe { from_raw_parts(smem_req_bits_mask_vec, num_lanes) };
+    let _smem_resp_valid = unsafe { from_raw_parts(smem_resp_valid_vec, num_lanes) };
+    let _smem_resp_bits_tag = unsafe { from_raw_parts(smem_resp_bits_tag_vec, num_lanes) };
+    let _smem_resp_bits_data = unsafe { from_raw_parts(smem_resp_bits_data_vec, num_lanes) };
+
+    if dmem_req_valid[0] != 0 {
+        println!("dmem req valid: addr={}", dmem_req_bits_address[0]);
+    }
+
+    if inst_valid == 0 {
+        return;
+    }
 
     TRACE_CONN.with(|t| {
         let mut conn_opt = t.borrow_mut();
         if conn_opt.is_none() {
-            let trace_db_path = std::env::var("CYCLOTRON_TRACE_DB")
-                .unwrap_or("cyclotron_trace.sqlite".to_string());
+            let trace_db_path =
+                std::env::var("CYCLOTRON_TRACE_DB").unwrap_or("cyclotron_trace.sqlite".to_string());
             let conn =
                 Connection::open(&trace_db_path).expect("failed to open sqlite trace database");
             conn.execute(
@@ -700,7 +747,10 @@ pub unsafe extern "C" fn cyclotron_trace_rs(
         conn_opt
             .as_ref()
             .expect("trace connection not initialized")
-            .execute("INSERT INTO inst (pc, warp) VALUES (?1, ?2)", (pc, warp_id))
+            .execute(
+                "INSERT INTO inst (pc, warp) VALUES (?1, ?2)",
+                (inst_pc, inst_warp_id),
+            )
             .expect("failed to insert to inst");
     });
 
@@ -718,13 +768,13 @@ pub unsafe extern "C" fn cyclotron_difftest_reg_rs(
     tmask: u32,
     rs1_enable: u8,
     rs1_address: u8,
-    rs1_data_raw: *const u32,
+    rs1_data_vec: *const u32,
     rs2_enable: u8,
     rs2_address: u8,
-    rs2_data_raw: *const u32,
+    rs2_data_vec: *const u32,
     rs3_enable: u8,
     rs3_address: u8,
-    rs3_data_raw: *const u32,
+    rs3_data_vec: *const u32,
 ) {
     let mut context_guard = CELL.write().unwrap();
     let context = context_guard
@@ -745,9 +795,9 @@ pub unsafe extern "C" fn cyclotron_difftest_reg_rs(
     if valid == 0 {
         return;
     }
-    let rs1_data = unsafe { std::slice::from_raw_parts(rs1_data_raw, config.num_lanes) };
-    let rs2_data = unsafe { std::slice::from_raw_parts(rs2_data_raw, config.num_lanes) };
-    let rs3_data = unsafe { std::slice::from_raw_parts(rs3_data_raw, config.num_lanes) };
+    let rs1_data = unsafe { std::slice::from_raw_parts(rs1_data_vec, config.num_lanes) };
+    let rs2_data = unsafe { std::slice::from_raw_parts(rs2_data_vec, config.num_lanes) };
+    let rs3_data = unsafe { std::slice::from_raw_parts(rs3_data_vec, config.num_lanes) };
 
     let isq = &mut context.issue_queue[warp_id as usize];
 
