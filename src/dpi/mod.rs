@@ -33,8 +33,9 @@ struct Context {
     issue_queue: Vec<IssueQueue>,
     /// cyclotron instance for the backend model
     sim_be: Sim,
-    /// load/store queue used to match req-resp for memory tracing
-    trace_memory_queue: MemQueue,
+    // TODO: Separate per-core context to a struct
+    /// load/store queue used to match req-resp for memory tracing.  Per-core.
+    trace_memory_queue: Vec<MemQueue>,
     pipeline_context: PipelineContext,
     cycles_after_cyclotron_finished: usize,
     prev_rtl_finished: Vec<bool>,
@@ -70,11 +71,13 @@ type IssueQueue = VecDeque<IssueQueueLine>;
 
 #[derive(Clone)]
 struct MemQueueLine {
+    cluster_id: u32,
+    core_id: u32,
+    lane_id: u32,
     store: bool,
     address: u32,
     size: u8,
     tag: u32,
-    lane: u32,
     data: Option<u32>,
     checked: bool,
 }
@@ -139,6 +142,7 @@ pub extern "C" fn cyclotron_init_rs(c_elfname: *const c_char) {
         "Cyclotron: created sim object with config: [clusters={} cores={} warps={} lanes={}]",
         num_clusters, config.num_cores, config.num_warps, config.num_lanes
     );
+
     let final_elfname = sim_isa.config.elf.as_path();
     println!("Cyclotron: loading ELF file: {}", final_elfname.display());
 
@@ -146,7 +150,7 @@ pub extern "C" fn cyclotron_init_rs(c_elfname: *const c_char) {
         sim_isa,
         issue_queue: Vec::new(),
         sim_be,
-        trace_memory_queue: VecDeque::new(),
+        trace_memory_queue: Vec::new(),
         pipeline_context: PipelineContext::new(config.num_lanes),
         cycles_after_cyclotron_finished: 0,
         prev_rtl_finished: vec![false; NUM_CLUSTERS * CORES_PER_CLUSTER],
@@ -156,6 +160,7 @@ pub extern "C" fn cyclotron_init_rs(c_elfname: *const c_char) {
     c.sim_be.top.reset();
 
     c.issue_queue = vec![VecDeque::new(); config.num_warps];
+    c.trace_memory_queue = vec![VecDeque::new(); NUM_CLUSTERS * CORES_PER_CLUSTER];
 
     let mut context = CELL.write().unwrap();
     if context.as_ref().is_some() {
@@ -667,6 +672,8 @@ pub unsafe fn cyclotron_backend_rs(
 #[no_mangle]
 /// Capture instruction and memory trace in RTL into a SQL database.
 pub unsafe extern "C" fn cyclotron_trace_rs(
+    cluster_id: u32,
+    core_id: u32,
     inst_valid: u8,
     inst_pc: u32,
     inst_warp_id: u32,
@@ -706,6 +713,7 @@ pub unsafe extern "C" fn cyclotron_trace_rs(
         .as_mut()
         .expect("DPI context not initialized!");
     let config = context.sim_isa.top.clusters[0].cores[0].conf().clone();
+    let global_core_id = cluster_id as usize * CORES_PER_CLUSTER + core_id as usize;
     let num_lanes = config.num_lanes;
 
     let _inst_rs1_data = unsafe { from_raw_parts(inst_rs1_data_vec, num_lanes) };
@@ -755,7 +763,9 @@ pub unsafe extern "C" fn cyclotron_trace_rs(
         // record dmem
         record_mem_bundle(
             conn_opt.as_ref().expect("trace connection not initialized"),
-            &mut context.trace_memory_queue,
+            &mut context.trace_memory_queue[global_core_id],
+            cluster_id,
+            core_id,
             dmem_req_valid,
             dmem_req_bits_store,
             dmem_req_bits_address,
@@ -771,7 +781,9 @@ pub unsafe extern "C" fn cyclotron_trace_rs(
         // record smem
         record_mem_bundle(
             conn_opt.as_ref().expect("trace connection not initialized"),
-            &mut context.trace_memory_queue,
+            &mut context.trace_memory_queue[global_core_id],
+            cluster_id,
+            core_id,
             smem_req_valid,
             smem_req_bits_store,
             smem_req_bits_address,
@@ -791,6 +803,8 @@ pub unsafe extern "C" fn cyclotron_trace_rs(
 fn record_mem_bundle(
     conn: &Connection,
     queue: &mut MemQueue,
+    cluster_id: u32,
+    core_id: u32,
     req_valid: &[u8],
     req_store: &[u8],
     req_address: &[u32],
@@ -815,11 +829,13 @@ fn record_mem_bundle(
         push_memory_queue(
             queue,
             MemQueueLine {
+                cluster_id,
+                core_id,
+                lane_id: i as u32,
                 store,
                 address,
                 size,
                 tag,
-                lane: i as u32,
                 data,
                 checked: false,
             },
@@ -827,19 +843,23 @@ fn record_mem_bundle(
     }
 
     // response
+    let mut any_valid_response = false;
     for i in 0..resp_valid.len() {
         if resp_valid[i] == 0 {
             continue;
         }
+        any_valid_response = true;
         let tag = resp_tag[i];
         let lane = i as u32;
         let data = resp_data[i];
         match_response_in_mem_queue(queue, tag, lane, data);
     }
 
-    let reqs_with_matched_resps = pop_oldest_reqs_in_mem_queue(queue);
-    for req in &reqs_with_matched_resps {
-        record_mem_req_to_db(conn, req, is_smem);
+    if any_valid_response {
+        let reqs_with_matched_resps = pop_oldest_reqs_in_mem_queue(queue);
+        for req in &reqs_with_matched_resps {
+            record_mem_req_to_db(conn, req, is_smem);
+        }
     }
 }
 
@@ -859,7 +879,7 @@ fn match_response_in_mem_queue(
         if line.checked {
             continue;
         }
-        if !(line.tag == resp_tag && line.lane == resp_lane) {
+        if !(line.tag == resp_tag && line.lane_id == resp_lane) {
             continue;
         }
 
@@ -903,10 +923,19 @@ fn record_mem_req_to_db(conn: &Connection, line: &MemQueueLine, is_smem: bool) {
     let mem = if is_smem { "smem" } else { "dmem" };
     conn.execute(
         &format!(
-            "INSERT INTO {mem} (store, address, size, data, lane)
-                                     VALUES (?1, ?2, ?3, ?4, ?5)"
+            "INSERT INTO {mem}
+                    (cluster_id, core_id, lane_id, store, address, size, data)
+                    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"
         ),
-        (line.store, line.address, line.size, data, line.lane),
+        (
+            line.cluster_id,
+            line.core_id,
+            line.lane_id,
+            line.store,
+            line.address,
+            line.size,
+            data,
+        ),
     )
     .expect("failed to insert to inst");
 }
@@ -933,12 +962,14 @@ fn create_new_db_overwrite() -> Connection {
 
     conn.execute(
         "CREATE TABLE dmem (
-                    id      INTEGER PRIMARY KEY AUTOINCREMENT,
-                    store   INTEGER NOT NULL CHECK (store IN (0,1)),
-                    address INTEGER NOT NULL,
-                    size    INTEGER NOT NULL,
-                    data    INTEGER NOT NULL,
-                    lane    INTEGER NOT NULL
+                    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                    cluster_id INTEGER NOT NULL,
+                    core_id    INTEGER NOT NULL,
+                    lane_id    INTEGER NOT NULL,
+                    store      INTEGER NOT NULL CHECK (store IN (0,1)),
+                    address    INTEGER NOT NULL,
+                    size       INTEGER NOT NULL,
+                    data       INTEGER NOT NULL
                 )",
         (),
     )
@@ -946,12 +977,14 @@ fn create_new_db_overwrite() -> Connection {
 
     conn.execute(
         "CREATE TABLE smem (
-                    id      INTEGER PRIMARY KEY AUTOINCREMENT,
-                    store   INTEGER NOT NULL CHECK (store IN (0,1)),
-                    address INTEGER NOT NULL,
-                    size    INTEGER NOT NULL,
-                    data    INTEGER NOT NULL,
-                    lane    INTEGER NOT NULL
+                    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                    cluster_id INTEGER NOT NULL,
+                    core_id    INTEGER NOT NULL,
+                    lane_id    INTEGER NOT NULL,
+                    store      INTEGER NOT NULL CHECK (store IN (0,1)),
+                    address    INTEGER NOT NULL,
+                    size       INTEGER NOT NULL,
+                    data       INTEGER NOT NULL
                 )",
         (),
     )
