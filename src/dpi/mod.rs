@@ -741,7 +741,7 @@ pub unsafe extern "C" fn cyclotron_trace_rs(
         }
 
         // record inst
-        if inst_valid == 0 {
+        if inst_valid != 0 {
             conn_opt
                 .as_ref()
                 .expect("trace connection not initialized")
