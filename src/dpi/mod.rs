@@ -765,6 +765,7 @@ pub unsafe extern "C" fn cyclotron_trace_rs(
             dmem_resp_valid,
             dmem_resp_bits_tag,
             dmem_resp_bits_data,
+            false,
         );
 
         // record smem
@@ -780,6 +781,7 @@ pub unsafe extern "C" fn cyclotron_trace_rs(
             smem_resp_valid,
             smem_resp_bits_tag,
             smem_resp_bits_data,
+            true,
         );
     });
 
@@ -798,6 +800,7 @@ fn record_mem_bundle(
     resp_valid: &[u8],
     resp_tag: &[u32],
     resp_data: &[u32],
+    is_smem: bool,
 ) {
     // request
     for i in 0..req_valid.len() {
@@ -836,7 +839,7 @@ fn record_mem_bundle(
 
     let reqs_with_matched_resps = pop_oldest_reqs_in_mem_queue(queue);
     for req in &reqs_with_matched_resps {
-        record_mem_req_to_db(conn, req);
+        record_mem_req_to_db(conn, req, is_smem);
     }
 }
 
@@ -895,11 +898,14 @@ fn pop_oldest_reqs_in_mem_queue(queue: &mut MemQueue) -> Vec<MemQueueLine> {
     oldest_checked_reqs
 }
 
-fn record_mem_req_to_db(conn: &Connection, line: &MemQueueLine) {
+fn record_mem_req_to_db(conn: &Connection, line: &MemQueueLine, is_smem: bool) {
     let data = line.data.unwrap_or(0);
+    let mem = if is_smem { "smem" } else { "dmem" };
     conn.execute(
-        "INSERT INTO dmem (store, address, size, data, lane)
-                            VALUES (?1, ?2, ?3, ?4, ?5)",
+        &format!(
+            "INSERT INTO {mem} (store, address, size, data, lane)
+                                     VALUES (?1, ?2, ?3, ?4, ?5)"
+        ),
         (line.store, line.address, line.size, data, line.lane),
     )
     .expect("failed to insert to inst");
