@@ -15,6 +15,7 @@ use std::ffi::CStr;
 use std::iter::zip;
 use std::os::raw::c_char;
 use std::path::PathBuf;
+use std::slice::from_raw_parts;
 use std::sync::RwLock;
 
 use env_logger::Builder;
@@ -25,11 +26,16 @@ const CORES_PER_CLUSTER: usize = 16;
 const NUM_CLUSTERS: usize = 16;
 
 struct Context {
-    sim_isa: Sim, // cyclotron instance for the ISA model
-    // holds fetch/decoded, but not issued, instructions
-    // to be used for diff-testing against RTL issue
+    /// cyclotron instance for the ISA model
+    sim_isa: Sim,
+    /// holds fetch/decoded, but not issued, instructions to be used for diff-testing against RTL
+    /// issue
     issue_queue: Vec<IssueQueue>,
-    sim_be: Sim, // cyclotron instance for the backend model
+    /// cyclotron instance for the backend model
+    sim_be: Sim,
+    // TODO: Separate per-core context to a struct
+    /// load/store queue used to match req-resp for memory tracing.  Per-core.
+    trace_memory_queue: Vec<MemQueue>,
     pipeline_context: PipelineContext,
     cycles_after_cyclotron_finished: usize,
     prev_rtl_finished: Vec<bool>,
@@ -62,6 +68,20 @@ struct IssueQueueLine {
     checked: bool,
 }
 type IssueQueue = VecDeque<IssueQueueLine>;
+
+#[derive(Clone)]
+struct MemQueueLine {
+    cluster_id: u32,
+    core_id: u32,
+    lane_id: u32,
+    store: bool,
+    address: u32,
+    size: u8,
+    tag: u32,
+    data: Option<u32>,
+    checked: bool,
+}
+type MemQueue = VecDeque<MemQueueLine>;
 
 /// Global singleton to maintain simulator context across independent DPI calls.
 static CELL: RwLock<Option<Context>> = RwLock::new(None);
@@ -122,6 +142,7 @@ pub extern "C" fn cyclotron_init_rs(c_elfname: *const c_char) {
         "Cyclotron: created sim object with config: [clusters={} cores={} warps={} lanes={}]",
         num_clusters, config.num_cores, config.num_warps, config.num_lanes
     );
+
     let final_elfname = sim_isa.config.elf.as_path();
     println!("Cyclotron: loading ELF file: {}", final_elfname.display());
 
@@ -129,6 +150,7 @@ pub extern "C" fn cyclotron_init_rs(c_elfname: *const c_char) {
         sim_isa,
         issue_queue: Vec::new(),
         sim_be,
+        trace_memory_queue: Vec::new(),
         pipeline_context: PipelineContext::new(config.num_lanes),
         cycles_after_cyclotron_finished: 0,
         prev_rtl_finished: vec![false; NUM_CLUSTERS * CORES_PER_CLUSTER],
@@ -138,6 +160,7 @@ pub extern "C" fn cyclotron_init_rs(c_elfname: *const c_char) {
     c.sim_be.top.reset();
 
     c.issue_queue = vec![VecDeque::new(); config.num_warps];
+    c.trace_memory_queue = vec![VecDeque::new(); NUM_CLUSTERS * CORES_PER_CLUSTER];
 
     let mut context = CELL.write().unwrap();
     if context.as_ref().is_some() {
@@ -649,62 +672,325 @@ pub unsafe fn cyclotron_backend_rs(
 #[no_mangle]
 /// Capture instruction and memory trace in RTL into a SQL database.
 pub unsafe extern "C" fn cyclotron_trace_rs(
-    valid: u8,
-    pc: u32,
-    warp_id: u32,
-    tmask: u32,
-    rs1_enable: u8,
-    rs1_address: u8,
-    rs1_data_raw: *const u32,
-    rs2_enable: u8,
-    rs2_address: u8,
-    rs2_data_raw: *const u32,
-    rs3_enable: u8,
-    rs3_address: u8,
-    rs3_data_raw: *const u32,
+    cluster_id: u32,
+    core_id: u32,
+    inst_valid: u8,
+    inst_pc: u32,
+    inst_warp_id: u32,
+    _inst_tmask: u32,
+    _inst_rs1_enable: u8,
+    _inst_rs1_address: u8,
+    inst_rs1_data_vec: *const u32,
+    _inst_rs2_enable: u8,
+    _inst_rs2_address: u8,
+    inst_rs2_data_vec: *const u32,
+    _inst_rs3_enable: u8,
+    _inst_rs3_address: u8,
+    inst_rs3_data_vec: *const u32,
+    dmem_req_valid_vec: *const u8,
+    dmem_req_bits_store_vec: *const u8,
+    dmem_req_bits_address_vec: *const u32,
+    dmem_req_bits_size_vec: *const u8,
+    dmem_req_bits_tag_vec: *const u32,
+    dmem_req_bits_data_vec: *const u32,
+    dmem_req_bits_mask_vec: *const u8,
+    dmem_resp_valid_vec: *const u8,
+    dmem_resp_bits_tag_vec: *const u32,
+    dmem_resp_bits_data_vec: *const u32,
+    smem_req_valid_vec: *const u8,
+    smem_req_bits_store_vec: *const u8,
+    smem_req_bits_address_vec: *const u32,
+    smem_req_bits_size_vec: *const u8,
+    smem_req_bits_tag_vec: *const u32,
+    smem_req_bits_data_vec: *const u32,
+    smem_req_bits_mask_vec: *const u8,
+    smem_resp_valid_vec: *const u8,
+    smem_resp_bits_tag_vec: *const u32,
+    smem_resp_bits_data_vec: *const u32,
 ) {
-    if valid == 0 {
-        return;
-    }
-
-    let context_guard = CELL.read().unwrap();
+    let mut context_guard = CELL.write().unwrap();
     let context = context_guard
-        .as_ref()
+        .as_mut()
         .expect("DPI context not initialized!");
     let config = context.sim_isa.top.clusters[0].cores[0].conf().clone();
+    let global_core_id = cluster_id as usize * CORES_PER_CLUSTER + core_id as usize;
+    let num_lanes = config.num_lanes;
 
-    let rs1_data = unsafe { std::slice::from_raw_parts(rs1_data_raw, config.num_lanes) };
-    let rs2_data = unsafe { std::slice::from_raw_parts(rs2_data_raw, config.num_lanes) };
-    let rs3_data = unsafe { std::slice::from_raw_parts(rs3_data_raw, config.num_lanes) };
-    // maybe convert these to Trace::Line?
+    let _inst_rs1_data = unsafe { from_raw_parts(inst_rs1_data_vec, num_lanes) };
+    let _inst_rs2_data = unsafe { from_raw_parts(inst_rs2_data_vec, num_lanes) };
+    let _inst_rs3_data = unsafe { from_raw_parts(inst_rs3_data_vec, num_lanes) };
+
+    let dmem_req_valid = unsafe { from_raw_parts(dmem_req_valid_vec, num_lanes) };
+    let dmem_req_bits_store = unsafe { from_raw_parts(dmem_req_bits_store_vec, num_lanes) };
+    let dmem_req_bits_address = unsafe { from_raw_parts(dmem_req_bits_address_vec, num_lanes) };
+    let dmem_req_bits_size = unsafe { from_raw_parts(dmem_req_bits_size_vec, num_lanes) };
+    let dmem_req_bits_tag = unsafe { from_raw_parts(dmem_req_bits_tag_vec, num_lanes) };
+    let dmem_req_bits_data = unsafe { from_raw_parts(dmem_req_bits_data_vec, num_lanes) };
+    let _dmem_req_bits_mask = unsafe { from_raw_parts(dmem_req_bits_mask_vec, num_lanes) };
+    let dmem_resp_valid = unsafe { from_raw_parts(dmem_resp_valid_vec, num_lanes) };
+    let dmem_resp_bits_tag = unsafe { from_raw_parts(dmem_resp_bits_tag_vec, num_lanes) };
+    let dmem_resp_bits_data = unsafe { from_raw_parts(dmem_resp_bits_data_vec, num_lanes) };
+
+    let smem_req_valid = unsafe { from_raw_parts(smem_req_valid_vec, num_lanes) };
+    let smem_req_bits_store = unsafe { from_raw_parts(smem_req_bits_store_vec, num_lanes) };
+    let smem_req_bits_address = unsafe { from_raw_parts(smem_req_bits_address_vec, num_lanes) };
+    let smem_req_bits_size = unsafe { from_raw_parts(smem_req_bits_size_vec, num_lanes) };
+    let smem_req_bits_tag = unsafe { from_raw_parts(smem_req_bits_tag_vec, num_lanes) };
+    let smem_req_bits_data = unsafe { from_raw_parts(smem_req_bits_data_vec, num_lanes) };
+    let _smem_req_bits_mask = unsafe { from_raw_parts(smem_req_bits_mask_vec, num_lanes) };
+    let smem_resp_valid = unsafe { from_raw_parts(smem_resp_valid_vec, num_lanes) };
+    let smem_resp_bits_tag = unsafe { from_raw_parts(smem_resp_bits_tag_vec, num_lanes) };
+    let smem_resp_bits_data = unsafe { from_raw_parts(smem_resp_bits_data_vec, num_lanes) };
 
     TRACE_CONN.with(|t| {
         let mut conn_opt = t.borrow_mut();
         if conn_opt.is_none() {
-            let trace_db_path = std::env::var("CYCLOTRON_TRACE_DB")
-                .unwrap_or("cyclotron_trace.sqlite".to_string());
-            let conn =
-                Connection::open(&trace_db_path).expect("failed to open sqlite trace database");
-            conn.execute(
-                "CREATE TABLE inst (
-                    id    INTEGER PRIMARY KEY AUTOINCREMENT,
-                    pc    INTEGER NOT NULL,
-                    warp  INTEGER
-                )",
-                (),
-            )
-            .expect("failed to create inst table");
-            *conn_opt = Some(conn);
+            *conn_opt = Some(create_new_db_overwrite());
         }
 
-        conn_opt
-            .as_ref()
-            .expect("trace connection not initialized")
-            .execute("INSERT INTO inst (pc, warp) VALUES (?1, ?2)", (pc, warp_id))
-            .expect("failed to insert to inst");
+        // record inst
+        if inst_valid != 0 {
+            conn_opt
+                .as_ref()
+                .expect("trace connection not initialized")
+                .execute(
+                    "INSERT INTO inst (pc, warp) VALUES (?1, ?2)",
+                    (inst_pc, inst_warp_id),
+                )
+                .expect("failed to insert to inst");
+        }
+
+        // record dmem
+        record_mem_bundle(
+            conn_opt.as_ref().expect("trace connection not initialized"),
+            &mut context.trace_memory_queue[global_core_id],
+            cluster_id,
+            core_id,
+            dmem_req_valid,
+            dmem_req_bits_store,
+            dmem_req_bits_address,
+            dmem_req_bits_size,
+            dmem_req_bits_tag,
+            dmem_req_bits_data,
+            dmem_resp_valid,
+            dmem_resp_bits_tag,
+            dmem_resp_bits_data,
+            false,
+        );
+
+        // record smem
+        record_mem_bundle(
+            conn_opt.as_ref().expect("trace connection not initialized"),
+            &mut context.trace_memory_queue[global_core_id],
+            cluster_id,
+            core_id,
+            smem_req_valid,
+            smem_req_bits_store,
+            smem_req_bits_address,
+            smem_req_bits_size,
+            smem_req_bits_tag,
+            smem_req_bits_data,
+            smem_resp_valid,
+            smem_resp_bits_tag,
+            smem_resp_bits_data,
+            true,
+        );
     });
 
     // TODO: create sql indices
+}
+
+fn record_mem_bundle(
+    conn: &Connection,
+    queue: &mut MemQueue,
+    cluster_id: u32,
+    core_id: u32,
+    req_valid: &[u8],
+    req_store: &[u8],
+    req_address: &[u32],
+    req_size: &[u8],
+    req_tag: &[u32],
+    req_data: &[u32],
+    resp_valid: &[u8],
+    resp_tag: &[u32],
+    resp_data: &[u32],
+    is_smem: bool,
+) {
+    // request
+    for i in 0..req_valid.len() {
+        if req_valid[i] == 0 {
+            continue;
+        }
+        let store = req_store[i] != 0;
+        let address = req_address[i];
+        let size = 1 << req_size[i];
+        let tag = req_tag[i];
+        let data = store.then_some(req_data[i]);
+        push_memory_queue(
+            queue,
+            MemQueueLine {
+                cluster_id,
+                core_id,
+                lane_id: i as u32,
+                store,
+                address,
+                size,
+                tag,
+                data,
+                checked: false,
+            },
+        );
+    }
+
+    // response
+    let mut any_valid_response = false;
+    for i in 0..resp_valid.len() {
+        if resp_valid[i] == 0 {
+            continue;
+        }
+        any_valid_response = true;
+        let tag = resp_tag[i];
+        let lane = i as u32;
+        let data = resp_data[i];
+        match_response_in_mem_queue(queue, tag, lane, data);
+    }
+
+    if any_valid_response {
+        let reqs_with_matched_resps = pop_oldest_reqs_in_mem_queue(queue);
+        for req in &reqs_with_matched_resps {
+            record_mem_req_to_db(conn, req, is_smem);
+        }
+    }
+}
+
+fn push_memory_queue(queue: &mut MemQueue, req: MemQueueLine) {
+    queue.push_back(req);
+}
+
+fn match_response_in_mem_queue(
+    queue: &mut MemQueue,
+    resp_tag: u32,
+    resp_lane: u32,
+    resp_data: u32,
+) {
+    // iter_mut() equals the enqueue order
+    let mut one_or_more_match = false;
+    for line in queue.iter_mut() {
+        if line.checked {
+            continue;
+        }
+        if !(line.tag == resp_tag && line.lane_id == resp_lane) {
+            continue;
+        }
+
+        if !line.store {
+            assert!(line.data.is_none(), "load req already has data?");
+            line.data = Some(resp_data);
+        }
+
+        line.checked = true;
+        one_or_more_match = true;
+        break;
+    }
+
+    if !one_or_more_match {
+        println!(
+            "mem trace fail: could not find a matching req for a resp with tag:{}",
+            resp_tag
+        );
+    }
+}
+
+/// Pop and return all matched lines at the front of the memory queue.
+fn pop_oldest_reqs_in_mem_queue(queue: &mut MemQueue) -> Vec<MemQueueLine> {
+    let mut oldest_checked_reqs: Vec<MemQueueLine> = Vec::new();
+    for line in queue.iter() {
+        if line.checked == true {
+            oldest_checked_reqs.push(line.clone());
+        } else {
+            break;
+        }
+    }
+    for _ in 0..oldest_checked_reqs.len() {
+        queue.pop_front();
+    }
+
+    oldest_checked_reqs
+}
+
+fn record_mem_req_to_db(conn: &Connection, line: &MemQueueLine, is_smem: bool) {
+    let data = line.data.unwrap_or(0);
+    let mem = if is_smem { "smem" } else { "dmem" };
+    conn.execute(
+        &format!(
+            "INSERT INTO {mem}
+                    (cluster_id, core_id, lane_id, store, address, size, data)
+                    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"
+        ),
+        (
+            line.cluster_id,
+            line.core_id,
+            line.lane_id,
+            line.store,
+            line.address,
+            line.size,
+            data,
+        ),
+    )
+    .expect("failed to insert to inst");
+}
+
+fn create_new_db_overwrite() -> Connection {
+    let db_path =
+        std::env::var("CYCLOTRON_TRACE_DB").unwrap_or("cyclotron_trace.sqlite".to_string());
+    match std::fs::remove_file(&db_path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => panic!("failed to remove existing trace database file {db_path}: {e}"),
+    }
+    let conn = Connection::open(&db_path).expect("failed to open sqlite trace database");
+
+    conn.execute(
+        "CREATE TABLE inst (
+                    id    INTEGER PRIMARY KEY AUTOINCREMENT,
+                    pc    INTEGER NOT NULL,
+                    warp  INTEGER NOT NULL
+                )",
+        (),
+    )
+    .expect("failed to create inst table");
+
+    conn.execute(
+        "CREATE TABLE dmem (
+                    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                    cluster_id INTEGER NOT NULL,
+                    core_id    INTEGER NOT NULL,
+                    lane_id    INTEGER NOT NULL,
+                    store      INTEGER NOT NULL CHECK (store IN (0,1)),
+                    address    INTEGER NOT NULL,
+                    size       INTEGER NOT NULL,
+                    data       INTEGER NOT NULL
+                )",
+        (),
+    )
+    .expect("failed to create dmem table");
+
+    conn.execute(
+        "CREATE TABLE smem (
+                    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                    cluster_id INTEGER NOT NULL,
+                    core_id    INTEGER NOT NULL,
+                    lane_id    INTEGER NOT NULL,
+                    store      INTEGER NOT NULL CHECK (store IN (0,1)),
+                    address    INTEGER NOT NULL,
+                    size       INTEGER NOT NULL,
+                    data       INTEGER NOT NULL
+                )",
+        (),
+    )
+    .expect("failed to create smem table");
+
+    conn
 }
 
 #[no_mangle]
@@ -718,13 +1004,13 @@ pub unsafe extern "C" fn cyclotron_difftest_reg_rs(
     tmask: u32,
     rs1_enable: u8,
     rs1_address: u8,
-    rs1_data_raw: *const u32,
+    rs1_data_vec: *const u32,
     rs2_enable: u8,
     rs2_address: u8,
-    rs2_data_raw: *const u32,
+    rs2_data_vec: *const u32,
     rs3_enable: u8,
     rs3_address: u8,
-    rs3_data_raw: *const u32,
+    rs3_data_vec: *const u32,
 ) {
     let mut context_guard = CELL.write().unwrap();
     let context = context_guard
@@ -745,9 +1031,9 @@ pub unsafe extern "C" fn cyclotron_difftest_reg_rs(
     if valid == 0 {
         return;
     }
-    let rs1_data = unsafe { std::slice::from_raw_parts(rs1_data_raw, config.num_lanes) };
-    let rs2_data = unsafe { std::slice::from_raw_parts(rs2_data_raw, config.num_lanes) };
-    let rs3_data = unsafe { std::slice::from_raw_parts(rs3_data_raw, config.num_lanes) };
+    let rs1_data = unsafe { std::slice::from_raw_parts(rs1_data_vec, config.num_lanes) };
+    let rs2_data = unsafe { std::slice::from_raw_parts(rs2_data_vec, config.num_lanes) };
+    let rs3_data = unsafe { std::slice::from_raw_parts(rs3_data_vec, config.num_lanes) };
 
     let isq = &mut context.issue_queue[warp_id as usize];
 
@@ -761,7 +1047,7 @@ pub unsafe extern "C" fn cyclotron_difftest_reg_rs(
 
     // iter_mut() order equals the enqueue order, which equals the program order.  This way we
     // match RTL against the oldest same-PC model instruction
-    let mut checked = false;
+    let mut one_or_more_match = false;
     for line in isq.iter_mut() {
         if line.inst.pc != pc {
             continue;
@@ -826,11 +1112,11 @@ pub unsafe extern "C" fn cyclotron_difftest_reg_rs(
         }
 
         line.checked = true;
-        checked = true;
+        one_or_more_match = true;
         break;
     }
 
-    if !checked {
+    if !one_or_more_match {
         println!(
             "DIFFTEST fail: pc mismatch: rtl reached instruction unseen by model, pc:{:x}, warp:{}",
             pc, warp_id
