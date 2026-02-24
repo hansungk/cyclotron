@@ -1068,6 +1068,10 @@ pub unsafe extern "C" fn cyclotron_difftest_reg_rs(
         }
 
         let compare_reg_addr_and_exit = |_rtl: u8, _model: u8, _name: &str| {
+            // register address check is disabled due to physical register renaming not being
+            // implemented in cyclotron.  How registers are renamed is not specified in the ISA,
+            // making hardening this in cyclotron awkward
+            //
             // if rtl != model {
             //     println!(
             //         "DIFFTEST fail: {} address mismatch, pc:{:x}, warp: {}, rtl:{}, model:{}",
