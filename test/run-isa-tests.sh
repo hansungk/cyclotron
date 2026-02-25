@@ -22,8 +22,6 @@ mkdir -p logs
 failures=0
 passes=0
 
-cargo build --release >/dev/null
-
 for isatest in test/isa-tests/*; do
     test -x "$isatest" || continue
     name=$(basename "$isatest")
