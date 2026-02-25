@@ -4,13 +4,13 @@ use crate::muon::scheduler::{Scheduler, SchedulerWriteback};
 use crate::muon::warp::{ExWriteback, MemRequest, MemResponse};
 use crate::neutrino::neutrino::Neutrino;
 use crate::utils::BitSlice;
+use half::bf16;
 use log::{debug, error};
 use num_derive::FromPrimitive;
 use num_traits::ToPrimitive;
 pub use num_traits::WrappingAdd;
 use phf::phf_map;
 use std::fmt::Debug;
-use half::bf16;
 
 #[derive(Debug, Clone)]
 pub struct Opcode;
@@ -225,7 +225,8 @@ impl ExecuteUnit {
             let result = op(
                 bf16::from_bits((a & 0xffff) as u16),
                 bf16::from_bits((b & 0xffff) as u16),
-            ).to_bits();
+            )
+            .to_bits();
             if [0xffc0, 0x7fff, 0xffff].contains(&result) {
                 0x7fc0 // canonical qNaN in bfloat16 encoding
             } else {
@@ -688,7 +689,10 @@ impl ExecuteUnit {
         // lane id of first active thread
         let first_lid = tmask.trailing_zeros() as usize;
 
-        debug!("ISSUE: {}, tmask: {:b}", issued, tmask);
+        debug!(
+            "ISSUE: core:{}, warp:{}, {}, tmask: {:b}",
+            cid, wid, issued, tmask
+        );
 
         let empty = vec![None::<u32>; num_lanes];
         let empty_mem = vec![None::<MemRequest>; num_lanes];
