@@ -4,7 +4,7 @@ use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::ops::AddAssign;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
@@ -161,6 +161,7 @@ pub struct GraphBackpressureRecord {
 }
 
 pub struct StatsLog {
+    // Global logger writes use interior mutability from static context.
     writer: Mutex<BufWriter<File>>,
 }
 
@@ -182,25 +183,23 @@ impl StatsLog {
     }
 }
 
-static STATS_LOGGER: OnceLock<Option<Arc<StatsLog>>> = OnceLock::new();
-static GRAPH_LOGGER: OnceLock<Option<Arc<StatsLog>>> = OnceLock::new();
+static STATS_LOGGER: OnceLock<Option<StatsLog>> = OnceLock::new();
+static GRAPH_LOGGER: OnceLock<Option<StatsLog>> = OnceLock::new();
 
-fn create_stats_logger() -> Option<Arc<StatsLog>> {
+fn create_stats_logger() -> Option<StatsLog> {
     perf_run_dir().and_then(|run_dir| {
         let path = run_dir.join("stats.jsonl");
-        File::create(path).ok().map(|file| {
-            Arc::new(StatsLog {
-                writer: Mutex::new(BufWriter::new(file)),
-            })
+        File::create(path).ok().map(|file| StatsLog {
+            writer: Mutex::new(BufWriter::new(file)),
         })
     })
 }
 
-pub fn stats_logger() -> Option<Arc<StatsLog>> {
-    STATS_LOGGER.get_or_init(|| create_stats_logger()).clone()
+pub fn stats_logger() -> Option<&'static StatsLog> {
+    STATS_LOGGER.get_or_init(create_stats_logger).as_ref()
 }
 
-fn create_graph_logger() -> Option<Arc<StatsLog>> {
+fn create_graph_logger() -> Option<StatsLog> {
     let enabled = env::var("CYCLOTRON_GRAPH_LOG")
         .ok()
         .map(|val| {
@@ -213,16 +212,14 @@ fn create_graph_logger() -> Option<Arc<StatsLog>> {
     }
     perf_run_dir().and_then(|run_dir| {
         let path = run_dir.join("graph_backpressure.jsonl");
-        File::create(path).ok().map(|file| {
-            Arc::new(StatsLog {
-                writer: Mutex::new(BufWriter::new(file)),
-            })
+        File::create(path).ok().map(|file| StatsLog {
+            writer: Mutex::new(BufWriter::new(file)),
         })
     })
 }
 
-pub fn graph_logger() -> Option<Arc<StatsLog>> {
-    GRAPH_LOGGER.get_or_init(|| create_graph_logger()).clone()
+pub fn graph_logger() -> Option<&'static StatsLog> {
+    GRAPH_LOGGER.get_or_init(create_graph_logger).as_ref()
 }
 
 pub fn aggregate_summaries(per_core: &[CorePerfSummary]) -> AggregatePerfSummary {
