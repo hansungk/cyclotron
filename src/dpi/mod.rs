@@ -754,8 +754,9 @@ pub unsafe extern "C" fn cyclotron_trace_rs(
                 .as_ref()
                 .expect("trace connection not initialized")
                 .execute(
-                    "INSERT INTO inst (pc, warp) VALUES (?1, ?2)",
-                    (inst_pc, inst_warp_id),
+                    "INSERT INTO inst (cluster_id, core_id, warp, pc)
+                                      VALUES (?1, ?2, ?3, ?4)",
+                    (cluster_id, core_id, inst_warp_id, inst_pc),
                 )
                 .expect("failed to insert to inst");
         }
@@ -953,8 +954,10 @@ fn create_new_db_overwrite() -> Connection {
     conn.execute(
         "CREATE TABLE inst (
                     id    INTEGER PRIMARY KEY AUTOINCREMENT,
-                    pc    INTEGER NOT NULL,
-                    warp  INTEGER NOT NULL
+                    cluster_id INTEGER NOT NULL,
+                    core_id    INTEGER NOT NULL,
+                    warp       INTEGER NOT NULL,
+                    pc         INTEGER NOT NULL
                 )",
         (),
     )
@@ -1259,7 +1262,7 @@ pub unsafe extern "C" fn profile_perf_counters_rs(
     println!("└─ with issued insts: {} ({:.2}%)", cycles_issued, percent(cycles_issued));
     println!("Per-warp cycles:");
     println!("├─ with decoded insts [warp 0]: {}", per_warp_cycles_decoded[0]);
-    println!("├─ avg. active warps: {}", avg_active_warps);
+    println!("├─ avg. active warps: {:.2}", avg_active_warps);
     println!("├─ avg. stalls due to write-after-write: {:.2}", avg_warp_stalls_waw);
     println!("├─ avg. stalls due to write-after-read:  {:.2}", avg_warp_stalls_war);
     println!("└─ avg. stalls due to busy FUs: {:.2}", avg_warp_stalls_busy);
