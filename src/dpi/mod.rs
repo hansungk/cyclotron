@@ -133,8 +133,6 @@ pub extern "C" fn cyclotron_init_rs(c_elfname: *const c_char) {
     let arg = Some(cyclotron_args);
     let sim_isa = crate::ui::make_sim(None, &arg);
     let sim_be = crate::ui::make_sim(None, &arg);
-    assert_single_core(&sim_isa);
-    assert_single_core(&sim_be);
 
     let config = sim_isa.top.clusters[0].cores[0].conf().clone();
     let num_clusters = sim_isa.top.clusters.len();
@@ -269,9 +267,7 @@ pub unsafe extern "C" fn cyclotron_gmem_rs(
         .as_mut()
         .expect("DPI context not initialized!");
     let sim = &mut context.sim_be;
-
-    let core = &mut sim.top.clusters[0].cores[0];
-    let num_lanes = core.conf().num_lanes;
+    let num_lanes = sim.top.clusters[0].cores[0].conf().num_lanes;
 
     let req_valid = std::slice::from_raw_parts(req_valid_ptr, num_lanes);
     let req_ready = std::slice::from_raw_parts_mut(req_ready_ptr, num_lanes);
@@ -391,6 +387,7 @@ pub unsafe extern "C" fn cyclotron_frontend_rs(
         .expect("DPI context not initialized!");
     let sim = &mut context.sim_isa;
 
+    assert_single_core(sim);
     let core = &mut sim.top.clusters[0].cores[0];
     let config = core.conf().clone();
 
@@ -515,6 +512,7 @@ pub unsafe fn cyclotron_backend_rs(
         .as_mut()
         .expect("DPI context not initialized!");
     let sim = &mut context.sim_be;
+    assert_single_core(sim);
     let cluster = &mut sim.top.clusters[0];
     let core = &mut cluster.cores[0];
     // let config = *core.conf();
@@ -712,9 +710,8 @@ pub unsafe extern "C" fn cyclotron_trace_rs(
     let context = context_guard
         .as_mut()
         .expect("DPI context not initialized!");
-    let config = context.sim_isa.top.clusters[0].cores[0].conf().clone();
+    let num_lanes = context.sim_isa.top.clusters[0].cores[0].conf().num_lanes;
     let global_core_id = cluster_id as usize * CORES_PER_CLUSTER + core_id as usize;
-    let num_lanes = config.num_lanes;
 
     let _inst_rs1_data = unsafe { from_raw_parts(inst_rs1_data_vec, num_lanes) };
     let _inst_rs2_data = unsafe { from_raw_parts(inst_rs2_data_vec, num_lanes) };
