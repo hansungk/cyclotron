@@ -20,6 +20,18 @@ pub struct Sim {
 }
 
 impl Sim {
+    fn write_timing_summary(&self) {
+        if self.config.timing {
+            let summaries = self
+                .top
+                .clusters
+                .iter()
+                .flat_map(|cluster| cluster.cores.iter().map(|core| core.timing_summary()))
+                .collect::<Vec<_>>();
+            crate::sim::perf_log::write_summary(summaries);
+        }
+    }
+
     pub fn new(
         sim_config: SimConfig,
         muon_config: MuonConfig,
@@ -72,29 +84,13 @@ impl Sim {
         for cycle in 0..self.top.timeout {
             if self.top.finished() {
                 println!("simulation finished after {} cycles", cycle + 1);
-                if self.config.timing {
-                    let summaries = self
-                        .top
-                        .clusters
-                        .iter()
-                        .flat_map(|cluster| cluster.cores.iter().map(|core| core.timing_summary()))
-                        .collect::<Vec<_>>();
-                    crate::sim::perf_log::write_summary(summaries);
-                }
+                self.write_timing_summary();
                 return self.check_tohost();
             }
             self.top.tick_one();
         }
 
-        if self.config.timing {
-            let summaries = self
-                .top
-                .clusters
-                .iter()
-                .flat_map(|cluster| cluster.cores.iter().map(|core| core.timing_summary()))
-                .collect::<Vec<_>>();
-            crate::sim::perf_log::write_summary(summaries);
-        }
+        self.write_timing_summary();
 
         Err(0)
     }

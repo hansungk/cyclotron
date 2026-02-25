@@ -251,13 +251,30 @@ impl Warp {
 
         scheduler.state_mut().thread_masks[self.wid] = tmask;
 
-        if decoded.opcode == Opcode::LOAD || decoded.opcode == Opcode::STORE {
-            if self.route_mem_to_smem(&decoded) {
-                if self
-                    .issue_smem_request(
+        match decoded.opcode {
+            Opcode::LOAD | Opcode::STORE => {
+                if self.route_mem_to_smem(&decoded) {
+                    if self
+                        .issue_smem_request(
+                            decoded.opcode,
+                            decoded.f3,
+                            decoded.opcode == Opcode::LOAD,
+                            decoded.rs1_addr,
+                            decoded.imm32,
+                            tmask,
+                            scheduler,
+                            timing_model,
+                            now,
+                        )
+                        .is_err()
+                    {
+                        return Ok(None);
+                    }
+                } else if self
+                    .issue_gmem_request(
                         decoded.opcode,
+                        decoded.opext,
                         decoded.f3,
-                        decoded.opcode == Opcode::LOAD,
                         decoded.rs1_addr,
                         decoded.imm32,
                         tmask,
@@ -269,51 +286,35 @@ impl Warp {
                 {
                     return Ok(None);
                 }
-            } else if self
-                .issue_gmem_request(
-                    decoded.opcode,
-                    decoded.opext,
-                    decoded.f3,
-                    decoded.rs1_addr,
-                    decoded.imm32,
-                    tmask,
-                    scheduler,
-                    timing_model,
-                    now,
-                )
-                .is_err()
-            {
-                return Ok(None);
             }
-        }
-
-        if decoded.opcode == Opcode::MISC_MEM {
-            let active_lanes = tmask.count_ones();
-            if active_lanes > 0 {
-                let flush_req = if decoded.f3 == 1 {
-                    GmemRequest::new_flush_l0(self.wid, 1)
-                } else {
-                    GmemRequest::new_flush_l1(self.wid, 1)
-                };
-                if timing_model
-                    .issue_gmem_request(now, self.wid, flush_req, scheduler)
-                    .is_err()
-                {
-                    return Ok(None);
+            Opcode::MISC_MEM => {
+                let active_lanes = tmask.count_ones();
+                if active_lanes > 0 {
+                    let flush_req = if decoded.f3 == 1 {
+                        GmemRequest::new_flush_l0(self.wid, 1)
+                    } else {
+                        GmemRequest::new_flush_l1(self.wid, 1)
+                    };
+                    if timing_model
+                        .issue_gmem_request(now, self.wid, flush_req, scheduler)
+                        .is_err()
+                    {
+                        return Ok(None);
+                    }
                 }
             }
-        }
-
-        if decoded.opcode == Opcode::SYSTEM && decoded.f3 != 0 {
-            let is_write = match decoded.f3 {
-                1 | 5 => true,                  // csrrw / csrrwi
-                2 | 3 => decoded.rs1_addr != 0, // csrrs / csrrc
-                6 | 7 => decoded.csr_imm != 0,  // csrrsi / csrrci
-                _ => false,
-            };
-            if is_write {
-                timing_model.notify_csr_write(now, decoded.imm32);
+            Opcode::SYSTEM if decoded.f3 != 0 => {
+                let is_write = match decoded.f3 {
+                    1 | 5 => true,                  // csrrw / csrrwi
+                    2 | 3 => decoded.rs1_addr != 0, // csrrs / csrrc
+                    6 | 7 => decoded.csr_imm != 0,  // csrrsi / csrrci
+                    _ => false,
+                };
+                if is_write {
+                    timing_model.notify_csr_write(now, decoded.imm32);
+                }
             }
+            _ => {}
         }
 
         let issued = self.collect(&uop);
