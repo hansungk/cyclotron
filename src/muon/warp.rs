@@ -14,6 +14,7 @@ use crate::sim::log::Logger;
 use crate::timeflow::{GmemRequest, SmemRequest};
 use crate::timeq::Cycle;
 use crate::utils::BitSlice;
+use log::warn;
 use std::fmt::Debug;
 use std::fmt::{Display, Formatter};
 use std::iter::zip;
@@ -89,6 +90,17 @@ pub struct ExecErr {
     pub pc: u32,
     pub warp_id: usize,
     pub message: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct TimedMemIssue {
+    opcode: u8,
+    opext: u8,
+    rs1_addr: u8,
+    imm32: u32,
+    active_lanes: u32,
+    bytes_per_lane: u32,
+    lane_addrs: Vec<u64>,
 }
 
 impl Writeback {
@@ -253,38 +265,20 @@ impl Warp {
 
         match decoded.opcode {
             Opcode::LOAD | Opcode::STORE => {
-                if self.route_mem_to_smem(&decoded) {
-                    if self
-                        .issue_smem_request(
-                            decoded.opcode,
-                            decoded.f3,
-                            decoded.opcode == Opcode::LOAD,
-                            decoded.rs1_addr,
-                            decoded.imm32,
-                            tmask,
-                            scheduler,
-                            timing_model,
-                            now,
-                        )
+                if let Some(issue) = self.build_timed_mem_issue(&decoded, tmask) {
+                    if self.route_mem_to_smem(&decoded) {
+                        if self
+                            .issue_smem_request(&issue, scheduler, timing_model, now)
+                            .is_err()
+                        {
+                            return Ok(None);
+                        }
+                    } else if self
+                        .issue_gmem_request(&issue, scheduler, timing_model, now)
                         .is_err()
                     {
                         return Ok(None);
                     }
-                } else if self
-                    .issue_gmem_request(
-                        decoded.opcode,
-                        decoded.opext,
-                        decoded.f3,
-                        decoded.rs1_addr,
-                        decoded.imm32,
-                        tmask,
-                        scheduler,
-                        timing_model,
-                        now,
-                    )
-                    .is_err()
-                {
-                    return Ok(None);
                 }
             }
             Opcode::MISC_MEM => {
@@ -547,37 +541,58 @@ impl Warp {
         }
     }
 
-    fn issue_gmem_request(
-        &self,
-        opcode: u8,
-        opext: u8,
-        f3: u8,
-        rs1_addr: u8,
-        imm32: u32,
-        tmask: u32,
-        scheduler: &mut Scheduler,
-        timing_model: &mut CoreTimingModel,
-        now: Cycle,
-    ) -> Result<(), ()> {
-        if opext == 1 {
-            return Ok(());
-        }
-        if opcode != Opcode::LOAD && opcode != Opcode::STORE {
-            return Ok(());
+    fn build_timed_mem_issue(&self, decoded: &DecodedInst, tmask: u32) -> Option<TimedMemIssue> {
+        if decoded.opcode != Opcode::LOAD && decoded.opcode != Opcode::STORE {
+            warn!(
+                "warp {} mem issue requested for non-memory opcode=0x{:02x}",
+                self.wid, decoded.opcode
+            );
+            return None;
         }
 
         let active_lanes = tmask.count_ones();
         if active_lanes == 0 {
-            return Ok(());
+            return None;
         }
 
-        let lane_addrs = self.collect_lane_addrs(rs1_addr, imm32, tmask);
-        let bytes_per_lane = 1u32 << (f3 & 3);
-        let total_bytes = bytes_per_lane.saturating_mul(active_lanes);
-        let mut request =
-            GmemRequest::new(self.wid, total_bytes.max(1), active_lanes, opcode == Opcode::LOAD);
-        request.addr = lane_addrs.iter().copied().min().unwrap_or(0);
-        request.lane_addrs = Some(lane_addrs);
+        let bytes_per_lane = 1u32 << (decoded.f3 & 3);
+        let lane_addrs = self.collect_lane_addrs(decoded.rs1_addr, decoded.imm32, tmask);
+
+        Some(TimedMemIssue {
+            opcode: decoded.opcode,
+            opext: decoded.opext,
+            rs1_addr: decoded.rs1_addr,
+            imm32: decoded.imm32,
+            active_lanes,
+            bytes_per_lane,
+            lane_addrs,
+        })
+    }
+
+    fn issue_gmem_request(
+        &self,
+        issue: &TimedMemIssue,
+        scheduler: &mut Scheduler,
+        timing_model: &mut CoreTimingModel,
+        now: Cycle,
+    ) -> Result<(), ()> {
+        debug_assert!(issue.opcode == Opcode::LOAD || issue.opcode == Opcode::STORE);
+        if issue.opext == 1 {
+            warn!(
+                "warp {} smem-routed request reached gmem issuer (opcode=0x{:02x}, rs1={}, imm={})",
+                self.wid, issue.opcode, issue.rs1_addr, issue.imm32
+            );
+            return Ok(());
+        }
+        let total_bytes = issue.bytes_per_lane.saturating_mul(issue.active_lanes);
+        let mut request = GmemRequest::new(
+            self.wid,
+            total_bytes.max(1),
+            issue.active_lanes,
+            issue.opcode == Opcode::LOAD,
+        );
+        request.addr = issue.lane_addrs.iter().copied().min().unwrap_or(0);
+        request.lane_addrs = Some(issue.lane_addrs.clone());
 
         timing_model
             .issue_gmem_request(now, self.wid, request, scheduler)
@@ -603,33 +618,30 @@ impl Warp {
 
     fn issue_smem_request(
         &self,
-        opcode: u8,
-        f3: u8,
-        is_load: bool,
-        rs1_addr: u8,
-        imm32: u32,
-        tmask: u32,
+        issue: &TimedMemIssue,
         scheduler: &mut Scheduler,
         timing_model: &mut CoreTimingModel,
         now: Cycle,
     ) -> Result<(), ()> {
-        if opcode != Opcode::LOAD && opcode != Opcode::STORE {
+        debug_assert!(issue.opcode == Opcode::LOAD || issue.opcode == Opcode::STORE);
+        if issue.opext != 1 {
+            warn!(
+                "warp {} gmem-routed request reached smem issuer (opcode=0x{:02x}, rs1={}, imm={})",
+                self.wid, issue.opcode, issue.rs1_addr, issue.imm32
+            );
             return Ok(());
         }
-
-        let active_lanes = tmask.count_ones();
-        if active_lanes == 0 {
-            return Ok(());
-        }
-
-        let lane_addrs = self.collect_lane_addrs(rs1_addr, imm32, tmask);
-        let bytes_per_lane = 1u32 << (f3 & 3);
-        let total_bytes = bytes_per_lane.saturating_mul(active_lanes);
+        let total_bytes = issue.bytes_per_lane.saturating_mul(issue.active_lanes);
         let bank = self.wid;
-        let mut request =
-            SmemRequest::new(self.wid, total_bytes.max(1), active_lanes, !is_load, bank);
-        request.addr = lane_addrs.iter().copied().min().unwrap_or(0);
-        request.lane_addrs = Some(lane_addrs);
+        let mut request = SmemRequest::new(
+            self.wid,
+            total_bytes.max(1),
+            issue.active_lanes,
+            issue.opcode == Opcode::STORE,
+            bank,
+        );
+        request.addr = issue.lane_addrs.iter().copied().min().unwrap_or(0);
+        request.lane_addrs = Some(issue.lane_addrs.clone());
 
         timing_model
             .issue_smem_request(now, self.wid, request, scheduler)
