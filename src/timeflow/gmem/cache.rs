@@ -113,4 +113,3 @@ impl CacheTagArray {
         order.insert(0, way);
     }
 }
-

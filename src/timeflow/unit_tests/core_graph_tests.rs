@@ -1,7 +1,7 @@
 use crate::timeflow::core_graph::CoreGraphConfig;
 use crate::timeflow::{
-    CoreGraph, ExecUnitKind, FenceRequest, GmemCompletion, GmemRequest, IcacheRequest,
-    SmemRequest, WritebackPayload,
+    CoreGraph, ExecUnitKind, FenceRequest, GmemCompletion, GmemRequest, IcacheRequest, SmemRequest,
+    WritebackPayload,
 };
 
 fn zero_smem_latency(cfg: &mut CoreGraphConfig) {
@@ -24,7 +24,7 @@ where
     } else {
         None
     };
-    CoreGraph::new(cfg, num_warps, cluster)
+    CoreGraph::new(cfg, num_warps, cluster, None)
 }
 
 #[test]

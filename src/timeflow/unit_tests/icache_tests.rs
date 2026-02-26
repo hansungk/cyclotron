@@ -31,7 +31,9 @@ fn icache_queue_full_rejects() {
     let req0 = IcacheRequest::new(0, 0x1000, 8);
     icache.issue(0, req0).expect("first miss should accept");
     let req1 = IcacheRequest::new(1, 0x2000, 8);
-    let err = icache.issue(0, req1).expect_err("second miss should reject");
+    let err = icache
+        .issue(0, req1)
+        .expect_err("second miss should reject");
     assert!(err.retry_at > 0);
 }
 

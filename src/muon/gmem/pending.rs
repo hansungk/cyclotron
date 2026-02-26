@@ -1,7 +1,9 @@
 use std::collections::VecDeque;
 
 use crate::muon::scheduler::Scheduler;
-use crate::timeflow::{lsu::LsuPayload, FenceRequest, GmemReject, SmemIssue, SmemReject, WritebackPayload};
+use crate::timeflow::{
+    lsu::LsuPayload, FenceRequest, GmemReject, SmemIssue, SmemReject, WritebackPayload,
+};
 use crate::timeq::Cycle;
 
 use super::{CoreTimingModel, PendingClusterIssue};
@@ -323,12 +325,7 @@ impl CoreTimingModel {
             .map(|entry| entry.is_some())
             .unwrap_or(false);
         let execute_pending = self.pending_execute.get(warp).copied().flatten().is_some();
-        if !gmem_pending
-            && !smem_pending
-            && !icache_pending
-            && !fence_pending
-            && !execute_pending
-        {
+        if !gmem_pending && !smem_pending && !icache_pending && !fence_pending && !execute_pending {
             scheduler.clear_resource_wait(warp);
         }
     }

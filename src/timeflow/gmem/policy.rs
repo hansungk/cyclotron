@@ -101,4 +101,3 @@ pub(crate) fn hash_u64(mut x: u64) -> u64 {
     x ^= x >> 33;
     x
 }
-

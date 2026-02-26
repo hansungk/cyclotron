@@ -1,9 +1,9 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-use crate::timeflow::types::{LinkId, NodeId};
-use crate::timeq::{Backpressure, Cycle, ServiceRequest, ServiceResult, Ticket, normalize_retry};
 use crate::sim::perf_log;
+use crate::timeflow::types::{LinkId, NodeId};
+use crate::timeq::{normalize_retry, Backpressure, Cycle, ServiceRequest, ServiceResult, Ticket};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LinkBackpressure {
@@ -195,6 +195,7 @@ impl<T> GraphNode<T> {
 pub struct FlowGraph<T> {
     nodes: Vec<GraphNode<T>>,
     edges: Vec<Edge<T>>,
+    perf_log_session: Option<Arc<perf_log::PerfLogSession>>,
 }
 
 impl<T: Send + Sync + 'static> FlowGraph<T> {
@@ -202,7 +203,15 @@ impl<T: Send + Sync + 'static> FlowGraph<T> {
         Self {
             nodes: Vec::new(),
             edges: Vec::new(),
+            perf_log_session: None,
         }
+    }
+
+    pub fn set_perf_log_session(
+        &mut self,
+        perf_log_session: Option<Arc<perf_log::PerfLogSession>>,
+    ) {
+        self.perf_log_session = perf_log_session;
     }
 
     pub fn add_node<N>(&mut self, node: N) -> NodeId
@@ -349,44 +358,44 @@ impl<T: Send + Sync + 'static> FlowGraph<T> {
                         self.edges[edge_id].stats.last_delivery_cycle = Some(now);
                         self.edges[edge_id].next_retry_cycle = now;
                     }
-                Err(bp) => {
-                    let retry_at = match &bp {
-                        Backpressure::Busy { available_at, .. } => {
-                            normalize_retry(now, *available_at)
-                        }
-                        Backpressure::QueueFull { .. } => normalize_retry(now, now),
-                    };
-
-                    if let Some(logger) = perf_log::graph_logger() {
-                        let (reason, available_at, capacity) = match &bp {
+                    Err(bp) => {
+                        let retry_at = match &bp {
                             Backpressure::Busy { available_at, .. } => {
-                                ("busy".to_string(), Some(*available_at), None)
+                                normalize_retry(now, *available_at)
                             }
-                            Backpressure::QueueFull { capacity, .. } => {
-                                ("queue_full".to_string(), None, Some(*capacity))
-                            }
+                            Backpressure::QueueFull { .. } => normalize_retry(now, now),
                         };
-                        let record = perf_log::GraphBackpressureRecord {
-                            cycle: now,
-                            edge: self.edges[edge_id]._name.clone(),
-                            src: self.nodes[self.edges[edge_id].src].name.clone(),
-                            dst: self.nodes[self.edges[edge_id].dst].name.clone(),
-                            reason,
-                            retry_at,
-                            available_at,
-                            capacity,
-                            size_bytes: ticket.size_bytes(),
-                        };
-                        logger.write_json(&record);
-                    }
 
-                    let request = bp.into_request();
-                    let restored = LinkEntry::from_parts(request, ticket);
-                    self.edges[edge_id].buffer.push_front(restored);
-                    self.edges[edge_id].stats.downstream_backpressure += 1;
-                    self.edges[edge_id].next_retry_cycle = retry_at;
-                    break;
-                }
+                        if let Some(session) = &self.perf_log_session {
+                            let (reason, available_at, capacity) = match &bp {
+                                Backpressure::Busy { available_at, .. } => {
+                                    ("busy".to_string(), Some(*available_at), None)
+                                }
+                                Backpressure::QueueFull { capacity, .. } => {
+                                    ("queue_full".to_string(), None, Some(*capacity))
+                                }
+                            };
+                            let record = perf_log::GraphBackpressureRecord {
+                                cycle: now,
+                                edge: self.edges[edge_id]._name.clone(),
+                                src: self.nodes[self.edges[edge_id].src].name.clone(),
+                                dst: self.nodes[self.edges[edge_id].dst].name.clone(),
+                                reason,
+                                retry_at,
+                                available_at,
+                                capacity,
+                                size_bytes: ticket.size_bytes(),
+                            };
+                            session.write_graph_backpressure(&record);
+                        }
+
+                        let request = bp.into_request();
+                        let restored = LinkEntry::from_parts(request, ticket);
+                        self.edges[edge_id].buffer.push_front(restored);
+                        self.edges[edge_id].stats.downstream_backpressure += 1;
+                        self.edges[edge_id].next_retry_cycle = retry_at;
+                        break;
+                    }
                 }
             }
         }

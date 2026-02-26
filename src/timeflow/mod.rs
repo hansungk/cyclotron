@@ -48,6 +48,5 @@ pub use types::{CoreFlowPayload, LinkId, NodeId};
 pub use warp_scheduler::{WarpIssueScheduler, WarpSchedulerConfig};
 pub use writeback::{
     WritebackConfig, WritebackIssue, WritebackPayload, WritebackQueue, WritebackReject,
-    WritebackRejectReason,
-    WritebackStats,
+    WritebackRejectReason, WritebackStats,
 };

@@ -35,6 +35,35 @@ impl CoreTimingModel {
             cluster_gmem,
             logger,
             log_stats,
+            None,
+        )
+    }
+
+    pub fn new_with_perf_log(
+        config: CoreGraphConfig,
+        num_warps: usize,
+        core_id: usize,
+        cluster_id: usize,
+        cluster_gmem: Arc<std::sync::RwLock<ClusterGmemGraph>>,
+        perf_log_session: Option<Arc<perf_log::PerfLogSession>>,
+        logger: Arc<Logger>,
+    ) -> Self {
+        let log_stats = env::var("CYCLOTRON_TIMING_LOG_STATS")
+            .ok()
+            .map(|val| {
+                let lowered = val.to_ascii_lowercase();
+                lowered == "1" || lowered == "true" || lowered == "yes"
+            })
+            .unwrap_or(false);
+        Self::with_options(
+            config,
+            num_warps,
+            core_id,
+            cluster_id,
+            cluster_gmem,
+            logger,
+            log_stats,
+            perf_log_session,
         )
     }
 
@@ -46,6 +75,7 @@ impl CoreTimingModel {
         cluster_gmem: Arc<std::sync::RwLock<ClusterGmemGraph>>,
         logger: Arc<Logger>,
         log_stats: bool,
+        perf_log_session: Option<Arc<perf_log::PerfLogSession>>,
     ) -> Self {
         let gmem_policy = config.memory.gmem.policy.clone();
         let gmem_stats_range = config.memory.gmem.stats_range;
@@ -60,7 +90,12 @@ impl CoreTimingModel {
             .max(1);
 
         Self {
-            graph: CoreGraph::new(config, num_warps, Some(cluster_gmem)),
+            graph: CoreGraph::new(
+                config,
+                num_warps,
+                Some(cluster_gmem),
+                perf_log_session.clone(),
+            ),
             pending_writeback: VecDeque::new(),
             pending_dma: VecDeque::new(),
             pending_tensor: VecDeque::new(),
@@ -84,6 +119,7 @@ impl CoreTimingModel {
             next_smem_id: 0,
             next_icache_id: 0,
             logger,
+            perf_log_session,
             log_stats,
             stats_log_period,
             last_stats_log_cycle: None,
@@ -409,12 +445,12 @@ impl CoreTimingModel {
             return;
         }
         self.last_stats_log_cycle = Some(now);
-        if let Some(logger) = perf_log::stats_logger() {
+        if let Some(session) = &self.perf_log_session {
             let record = perf_log::StatsRecord {
                 cycle: now,
                 summary: self.perf_summary(),
             };
-            logger.write(&record);
+            session.write_stats(&record);
         }
     }
 

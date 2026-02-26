@@ -182,10 +182,7 @@ impl BarrierManager {
                 .stats
                 .warps_released
                 .saturating_add(released.len() as u64);
-            self.stats.max_release_batch = self
-                .stats
-                .max_release_batch
-                .max(released.len() as u64);
+            self.stats.max_release_batch = self.stats.max_release_batch.max(released.len() as u64);
             Some(released)
         }
     }

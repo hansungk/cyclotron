@@ -1,4 +1,4 @@
-use crate::timeflow::gmem::{ClusterGmemGraph, GmemFlowConfig, GmemRequest, GmemRejectReason};
+use crate::timeflow::gmem::{ClusterGmemGraph, GmemFlowConfig, GmemRejectReason, GmemRequest};
 use crate::timeq::Cycle;
 
 const MAX_CYCLES: u64 = 200;

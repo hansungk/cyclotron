@@ -109,4 +109,3 @@ impl DmaQueue {
         self.csr_addrs.iter().any(|&csr| csr == addr)
     }
 }
-

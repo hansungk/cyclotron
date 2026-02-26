@@ -65,7 +65,10 @@ fn queue_full_rejects() {
             },
         )
         .expect_err("queue should be full");
-    assert_eq!(crate::timeflow::fence::FenceRejectReason::QueueFull, err.reason);
+    assert_eq!(
+        crate::timeflow::fence::FenceRejectReason::QueueFull,
+        err.reason
+    );
 }
 
 #[test]

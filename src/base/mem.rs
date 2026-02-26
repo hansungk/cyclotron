@@ -30,7 +30,10 @@ pub trait HasMemory {
             assert!(n == 1 || n == 2, "subword stores must be byte or half");
             alignment = n;
         } else {
-            assert!(n % 4 == 0, "stores larger than a word must be integer number of words");
+            assert!(
+                n % 4 == 0,
+                "stores larger than a word must be integer number of words"
+            );
             alignment = 4;
         }
 

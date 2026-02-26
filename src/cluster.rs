@@ -3,6 +3,7 @@ use crate::muon::core::MuonCore;
 use crate::neutrino::neutrino::Neutrino;
 use crate::sim::flat_mem::FlatMemory;
 use crate::sim::log::Logger;
+use crate::sim::perf_log::PerfLogSession;
 use crate::sim::top::ClusterConfig;
 use log::info;
 use std::sync::{Arc, RwLock};
@@ -45,6 +46,7 @@ impl Cluster {
         logger: &Arc<Logger>,
         gmem: Arc<RwLock<FlatMemory>>,
         gmem_timing: Arc<RwLock<crate::timeflow::ClusterGmemGraph>>,
+        perf_log_session: Option<Arc<PerfLogSession>>,
     ) -> Self {
         let mut cores = Vec::new();
         for cid in 0..config.muon_config.num_cores {
@@ -59,6 +61,7 @@ impl Cluster {
                 timing_core_id,
                 id,
                 gmem_timing.clone(),
+                perf_log_session.clone(),
             ));
         }
         Cluster {

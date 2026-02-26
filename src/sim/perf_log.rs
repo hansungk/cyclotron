@@ -1,69 +1,16 @@
+use std::cell::RefCell;
 use std::env;
 use std::fs;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::ops::AddAssign;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 
 use crate::muon::gmem::CorePerfSummary;
 use crate::timeq::Cycle;
-
-static PERF_RUN_DIR: OnceLock<PathBuf> = OnceLock::new();
-
-pub fn perf_run_dir() -> Option<PathBuf> {
-    if let Some(path) = PERF_RUN_DIR.get() {
-        return Some(path.clone());
-    }
-
-    let root = env::var("CYCLOTRON_PERF_LOG_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("performance_logs"));
-    if fs::create_dir_all(&root).is_err() {
-        return None;
-    }
-
-    let ts = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let pid = std::process::id();
-    let run_dir = root.join(format!("run_{ts}_{pid}"));
-    if fs::create_dir_all(&run_dir).is_err() {
-        return None;
-    }
-
-    let _ = PERF_RUN_DIR.set(run_dir.clone());
-    Some(run_dir)
-}
-
-pub fn per_core_path(base: &str, core_id: usize) -> Option<PathBuf> {
-    let base_path = PathBuf::from(base);
-    let file_name = match base_path.file_name().and_then(|s| s.to_str()) {
-        Some(name) => name.to_string(),
-        None => return None,
-    };
-    let file_name = core_file_name(&file_name, core_id);
-
-    let parent = base_path.parent().unwrap_or_else(|| Path::new(""));
-    if base_path.is_absolute() {
-        let dir = parent.to_path_buf();
-        if fs::create_dir_all(&dir).is_err() {
-            return None;
-        }
-        return Some(dir.join(file_name));
-    }
-
-    let run_dir = perf_run_dir()?;
-    let dir = run_dir.join(parent);
-    if fs::create_dir_all(&dir).is_err() {
-        return None;
-    }
-    Some(dir.join(file_name))
-}
 
 fn core_file_name(base: &str, core_id: usize) -> String {
     let path = Path::new(base);
@@ -119,7 +66,9 @@ impl AddAssign<&CorePerfSummary> for AggregatePerfSummary {
             .dma_bytes_completed
             .saturating_add(core.dma_bytes_completed);
         self.dma_util += &core.dma_util;
-        self.tensor_bytes_issued = self.tensor_bytes_issued.saturating_add(core.tensor_bytes_issued);
+        self.tensor_bytes_issued = self
+            .tensor_bytes_issued
+            .saturating_add(core.tensor_bytes_issued);
         self.tensor_bytes_completed = self
             .tensor_bytes_completed
             .saturating_add(core.tensor_bytes_completed);
@@ -160,66 +109,120 @@ pub struct GraphBackpressureRecord {
     pub size_bytes: u32,
 }
 
-pub struct StatsLog {
-    // Global logger writes use interior mutability from static context.
-    writer: Mutex<BufWriter<File>>,
+pub struct PerfLogSession {
+    run_dir: PathBuf,
+    stats_writer: RefCell<BufWriter<File>>,
+    graph_writer: Option<RefCell<BufWriter<File>>>,
 }
 
-impl StatsLog {
-    pub(crate) fn write(&self, record: &StatsRecord) {
-        if let Ok(mut guard) = self.writer.lock() {
-            if let Ok(payload) = serde_json::to_string(record) {
-                let _ = writeln!(guard, "{payload}");
-            }
-        }
-    }
+unsafe impl Send for PerfLogSession {}
+unsafe impl Sync for PerfLogSession {}
 
-    pub(crate) fn write_json<T: Serialize>(&self, record: &T) {
-        if let Ok(mut guard) = self.writer.lock() {
-            if let Ok(payload) = serde_json::to_string(record) {
-                let _ = writeln!(guard, "{payload}");
-            }
-        }
-    }
-}
+impl PerfLogSession {
+    pub fn new() -> Option<Self> {
+        let run_dir = create_run_dir()?;
+        let stats_file = File::create(run_dir.join("stats.jsonl")).ok()?;
+        let graph_writer = graph_log_enabled()
+            .then(|| {
+                File::create(run_dir.join("graph_backpressure.jsonl"))
+                    .ok()
+                    .map(|file| RefCell::new(BufWriter::new(file)))
+            })
+            .flatten();
 
-static STATS_LOGGER: OnceLock<Option<StatsLog>> = OnceLock::new();
-static GRAPH_LOGGER: OnceLock<Option<StatsLog>> = OnceLock::new();
-
-fn create_stats_logger() -> Option<StatsLog> {
-    perf_run_dir().and_then(|run_dir| {
-        let path = run_dir.join("stats.jsonl");
-        File::create(path).ok().map(|file| StatsLog {
-            writer: Mutex::new(BufWriter::new(file)),
+        Some(Self {
+            run_dir,
+            stats_writer: RefCell::new(BufWriter::new(stats_file)),
+            graph_writer,
         })
-    })
+    }
+
+    pub fn run_dir(&self) -> &Path {
+        &self.run_dir
+    }
+
+    pub fn per_core_path(&self, base: &str, core_id: usize) -> Option<PathBuf> {
+        let base_path = PathBuf::from(base);
+        let file_name = match base_path.file_name().and_then(|s| s.to_str()) {
+            Some(name) => name.to_string(),
+            None => return None,
+        };
+        let file_name = core_file_name(&file_name, core_id);
+
+        let parent = base_path.parent().unwrap_or_else(|| Path::new(""));
+        if base_path.is_absolute() {
+            let dir = parent.to_path_buf();
+            if fs::create_dir_all(&dir).is_err() {
+                return None;
+            }
+            return Some(dir.join(file_name));
+        }
+
+        let dir = self.run_dir.join(parent);
+        if fs::create_dir_all(&dir).is_err() {
+            return None;
+        }
+        Some(dir.join(file_name))
+    }
+
+    pub fn write_stats(&self, record: &StatsRecord) {
+        self.write_json_line(&self.stats_writer, record);
+    }
+
+    pub fn write_graph_backpressure(&self, record: &GraphBackpressureRecord) {
+        if let Some(writer) = &self.graph_writer {
+            self.write_json_line(writer, record);
+        }
+    }
+
+    pub fn write_summary(&self, per_core: Vec<CorePerfSummary>) {
+        let summary = RunPerfSummary {
+            total: aggregate_summaries(&per_core),
+            per_core,
+        };
+        let path = self.run_dir.join("summary.json");
+        if let Ok(payload) = serde_json::to_string_pretty(&summary) {
+            let _ = fs::write(path, payload);
+        }
+    }
+
+    fn write_json_line<T: Serialize>(&self, writer: &RefCell<BufWriter<File>>, record: &T) {
+        if let Ok(mut guard) = writer.try_borrow_mut() {
+            if let Ok(payload) = serde_json::to_string(record) {
+                let _ = writeln!(guard, "{payload}");
+            }
+        }
+    }
 }
 
-pub fn stats_logger() -> Option<&'static StatsLog> {
-    STATS_LOGGER.get_or_init(create_stats_logger).as_ref()
-}
-
-fn create_graph_logger() -> Option<StatsLog> {
-    let enabled = env::var("CYCLOTRON_GRAPH_LOG")
+fn graph_log_enabled() -> bool {
+    env::var("CYCLOTRON_GRAPH_LOG")
         .ok()
         .map(|val| {
             let lowered = val.to_ascii_lowercase();
             lowered == "1" || lowered == "true" || lowered == "yes"
         })
-        .unwrap_or(false);
-    if !enabled {
-        return None;
-    }
-    perf_run_dir().and_then(|run_dir| {
-        let path = run_dir.join("graph_backpressure.jsonl");
-        File::create(path).ok().map(|file| StatsLog {
-            writer: Mutex::new(BufWriter::new(file)),
-        })
-    })
+        .unwrap_or(false)
 }
 
-pub fn graph_logger() -> Option<&'static StatsLog> {
-    GRAPH_LOGGER.get_or_init(create_graph_logger).as_ref()
+fn create_run_dir() -> Option<PathBuf> {
+    let root = env::var("CYCLOTRON_PERF_LOG_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("performance_logs"));
+    if fs::create_dir_all(&root).is_err() {
+        return None;
+    }
+
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let pid = std::process::id();
+    let run_dir = root.join(format!("run_{ts}_{pid}"));
+    if fs::create_dir_all(&run_dir).is_err() {
+        return None;
+    }
+    Some(run_dir)
 }
 
 pub fn aggregate_summaries(per_core: &[CorePerfSummary]) -> AggregatePerfSummary {
@@ -231,19 +234,4 @@ pub fn aggregate_summaries(per_core: &[CorePerfSummary]) -> AggregatePerfSummary
         total += core;
     }
     total
-}
-
-pub fn write_summary(per_core: Vec<CorePerfSummary>) {
-    let run_dir = match perf_run_dir() {
-        Some(dir) => dir,
-        None => return,
-    };
-    let summary = RunPerfSummary {
-        total: aggregate_summaries(&per_core),
-        per_core,
-    };
-    let path = run_dir.join("summary.json");
-    if let Ok(payload) = serde_json::to_string_pretty(&summary) {
-        let _ = fs::write(path, payload);
-    }
 }

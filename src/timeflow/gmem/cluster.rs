@@ -1,6 +1,9 @@
 use std::collections::VecDeque;
 
-use crate::timeflow::{graph::FlowGraph, types::{CoreFlowPayload, NodeId}};
+use crate::timeflow::{
+    graph::FlowGraph,
+    types::{CoreFlowPayload, NodeId},
+};
 use crate::timeq::{Backpressure, Cycle, ServiceRequest, Ticket};
 
 use super::cache::CacheTagArray;
@@ -335,13 +338,8 @@ impl ClusterGmemGraph {
 
         let lines = self.compute_cache_lines(&mut request);
         let track_stats = self.stats_enabled_for(request.addr);
-        let miss_level = self.record_cache_accesses(
-            core_id,
-            cluster_id,
-            &mut request,
-            &lines,
-            track_stats,
-        );
+        let miss_level =
+            self.record_cache_accesses(core_id, cluster_id, &mut request, &lines, track_stats);
         let meta = MissMetadata::from_request(&request);
         let allocation = self.allocate_cache_entries(
             core_id,
@@ -703,13 +701,8 @@ impl ClusterGmemGraph {
                 let l0_new = match self.hierarchy.l0[core_id].ensure_entry(0, l0_line, meta) {
                     Ok(new_entry) => new_entry,
                     Err(_) => {
-                        return self.rollback_and_reject_queue_full(
-                            now,
-                            request,
-                            core_id,
-                            None,
-                            None,
-                        );
+                        return self
+                            .rollback_and_reject_queue_full(now, request, core_id, None, None);
                     }
                 };
                 Ok(AllocationResult::Continue {
@@ -726,11 +719,7 @@ impl ClusterGmemGraph {
                             Ok(new_entry) => new_entry,
                             Err(_) => {
                                 return self.rollback_and_reject_queue_full(
-                                    now,
-                                    request,
-                                    core_id,
-                                    None,
-                                    None,
+                                    now, request, core_id, None, None,
                                 );
                             }
                         };
@@ -812,11 +801,7 @@ impl ClusterGmemGraph {
                             Ok(new_entry) => new_entry,
                             Err(_) => {
                                 return self.rollback_and_reject_queue_full(
-                                    now,
-                                    request,
-                                    core_id,
-                                    None,
-                                    None,
+                                    now, request, core_id, None, None,
                                 );
                             }
                         };
@@ -938,7 +923,9 @@ impl ClusterGmemGraph {
 
         match bank_target {
             Some(QueueFullBankTarget::L0 { core_id, bank }) => {
-                if core_id < self.hierarchy.l0.len() && bank < self.hierarchy.l0[core_id].bank_count() {
+                if core_id < self.hierarchy.l0.len()
+                    && bank < self.hierarchy.l0[core_id].bank_count()
+                {
                     self.hierarchy.l0[core_id].banks[bank]
                         .stats
                         .record_queue_full_reject();

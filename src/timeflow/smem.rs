@@ -51,15 +51,22 @@ impl AddAssign<&SmemStats> for SmemStats {
         self.inflight = self.inflight.saturating_add(other.inflight);
         self.max_inflight = self.max_inflight.max(other.max_inflight);
         self.max_completion_queue = self.max_completion_queue.max(other.max_completion_queue);
-        self.last_completion_cycle = match (self.last_completion_cycle, other.last_completion_cycle) {
+        self.last_completion_cycle = match (self.last_completion_cycle, other.last_completion_cycle)
+        {
             (Some(a), Some(b)) => Some(a.max(b)),
             (None, Some(b)) => Some(b),
             (a, None) => a,
         };
         self.sample_cycles = self.sample_cycles.saturating_add(other.sample_cycles);
         merge_vec_sums(&mut self.bank_busy_samples, &other.bank_busy_samples);
-        merge_vec_sums(&mut self.bank_read_busy_samples, &other.bank_read_busy_samples);
-        merge_vec_sums(&mut self.bank_write_busy_samples, &other.bank_write_busy_samples);
+        merge_vec_sums(
+            &mut self.bank_read_busy_samples,
+            &other.bank_read_busy_samples,
+        );
+        merge_vec_sums(
+            &mut self.bank_write_busy_samples,
+            &other.bank_write_busy_samples,
+        );
         merge_vec_sums(&mut self.bank_attempts, &other.bank_attempts);
         merge_vec_sums(&mut self.bank_conflicts, &other.bank_conflicts);
     }
@@ -372,8 +379,16 @@ impl SmemSubgraph {
         let num_banks = self.stats.bank_busy_samples.len();
         for bank in 0..num_banks {
             let busy = if self.dual_port {
-                let r = self.bank_read_nodes.get(bank).map(|&n| is_busy(n)).unwrap_or(false);
-                let w = self.bank_write_nodes.get(bank).map(|&n| is_busy(n)).unwrap_or(false);
+                let r = self
+                    .bank_read_nodes
+                    .get(bank)
+                    .map(|&n| is_busy(n))
+                    .unwrap_or(false);
+                let w = self
+                    .bank_write_nodes
+                    .get(bank)
+                    .map(|&n| is_busy(n))
+                    .unwrap_or(false);
                 if r {
                     self.stats.bank_read_busy_samples[bank] =
                         self.stats.bank_read_busy_samples[bank].saturating_add(1);
@@ -389,7 +404,8 @@ impl SmemSubgraph {
                 node.map(|n| is_busy(n)).unwrap_or(false)
             };
             if busy {
-                self.stats.bank_busy_samples[bank] = self.stats.bank_busy_samples[bank].saturating_add(1);
+                self.stats.bank_busy_samples[bank] =
+                    self.stats.bank_busy_samples[bank].saturating_add(1);
             }
         }
     }
@@ -462,12 +478,19 @@ impl SmemSubgraph {
                 })
             }
             Err(bp) => match bp {
-                Backpressure::Busy { request, available_at, } => {
+                Backpressure::Busy {
+                    request,
+                    available_at,
+                } => {
                     self.stats.busy_rejects += 1;
                     let retry_at = crate::timeq::normalize_retry(now, available_at);
                     let request = extract_smem_request(request);
                     self.record_bank_attempt_and_conflict(request.bank);
-                    Err(SmemReject { payload: request, retry_at, reason: SmemRejectReason::Busy })
+                    Err(SmemReject {
+                        payload: request,
+                        retry_at,
+                        reason: SmemRejectReason::Busy,
+                    })
                 }
                 Backpressure::QueueFull { request, .. } => {
                     self.stats.queue_full_rejects += 1;

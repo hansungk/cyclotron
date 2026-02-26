@@ -1,18 +1,30 @@
+use crate::sim::perf_log::PerfLogSession;
 use crate::timeflow::{
     barrier::BarrierConfig,
     dma::{DmaConfig, DmaQueue, DmaReject},
+    execute::{ExecUnitKind, ExecutePipeline, ExecutePipelineConfig},
     fence::{FenceConfig, FenceIssue, FenceQueue, FenceReject, FenceRequest},
-    gmem::{ClusterGmemGraph, GmemCompletion, GmemIssue, GmemReject, GmemRequest, GmemStats, GmemFlowConfig},
+    gmem::{
+        ClusterGmemGraph, GmemCompletion, GmemFlowConfig, GmemIssue, GmemReject, GmemRequest,
+        GmemStats,
+    },
     graph::FlowGraph,
-    icache::{IcacheFlowConfig, IcacheIssue, IcacheReject, IcacheRequest, IcacheStats, IcacheSubgraph},
-    lsu::{LsuFlowConfig, LsuPayload, LsuCompletion, LsuIssue, LsuReject, LsuStats, LsuSubgraph},
+    icache::{
+        IcacheFlowConfig, IcacheIssue, IcacheReject, IcacheRequest, IcacheStats, IcacheSubgraph,
+    },
+    lsu::{LsuCompletion, LsuFlowConfig, LsuIssue, LsuPayload, LsuReject, LsuStats, LsuSubgraph},
     operand_fetch::{OperandFetchConfig, OperandFetchQueue, OperandFetchReject},
-    smem::{SmemCompletion, SmemFlowConfig, SmemIssue, SmemReject, SmemRequest, SmemStats, SmemSubgraph, SmemUtilSample},
+    smem::{
+        SmemCompletion, SmemFlowConfig, SmemIssue, SmemReject, SmemRequest, SmemStats,
+        SmemSubgraph, SmemUtilSample,
+    },
     tensor::{TensorConfig, TensorQueue, TensorReject},
     types::CoreFlowPayload,
     warp_scheduler::WarpSchedulerConfig,
-    writeback::{WritebackConfig, WritebackIssue, WritebackPayload, WritebackQueue, WritebackReject, WritebackStats},
-    execute::{ExecUnitKind, ExecutePipeline, ExecutePipelineConfig},
+    writeback::{
+        WritebackConfig, WritebackIssue, WritebackPayload, WritebackQueue, WritebackReject,
+        WritebackStats,
+    },
 };
 use crate::timeq::{Backpressure, Cycle, Ticket};
 use serde::Deserialize;
@@ -103,8 +115,10 @@ impl CoreGraph {
         config: CoreGraphConfig,
         num_warps: usize,
         cluster_gmem: Option<Arc<RwLock<ClusterGmemGraph>>>,
+        perf_log_session: Option<Arc<PerfLogSession>>,
     ) -> Self {
         let mut graph = FlowGraph::new();
+        graph.set_perf_log_session(perf_log_session.clone());
         let smem = SmemSubgraph::attach(&mut graph, &config.memory.smem);
         let icache = IcacheSubgraph::new(config.memory.icache);
         let lsu = LsuSubgraph::new(config.memory.lsu, num_warps);
@@ -475,15 +489,78 @@ impl CoreGraph {
         }
     }
 
-    impl_indexed_accessor!(lsu_ref, lsu_mut, with_lsu_mut, lsu_index, CoreSubgraph::Lsu, LsuSubgraph, "lsu index always points to lsu");
-    impl_indexed_accessor!(icache_ref, icache_mut, with_icache_mut, icache_index, CoreSubgraph::Icache, IcacheSubgraph, "icache index always points to icache");
-    impl_indexed_accessor!(operand_fetch_ref, operand_fetch_mut, with_operand_fetch_mut, operand_fetch_index, CoreSubgraph::OperandFetch, OperandFetchQueue, "operand_fetch index always points to operand_fetch");
-    impl_indexed_accessor!(dma_ref, dma_mut, with_dma_mut, dma_index, CoreSubgraph::Dma, DmaQueue, "dma index always points to dma");
-    impl_indexed_accessor!(tensor_ref, tensor_mut, with_tensor_mut, tensor_index, CoreSubgraph::Tensor, TensorQueue, "tensor index always points to tensor");
-    impl_indexed_accessor!(execute_ref, execute_mut, with_execute_mut, execute_index, CoreSubgraph::Execute, ExecutePipeline, "execute index always points to execute");
-    impl_indexed_accessor!(writeback_ref, writeback_mut, with_writeback_mut, writeback_index, CoreSubgraph::Writeback, WritebackQueue, "writeback index always points to writeback");
-    impl_indexed_accessor!(fence_ref, fence_mut, with_fence_mut, fence_index, CoreSubgraph::Fence, FenceQueue, "fence index always points to fence");
-
+    impl_indexed_accessor!(
+        lsu_ref,
+        lsu_mut,
+        with_lsu_mut,
+        lsu_index,
+        CoreSubgraph::Lsu,
+        LsuSubgraph,
+        "lsu index always points to lsu"
+    );
+    impl_indexed_accessor!(
+        icache_ref,
+        icache_mut,
+        with_icache_mut,
+        icache_index,
+        CoreSubgraph::Icache,
+        IcacheSubgraph,
+        "icache index always points to icache"
+    );
+    impl_indexed_accessor!(
+        operand_fetch_ref,
+        operand_fetch_mut,
+        with_operand_fetch_mut,
+        operand_fetch_index,
+        CoreSubgraph::OperandFetch,
+        OperandFetchQueue,
+        "operand_fetch index always points to operand_fetch"
+    );
+    impl_indexed_accessor!(
+        dma_ref,
+        dma_mut,
+        with_dma_mut,
+        dma_index,
+        CoreSubgraph::Dma,
+        DmaQueue,
+        "dma index always points to dma"
+    );
+    impl_indexed_accessor!(
+        tensor_ref,
+        tensor_mut,
+        with_tensor_mut,
+        tensor_index,
+        CoreSubgraph::Tensor,
+        TensorQueue,
+        "tensor index always points to tensor"
+    );
+    impl_indexed_accessor!(
+        execute_ref,
+        execute_mut,
+        with_execute_mut,
+        execute_index,
+        CoreSubgraph::Execute,
+        ExecutePipeline,
+        "execute index always points to execute"
+    );
+    impl_indexed_accessor!(
+        writeback_ref,
+        writeback_mut,
+        with_writeback_mut,
+        writeback_index,
+        CoreSubgraph::Writeback,
+        WritebackQueue,
+        "writeback index always points to writeback"
+    );
+    impl_indexed_accessor!(
+        fence_ref,
+        fence_mut,
+        with_fence_mut,
+        fence_index,
+        CoreSubgraph::Fence,
+        FenceQueue,
+        "fence index always points to fence"
+    );
 }
 
 enum CoreSubgraph {
@@ -498,7 +575,6 @@ enum CoreSubgraph {
     Fence(FenceQueue),
 }
 
-
 enum StatEnum {
     Smem(SmemStats),
     Icache(IcacheStats),
@@ -511,7 +587,6 @@ enum TickPhase {
     Front,
     Back,
 }
-
 
 trait Subgraph {
     fn tick_phase(&mut self, phase: TickPhase, now: Cycle);
@@ -669,7 +744,7 @@ impl Subgraph for CoreSubgraph {
             CoreSubgraph::Writeback(wb) => wb.collect_completions(graph, now),
             CoreSubgraph::Fence(fence) => fence.collect_completions(graph, now),
         }
-    } 
+    }
 
     fn stats_snapshot(&self) -> Option<StatEnum> {
         match self {

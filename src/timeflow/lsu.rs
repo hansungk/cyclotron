@@ -78,7 +78,6 @@ impl LsuPayload {
             LsuPayload::Smem(req) => !req.is_store,
         }
     }
-
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -121,10 +120,18 @@ impl AddAssign<&LsuStats> for LsuStats {
             .queue_full_rejects
             .saturating_add(other.queue_full_rejects);
         self.busy_rejects = self.busy_rejects.saturating_add(other.busy_rejects);
-        self.global_ldq_issued = self.global_ldq_issued.saturating_add(other.global_ldq_issued);
-        self.global_stq_issued = self.global_stq_issued.saturating_add(other.global_stq_issued);
-        self.shared_ldq_issued = self.shared_ldq_issued.saturating_add(other.shared_ldq_issued);
-        self.shared_stq_issued = self.shared_stq_issued.saturating_add(other.shared_stq_issued);
+        self.global_ldq_issued = self
+            .global_ldq_issued
+            .saturating_add(other.global_ldq_issued);
+        self.global_stq_issued = self
+            .global_stq_issued
+            .saturating_add(other.global_stq_issued);
+        self.shared_ldq_issued = self
+            .shared_ldq_issued
+            .saturating_add(other.shared_ldq_issued);
+        self.shared_stq_issued = self
+            .shared_stq_issued
+            .saturating_add(other.shared_stq_issued);
         self.global_ldq_completed = self
             .global_ldq_completed
             .saturating_add(other.global_ldq_completed);
@@ -475,8 +482,7 @@ impl LsuSubgraph {
 
     pub fn peek_ready(&mut self, now: Cycle) -> Option<LsuPayload> {
         self.graph.with_node_mut(self.issue_node, |node| {
-            node.peek_ready(now)
-                .map(|result| result.payload.clone())
+            node.peek_ready(now).map(|result| result.payload.clone())
         })
     }
 
@@ -569,7 +575,8 @@ impl LsuSubgraph {
         if Self::needs_address(payload) && self.address_in_use >= self.resources.address_entries {
             return false;
         }
-        if Self::needs_store_data(payload) && self.store_in_use >= self.resources.store_data_entries {
+        if Self::needs_store_data(payload) && self.store_in_use >= self.resources.store_data_entries
+        {
             return false;
         }
         true

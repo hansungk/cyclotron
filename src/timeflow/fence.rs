@@ -87,4 +87,3 @@ impl FenceQueue {
         self.queue.is_enabled()
     }
 }
-

@@ -1,6 +1,8 @@
 use crate::timeflow::graph::{FlowGraph, Link, TimedNode};
 use crate::timeflow::server_node::ServerNode;
-use crate::timeq::{Backpressure, Cycle, ServerConfig, ServiceRequest, ServiceResult, TimedServer, Ticket};
+use crate::timeq::{
+    Backpressure, Cycle, ServerConfig, ServiceRequest, ServiceResult, Ticket, TimedServer,
+};
 
 #[test]
 fn graph_moves_payloads_between_nodes() {

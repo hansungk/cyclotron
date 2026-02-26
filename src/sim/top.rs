@@ -8,6 +8,7 @@ use crate::sim::config::{MemConfig, SimConfig};
 use crate::sim::elf::ElfBackedMem;
 use crate::sim::flat_mem::FlatMemory;
 use crate::sim::log::Logger;
+use crate::sim::perf_log::PerfLogSession;
 use crate::timeflow::CoreGraphConfig;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
@@ -17,6 +18,7 @@ pub struct Sim {
     pub config: SimConfig,
     pub top: CyclotronTop,
     pub logger: Arc<Logger>,
+    perf_log_session: Option<Arc<PerfLogSession>>,
 }
 
 impl Sim {
@@ -28,7 +30,9 @@ impl Sim {
                 .iter()
                 .flat_map(|cluster| cluster.cores.iter().map(|core| core.timing_summary()))
                 .collect::<Vec<_>>();
-            crate::sim::perf_log::write_summary(summaries);
+            if let Some(session) = &self.perf_log_session {
+                session.write_summary(summaries);
+            }
         }
     }
 
@@ -54,6 +58,11 @@ impl Sim {
         mem_config: MemConfig,
         timing_config: CoreGraphConfig,
     ) -> Sim {
+        let perf_log_session = if sim_config.timing {
+            PerfLogSession::new().map(Arc::new)
+        } else {
+            None
+        };
         let logger = Arc::new(Logger::new(sim_config.log_level));
         let top = CyclotronTop::new(
             Arc::new(CyclotronConfig {
@@ -68,12 +77,14 @@ impl Sim {
                 timing_enabled: sim_config.timing,
             }),
             &logger,
+            perf_log_session.clone(),
         );
 
         let mut sim = Sim {
             config: sim_config,
             top,
             logger,
+            perf_log_session,
         };
         sim.top.reset();
         sim
@@ -99,7 +110,10 @@ impl Sim {
         if let Some(tohost) = self.top.clusters[0].cores[0].scheduler.tohost() {
             if tohost != 0 {
                 let case = tohost >> 1;
-                println!("Cyclotron: isa-test failed with tohost={}, case={}", tohost, case);
+                println!(
+                    "Cyclotron: isa-test failed with tohost={}, case={}",
+                    tohost, case
+                );
                 return Err(tohost);
             } else {
                 println!("Cyclotron: isa-test passed with tohost={}", tohost);
@@ -156,7 +170,11 @@ pub struct CyclotronTop {
 }
 
 impl CyclotronTop {
-    pub fn new(config: Arc<CyclotronConfig>, logger: &Arc<Logger>) -> CyclotronTop {
+    pub fn new(
+        config: Arc<CyclotronConfig>,
+        logger: &Arc<Logger>,
+        perf_log_session: Option<Arc<PerfLogSession>>,
+    ) -> CyclotronTop {
         let elf_path = Path::new(&config.elf);
         let imem = ElfBackedMem::new(&elf_path);
         let mut clusters = Vec::new();
@@ -184,11 +202,17 @@ impl CyclotronTop {
                     logger,
                     gmem.clone(),
                     gmem_timing.clone(),
+                    perf_log_session.clone(),
                 ));
             }
         } else {
             for id in 0..num_clusters {
-                clusters.push(Cluster::new(cluster_config.clone(), id, logger, gmem.clone()));
+                clusters.push(Cluster::new(
+                    cluster_config.clone(),
+                    id,
+                    logger,
+                    gmem.clone(),
+                ));
             }
         }
         CyclotronTop {

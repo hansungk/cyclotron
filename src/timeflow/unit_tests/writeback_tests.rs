@@ -1,7 +1,7 @@
-use crate::timeflow::writeback::{WritebackConfig, WritebackPayload, WritebackQueue};
 use crate::timeflow::gmem::GmemCompletion;
 use crate::timeflow::gmem::GmemRequest;
 use crate::timeflow::smem::{SmemCompletion, SmemRequest};
+use crate::timeflow::writeback::{WritebackConfig, WritebackPayload, WritebackQueue};
 
 #[test]
 fn writeback_queue_throttles_completions() {
@@ -101,7 +101,10 @@ fn queue_full_rejects() {
     let err = queue
         .try_issue(0, WritebackPayload::Gmem(completion2))
         .expect_err("queue should be full");
-    assert_eq!(crate::timeflow::writeback::WritebackRejectReason::QueueFull, err.reason);
+    assert_eq!(
+        crate::timeflow::writeback::WritebackRejectReason::QueueFull,
+        err.reason
+    );
 }
 
 #[test]

@@ -47,10 +47,7 @@ impl ElfBackedMem {
 
         // Iterate over the ELF sections
         for section in &elf.section_headers {
-            let section_name = elf
-                .shdr_strtab
-                .get_at(section.sh_name)
-                .unwrap_or_default();
+            let section_name = elf.shdr_strtab.get_at(section.sh_name).unwrap_or_default();
             let start = section.sh_addr;
             let size = section.sh_size;
             if size > 0 {

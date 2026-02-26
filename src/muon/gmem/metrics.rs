@@ -1,7 +1,9 @@
 use serde::Serialize;
 use std::ops::AddAssign;
 
-use crate::timeflow::{BarrierSummary, GmemStats, IcacheStats, LsuStats, SmemStats, WritebackStats};
+use crate::timeflow::{
+    BarrierSummary, GmemStats, IcacheStats, LsuStats, SmemStats, WritebackStats,
+};
 
 #[derive(Debug, Clone, Default)]
 pub struct CoreStats {

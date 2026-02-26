@@ -53,7 +53,6 @@ impl Default for ExecutePipelineConfig {
     }
 }
 
-
 #[derive(Debug, Clone, Copy)]
 pub enum ExecUnitKind {
     Int,

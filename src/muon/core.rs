@@ -8,6 +8,7 @@ use crate::muon::warp::{ExecErr, Warp, Writeback};
 use crate::neutrino::neutrino::Neutrino;
 use crate::sim::flat_mem::FlatMemory;
 use crate::sim::log::Logger;
+use crate::sim::perf_log::PerfLogSession;
 use crate::sim::trace::Tracer;
 use crate::timeflow::{ClusterGmemGraph, CoreGraphConfig};
 use crate::timeq::module_now;
@@ -71,9 +72,7 @@ impl MuonCore {
 
         info!(
             core.logger,
-            "muon core {} in cluster {} instantiated!",
-            core_id,
-            cluster_id
+            "muon core {} in cluster {} instantiated!", core_id, cluster_id
         );
 
         core.init_conf(Arc::clone(&config));
@@ -87,7 +86,14 @@ impl MuonCore {
         logger: &Arc<Logger>,
         gmem: Arc<RwLock<FlatMemory>>,
     ) -> Self {
-        Self::build_core(config, cluster_id, core_id, logger, gmem, TimingMode::Disabled)
+        Self::build_core(
+            config,
+            cluster_id,
+            core_id,
+            logger,
+            gmem,
+            TimingMode::Disabled,
+        )
     }
 
     pub fn new_timed(
@@ -100,14 +106,16 @@ impl MuonCore {
         timing_core_id: usize,
         timing_cluster_id: usize,
         cluster_gmem: Arc<RwLock<ClusterGmemGraph>>,
+        perf_log_session: Option<Arc<PerfLogSession>>,
     ) -> Self {
         let num_warps = config.num_warps;
-        let timing_mode = TimingMode::Enabled(CoreTimingModel::new(
+        let timing_mode = TimingMode::Enabled(CoreTimingModel::new_with_perf_log(
             timing_config,
             num_warps,
             timing_core_id,
             timing_cluster_id,
             cluster_gmem,
+            perf_log_session,
             logger.clone(),
         ));
         Self::build_core(config, cluster_id, core_id, logger, gmem, timing_mode)
@@ -304,7 +312,9 @@ impl MuonCore {
 
     pub fn timing_summary(&self) -> CorePerfSummary {
         match &self.timing_mode {
-            TimingMode::Disabled => panic!("timing summary requested while timing mode is disabled"),
+            TimingMode::Disabled => {
+                panic!("timing summary requested while timing mode is disabled")
+            }
             TimingMode::Enabled(timing_model) => timing_model.perf_summary(),
         }
     }

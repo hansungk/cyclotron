@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::ops::AddAssign;
 
-use crate::timeflow::{simple_queue::SimpleTimedQueue, types::RejectReason};
 pub use crate::timeflow::types::RejectReason as IcacheRejectReason;
+use crate::timeflow::{simple_queue::SimpleTimedQueue, types::RejectReason};
 use crate::timeq::{Cycle, ServerConfig, Ticket};
 
 #[derive(Debug, Clone, Copy, Default, Serialize)]
@@ -30,7 +30,8 @@ impl AddAssign<&IcacheStats> for IcacheStats {
         self.busy_rejects = self.busy_rejects.saturating_add(other.busy_rejects);
         self.bytes_issued = self.bytes_issued.saturating_add(other.bytes_issued);
         self.bytes_completed = self.bytes_completed.saturating_add(other.bytes_completed);
-        self.last_completion_cycle = match (self.last_completion_cycle, other.last_completion_cycle) {
+        self.last_completion_cycle = match (self.last_completion_cycle, other.last_completion_cycle)
+        {
             (Some(a), Some(b)) => Some(a.max(b)),
             (None, Some(b)) => Some(b),
             (a, None) => a,

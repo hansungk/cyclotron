@@ -46,4 +46,3 @@ impl<T: Send + Sync + 'static> TimedNode<T> for ServerNode<T> {
         self.server.outstanding()
     }
 }
-

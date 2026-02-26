@@ -1,6 +1,8 @@
-use crate::timeflow::lsu::{LsuCompletion, LsuFlowConfig, LsuPayload, LsuRejectReason, LsuSubgraph};
+use crate::timeflow::lsu::{
+    LsuCompletion, LsuFlowConfig, LsuPayload, LsuRejectReason, LsuSubgraph,
+};
 use crate::timeflow::{GmemRequest, GmemRequestKind, SmemRequest};
-use crate::timeq::{ServerConfig, Cycle};
+use crate::timeq::{Cycle, ServerConfig};
 
 fn default_issue_config() -> ServerConfig {
     ServerConfig {
@@ -12,7 +14,11 @@ fn default_issue_config() -> ServerConfig {
     }
 }
 
-fn drain_issued(lsu: &mut LsuSubgraph, now: Cycle, max_cycles: u64) -> Vec<LsuCompletion<LsuPayload>> {
+fn drain_issued(
+    lsu: &mut LsuSubgraph,
+    now: Cycle,
+    max_cycles: u64,
+) -> Vec<LsuCompletion<LsuPayload>> {
     let mut result = Vec::new();
     for i in 0..max_cycles {
         let cycle = now.saturating_add(i);
@@ -235,10 +241,18 @@ fn all_warps_all_queues_full() {
 
     let mut lsu = LsuSubgraph::new(config, 2);
     for warp in 0..2 {
-        assert!(lsu.issue_gmem(0, GmemRequest::new(warp, 4, 0xF, true)).is_ok());
-        assert!(lsu.issue_gmem(0, GmemRequest::new(warp, 4, 0xF, false)).is_ok());
-        assert!(lsu.issue_smem(0, SmemRequest::new(warp, 4, 0xF, false, 0)).is_ok());
-        assert!(lsu.issue_smem(0, SmemRequest::new(warp, 4, 0xF, true, 0)).is_ok());
+        assert!(lsu
+            .issue_gmem(0, GmemRequest::new(warp, 4, 0xF, true))
+            .is_ok());
+        assert!(lsu
+            .issue_gmem(0, GmemRequest::new(warp, 4, 0xF, false))
+            .is_ok());
+        assert!(lsu
+            .issue_smem(0, SmemRequest::new(warp, 4, 0xF, false, 0))
+            .is_ok());
+        assert!(lsu
+            .issue_smem(0, SmemRequest::new(warp, 4, 0xF, true, 0))
+            .is_ok());
     }
     let err = lsu
         .issue_gmem(0, GmemRequest::new(0, 4, 0xF, true))

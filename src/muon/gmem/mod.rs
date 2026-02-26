@@ -2,6 +2,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
 use crate::sim::log::Logger;
+use crate::sim::perf_log::PerfLogSession;
 use crate::timeflow::{
     CoreGraph, FenceRequest, GmemPolicyConfig, GmemRequest, SmemFlowConfig, SmemRequest,
     WarpIssueScheduler, WritebackPayload,
@@ -45,6 +46,7 @@ pub struct CoreTimingModel {
     next_smem_id: u64,
     next_icache_id: u64,
     logger: Arc<Logger>,
+    perf_log_session: Option<Arc<PerfLogSession>>,
     log_stats: bool,
     stats_log_period: Cycle,
     last_stats_log_cycle: Option<Cycle>,

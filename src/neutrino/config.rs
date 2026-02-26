@@ -1,6 +1,6 @@
-use serde::Deserialize;
 use crate::muon::config::MuonConfig;
 use crate::sim::config::Config;
+use serde::Deserialize;
 
 #[derive(Debug, Deserialize, Clone, Copy)]
 pub struct NeutrinoConfig {
