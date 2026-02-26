@@ -28,12 +28,12 @@ const NUM_CLUSTERS: usize = 16;
 struct Context {
     /// cyclotron instance for the ISA model
     sim_isa: Sim,
+    // TODO: Separate per-core context to a struct
     /// holds fetch/decoded, but not issued, instructions to be used for diff-testing against RTL
-    /// issue
-    issue_queue: Vec<IssueQueue>,
+    /// issue.  Per-core, per-warp.
+    issue_queue: Vec<Vec<IssueQueue>>,
     /// cyclotron instance for the backend model
     sim_be: Sim,
-    // TODO: Separate per-core context to a struct
     /// load/store queue used to match req-resp for memory tracing.  Per-core.
     trace_memory_queue: Vec<MemQueue>,
     pipeline_context: PipelineContext,
@@ -157,7 +157,10 @@ pub extern "C" fn cyclotron_init_rs(c_elfname: *const c_char) {
     c.sim_isa.top.reset();
     c.sim_be.top.reset();
 
-    c.issue_queue = vec![VecDeque::new(); config.num_warps];
+    c.issue_queue = vec![Vec::new(); config.num_cores];
+    for issue_queue_per_core in &mut c.issue_queue {
+        *issue_queue_per_core = vec![VecDeque::new(); config.num_warps];
+    }
     c.trace_memory_queue = vec![VecDeque::new(); NUM_CLUSTERS * CORES_PER_CLUSTER];
 
     let mut context = CELL.write().unwrap();
@@ -388,7 +391,8 @@ pub unsafe extern "C" fn cyclotron_frontend_rs(
     let sim = &mut context.sim_isa;
 
     assert_single_core(sim);
-    let core = &mut sim.top.clusters[0].cores[0];
+    let core_id = 0;
+    let core = &mut sim.top.clusters[0].cores[core_id];
     let config = core.conf().clone();
 
     // SAFETY: precondition of function guarantees this is valid
@@ -415,7 +419,7 @@ pub unsafe extern "C" fn cyclotron_frontend_rs(
     // queue.  This has to happen before the sim::tick() call below, so that it respects the
     // dequeue->enqueue data hazard
     let per_warp_ready = ready.iter().map(|r| *r == 1).collect::<Vec<bool>>();
-    push_issue_queue(core, &mut context.issue_queue, &per_warp_ready);
+    push_issue_queue(core, &mut context.issue_queue[core_id], &per_warp_ready);
 
     // advance simulation to populate the tracer buffers
     sim.tick();
@@ -998,6 +1002,8 @@ fn create_new_db_overwrite() -> Connection {
 /// values logged in Cyclotron trace.
 pub unsafe extern "C" fn cyclotron_difftest_reg_rs(
     sim_tick: u8,
+    cluster_id: u32,
+    core_id: u32,
     valid: u8,
     pc: u32,
     warp_id: u32,
@@ -1017,15 +1023,18 @@ pub unsafe extern "C" fn cyclotron_difftest_reg_rs(
         .as_mut()
         .expect("DPI context not initialized!");
     let sim = &mut context.sim_isa;
-    let config = sim.top.clusters[0].cores[0].conf().clone();
+
+    let cluster_id = cluster_id as usize;
+    let core_id = core_id as usize;
+    let config = sim.top.clusters[cluster_id].cores[core_id].conf().clone();
 
     // runs regardless of valid == 0/1 to ensure model run-ahead of rtl
     if sim_tick == 1 {
         sim.tick();
 
         let all_warp_pop = vec![true; config.num_warps];
-        let core = &mut sim.top.clusters[0].cores[0];
-        push_issue_queue(core, &mut context.issue_queue, &all_warp_pop);
+        let core = &mut sim.top.clusters[cluster_id].cores[core_id];
+        push_issue_queue(core, &mut context.issue_queue[core_id], &all_warp_pop);
     }
 
     if valid == 0 {
@@ -1035,12 +1044,12 @@ pub unsafe extern "C" fn cyclotron_difftest_reg_rs(
     let rs2_data = unsafe { std::slice::from_raw_parts(rs2_data_vec, config.num_lanes) };
     let rs3_data = unsafe { std::slice::from_raw_parts(rs3_data_vec, config.num_lanes) };
 
-    let isq = &mut context.issue_queue[warp_id as usize];
+    let isq = &mut context.issue_queue[core_id][warp_id as usize];
 
     if isq.is_empty() {
         println!(
-            "DIFFTEST fail: rtl over-ran model, first remaining inst: pc:{:x}, warp:{}",
-            pc, warp_id
+            "DIFFTEST fail: rtl over-ran model, first remaining inst: cluster:{}, core:{}, warp:{}, pc:{:x}",
+            cluster_id, core_id, warp_id, pc
         );
         panic!("DIFFTEST fail");
     }
@@ -1061,8 +1070,8 @@ pub unsafe extern "C" fn cyclotron_difftest_reg_rs(
         let model_tmask = line.inst.tmask & num_lane_mask;
         if model_tmask != tmask {
             println!(
-                "DIFFTEST fail: tmask mismatch, pc:{:x}, warp:{}, rtl:{:x}, model:{:x}",
-                pc, warp_id, tmask, model_tmask
+                "DIFFTEST fail: tmask mismatch, cluster:{}, core:{}, warp:{}, pc:{:x}, rtl:{:x}, model:{:x}",
+                cluster_id, core_id, warp_id, pc, tmask, model_tmask
             );
             panic!("DIFFTEST fail");
         }
@@ -1085,9 +1094,9 @@ pub unsafe extern "C" fn cyclotron_difftest_reg_rs(
             match res {
                 Err(e) => {
                     println!(
-                        "DIFFTEST fail: {} data mismatch, pc:{:x}, warp:{}, lane:{}, \
+                        "DIFFTEST fail: {} data mismatch, cluster:{}, core:{}, warp:{}, pc:{:x}, lane:{}, \
                         rtl:{:x}, model:{:x}",
-                        name, pc, warp_id, e.lane, e.rtl, e.model
+                        name, cluster_id, core_id, warp_id, pc, e.lane, e.rtl, e.model
                     );
                     panic!("DIFFTEST fail");
                 }
@@ -1122,8 +1131,9 @@ pub unsafe extern "C" fn cyclotron_difftest_reg_rs(
 
     if !one_or_more_match {
         println!(
-            "DIFFTEST fail: pc mismatch: rtl reached instruction unseen by model, pc:{:x}, warp:{}",
-            pc, warp_id
+            "DIFFTEST fail: pc mismatch: rtl reached instruction unseen by model; \
+            cluster:{}, core:{}, warp:{}, pc:{:x}",
+            cluster_id, core_id, warp_id, pc
         );
         println!("DIFFTEST: below is the content of model issue queue:");
         for line in isq.iter_mut() {
