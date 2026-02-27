@@ -113,8 +113,10 @@ pub extern "C" fn cyclotron_init_rs(c_elfname: *const c_char) {
     let log_level = LevelFilter::Debug;
     Builder::new().filter_level(log_level).init();
 
-    // let toml_path = PathBuf::from("config.toml");
-    // let toml_string = crate::ui::read_toml(&toml_path);
+    let toml_path = PathBuf::from("config.toml");
+    let toml_string = toml_path
+        .exists()
+        .then(|| crate::ui::read_toml(&toml_path));
 
     let elfname = unsafe {
         if c_elfname.is_null() {
@@ -131,8 +133,8 @@ pub extern "C" fn cyclotron_init_rs(c_elfname: *const c_char) {
     // make separate sim instances for the golden ISA model and the backend model to prevent
     // double-execution on the same GMEM
     let arg = Some(cyclotron_args);
-    let sim_isa = crate::ui::make_sim(None, &arg);
-    let sim_be = crate::ui::make_sim(None, &arg);
+    let sim_isa = crate::ui::make_sim(toml_string.as_deref(), &arg);
+    let sim_be = crate::ui::make_sim(toml_string.as_deref(), &arg);
 
     let config = sim_isa.top.clusters[0].cores[0].conf().clone();
     let num_clusters = sim_isa.top.clusters.len();
@@ -1184,7 +1186,6 @@ fn compare_vector_reg_data(
     regs_model: &[Option<u32>],
 ) -> Result<(), RegMatchError> {
     for (i, (rtl, model)) in zip(regs_rtl, regs_model).enumerate() {
-        // TODO: instead of skipping None, compare with tmask
         if let Some(m) = model {
             if *rtl != *m {
                 return Err(RegMatchError {
