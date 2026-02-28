@@ -34,6 +34,7 @@ struct Context {
     issue_queue: Vec<Vec<IssueQueue>>,
     /// cyclotron instance for the backend model
     sim_be: Sim,
+    trace_db_path: PathBuf,
     /// load/store queue used to match req-resp for memory tracing.  Per-core.
     trace_memory_queue: Vec<MemQueue>,
     pipeline_context: PipelineContext,
@@ -129,6 +130,15 @@ pub extern "C" fn cyclotron_init_rs(c_elfname: *const c_char) {
     if !elfname.is_empty() {
         cyclotron_args.binary_path = Some(PathBuf::from(&elfname));
     }
+    let trace_db_path = if elfname.is_empty() {
+        PathBuf::from("cyclotron_trace.sqlite")
+    } else {
+        PathBuf::from(&elfname)
+            .file_name()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("cyclotron_trace.sqlite"))
+            .with_extension("sqlite")
+    };
 
     // make separate sim instances for the golden ISA model and the backend model to prevent
     // double-execution on the same GMEM
@@ -150,6 +160,7 @@ pub extern "C" fn cyclotron_init_rs(c_elfname: *const c_char) {
         sim_isa,
         issue_queue: Vec::new(),
         sim_be,
+        trace_db_path,
         trace_memory_queue: Vec::new(),
         pipeline_context: PipelineContext::new(config.num_lanes),
         cycles_after_cyclotron_finished: 0,
@@ -748,7 +759,7 @@ pub unsafe extern "C" fn cyclotron_trace_rs(
     TRACE_CONN.with(|t| {
         let mut conn_opt = t.borrow_mut();
         if conn_opt.is_none() {
-            *conn_opt = Some(create_new_db_overwrite());
+            *conn_opt = Some(create_new_db_overwrite(&context.trace_db_path));
         }
 
         // record inst
@@ -944,15 +955,16 @@ fn record_mem_req_to_db(conn: &Connection, line: &MemQueueLine, is_smem: bool) {
     .expect("failed to insert to inst");
 }
 
-fn create_new_db_overwrite() -> Connection {
-    let db_path =
-        std::env::var("CYCLOTRON_TRACE_DB").unwrap_or("cyclotron_trace.sqlite".to_string());
-    match std::fs::remove_file(&db_path) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => panic!("failed to remove existing trace database file {db_path}: {e}"),
+fn create_new_db_overwrite(db_path: &PathBuf) -> Connection {
+    for suffix in ["", "-wal", "-shm"] {
+        let path = format!("{}{}", db_path.display(), suffix);
+        match std::fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => panic!("failed to remove existing trace database file {path}: {e}"),
+        }
     }
-    let conn = Connection::open(&db_path).expect("failed to open sqlite trace database");
+    let conn = Connection::open(db_path).expect("failed to open sqlite trace database");
 
     conn.execute(
         "CREATE TABLE inst (
