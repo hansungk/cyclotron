@@ -1,14 +1,14 @@
-use std::cmp::PartialEq;
-use std::collections::HashMap;
-use std::fmt::{Display, Formatter};
-use std::sync::Arc;
-use log::info;
-use crate::base::module::IsModule;
 use crate::base::behavior::{ModuleBehaviors, Parameterizable};
+use crate::base::module::IsModule;
 use crate::base::module::{module, ModuleBase};
 use crate::neutrino::config::NeutrinoConfig;
 use crate::neutrino::counters::Counters;
 use crate::neutrino::scoreboard::JobStatus::NotStarted;
+use log::info;
+use std::cmp::PartialEq;
+use std::collections::HashMap;
+use std::fmt::{Display, Formatter};
+use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct JobID {
@@ -200,21 +200,27 @@ impl Scoreboard {
     }
 
     pub fn verify(&self, job_id: JobID) {
-        assert!(self.base.state.entries.contains_key(&job_id),
-                "job {} not found", job_id.task_id)
+        assert!(
+            self.base.state.entries.contains_key(&job_id),
+            "job {} not found",
+            job_id.task_id
+        )
     }
 
     pub fn is_ready(&self, job_id: JobID) -> bool {
         self.verify(job_id.clone());
         let entry = self.base.state.entries.get(&job_id).unwrap();
         let arrived = &entry.arrived_mask;
-        let num_threads: u32 = arrived.iter().flat_map(|x| {
-            x.iter().map(|y| y.count_ones())
-        }).sum();
+        let num_threads: u32 = arrived
+            .iter()
+            .flat_map(|x| x.iter().map(|y| y.count_ones()))
+            .sum();
         // any thread in a warp means warp has arrived
-        let num_warps: u32 = arrived.iter().flat_map(|x| {
-            x.iter().filter(|y| **y != 0u32)
-        }).collect::<Vec<_>>().len() as u32;
+        let num_warps: u32 = arrived
+            .iter()
+            .flat_map(|x| x.iter().filter(|y| **y != 0u32))
+            .collect::<Vec<_>>()
+            .len() as u32;
 
         let participation_satisfied = (match entry.part_mode {
             NeutrinoPartMode::Threads => num_threads,
@@ -222,11 +228,15 @@ impl Scoreboard {
             NeutrinoPartMode::ThreadBlocks => todo!(),
         }) >= entry.num_elems;
 
-        let dependencies_satisfied = entry.deps.iter().map(|dep| {
-            (dep.task_id == 0) || // task 0 is reserved for no dependency
+        let dependencies_satisfied = entry
+            .deps
+            .iter()
+            .map(|dep| {
+                (dep.task_id == 0) || // task 0 is reserved for no dependency
                 (!self.base.state.entries.contains_key(dep) &&
                     (self.counters.check(*dep) != NotStarted))
-        }).all(|x| x);
+            })
+            .all(|x| x);
 
         // if either the previous job doesn't exist or is dispatched, then it's in order
         let order_satisfied = match self.base.state.entries.get(&JobID {
@@ -234,17 +244,21 @@ impl Scoreboard {
             counter: self.counters.pred(job_id.counter),
         }) {
             None => true,
-            Some(e) => e.dispatched
+            Some(e) => e.dispatched,
         };
 
-        participation_satisfied && dependencies_satisfied &&
-            (!self.conf().in_order_issue || order_satisfied)
+        participation_satisfied
+            && dependencies_satisfied
+            && (!self.conf().in_order_issue || order_satisfied)
     }
 
     pub fn find_ready_jobs(&mut self) -> Vec<JobID> {
-        self.base.state.entries.iter().filter_map(|(job_id, _entry)| {
-            self.is_ready(*job_id).then_some(job_id.clone())
-        }).collect()
+        self.base
+            .state
+            .entries
+            .iter()
+            .filter_map(|(job_id, _entry)| self.is_ready(*job_id).then_some(job_id.clone()))
+            .collect()
     }
 
     pub fn dispatch(&mut self, job_id: JobID) {
@@ -255,7 +269,7 @@ impl Scoreboard {
         entry.dispatched = true;
 
         if job_id.task_id < 8 { // barriers
-            // do nothing
+             // do nothing
         } else {
             panic!("task id {} not implemented", job_id.task_id)
         }
@@ -274,11 +288,14 @@ impl Scoreboard {
 
     pub fn get_stalls(&mut self) -> Vec<Vec<u32>> {
         // find all sync, undispatched jobs and OR their masks
-        let mut stalls = vec![
-            vec![0u32; self.conf().muon_config.num_warps];
-            self.conf().muon_config.num_cores];
-        let arrived_masks: Vec<Vec<Vec<u32>>> = self.base.state.entries.iter()
-            .filter_map(|e| { e.1.sync.then_some(e.1.arrived_mask.clone()) })
+        let mut stalls =
+            vec![vec![0u32; self.conf().muon_config.num_warps]; self.conf().muon_config.num_cores];
+        let arrived_masks: Vec<Vec<Vec<u32>>> = self
+            .base
+            .state
+            .entries
+            .iter()
+            .filter_map(|e| e.1.sync.then_some(e.1.arrived_mask.clone()))
             .collect::<Vec<_>>();
         arrived_masks.iter().for_each(|e| {
             e.iter().enumerate().for_each(|(cid, warp)| {

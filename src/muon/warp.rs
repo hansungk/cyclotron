@@ -4,12 +4,17 @@ use crate::base::module::{module, IsModule, ModuleBase};
 use crate::info;
 use crate::muon::config::MuonConfig;
 use crate::muon::csr::CSRFile;
-use crate::muon::decode::{DecodeUnit, IssuedInst, MicroOp, RegFile};
-use crate::muon::execute::ExecuteUnit;
+use crate::muon::decode::{DecodeUnit, DecodedInst, IssuedInst, MicroOp, RegFile};
+use crate::muon::execute::{ExecuteUnit, Opcode};
+use crate::muon::gmem::CoreTimingModel;
 use crate::muon::scheduler::{Schedule, Scheduler, SchedulerWriteback};
 use crate::neutrino::neutrino::Neutrino;
 use crate::sim::flat_mem::FlatMemory;
 use crate::sim::log::Logger;
+use crate::timeflow::{GmemRequest, SmemRequest};
+use crate::timeq::Cycle;
+use crate::utils::BitSlice;
+use log::warn;
 use std::fmt::Debug;
 use std::fmt::{Display, Formatter};
 use std::iter::zip;
@@ -87,9 +92,16 @@ pub struct ExecErr {
     pub message: Option<String>,
 }
 
-// TODO: make ExecErr a proper error type by providing impls
-// impl Display for ExecErr
-// impl Error for ExecErr
+#[derive(Debug, Clone)]
+struct TimedMemIssue {
+    opcode: u8,
+    opext: u8,
+    rs1_addr: u8,
+    imm32: u32,
+    active_lanes: u32,
+    bytes_per_lane: u32,
+    lane_addrs: Vec<u64>,
+}
 
 impl Writeback {
     pub fn rd_data_str(&self) -> String {
@@ -224,6 +236,109 @@ impl Warp {
                 );
 
                 Ok(writeback)
+            }
+            Err(payload) => {
+                let message = payload.downcast::<String>().ok().map(|s| *s);
+                Err(ExecErr {
+                    pc,
+                    warp_id: self.wid,
+                    message,
+                })
+            }
+        }
+    }
+
+    pub fn backend_timed(
+        &mut self,
+        uop: MicroOp,
+        scheduler: &mut Scheduler,
+        neutrino: &mut Neutrino,
+        smem: &mut FlatMemory,
+        timing_model: &mut CoreTimingModel,
+        now: Cycle,
+    ) -> Result<Option<Writeback>, ExecErr> {
+        let decoded = uop.inst;
+        let pc = decoded.pc;
+        let tmask = uop.tmask;
+
+        scheduler.state_mut().thread_masks[self.wid] = tmask;
+
+        match decoded.opcode {
+            Opcode::LOAD | Opcode::STORE => {
+                if let Some(issue) = self.build_timed_mem_issue(&decoded, tmask) {
+                    if self.route_mem_to_smem(&decoded) {
+                        if self
+                            .issue_smem_request(&issue, scheduler, timing_model, now)
+                            .is_err()
+                        {
+                            return Ok(None);
+                        }
+                    } else if self
+                        .issue_gmem_request(&issue, scheduler, timing_model, now)
+                        .is_err()
+                    {
+                        return Ok(None);
+                    }
+                }
+            }
+            Opcode::MISC_MEM => {
+                let active_lanes = tmask.count_ones();
+                if active_lanes > 0 {
+                    let flush_req = if decoded.f3 == 1 {
+                        GmemRequest::new_flush_l0(self.wid, 1)
+                    } else {
+                        GmemRequest::new_flush_l1(self.wid, 1)
+                    };
+                    if timing_model
+                        .issue_gmem_request(now, self.wid, flush_req, scheduler)
+                        .is_err()
+                    {
+                        return Ok(None);
+                    }
+                }
+            }
+            Opcode::SYSTEM if decoded.f3 != 0 => {
+                let is_write = match decoded.f3 {
+                    1 | 5 => true,                  // csrrw / csrrwi
+                    2 | 3 => decoded.rs1_addr != 0, // csrrs / csrrc
+                    6 | 7 => decoded.csr_imm != 0,  // csrrsi / csrrci
+                    _ => false,
+                };
+                if is_write {
+                    timing_model.notify_csr_write(now, decoded.imm32);
+                }
+            }
+            _ => {}
+        }
+
+        let issued = self.collect(&uop);
+        let active_lanes = tmask.count_ones();
+        if timing_model
+            .issue_execute(now, self.wid, &issued, active_lanes, scheduler)
+            .is_err()
+        {
+            return Ok(None);
+        }
+
+        let writeback = catch_unwind(AssertUnwindSafe(|| {
+            self.execute(issued, tmask, scheduler, neutrino, smem)
+        }));
+
+        match writeback {
+            Ok(writeback) => {
+                self.writeback(&writeback);
+
+                info!(
+                    self.logger,
+                    "@t={} [{}] PC=0x{:08x}, rd={:3}, data=[{} lanes valid]",
+                    self.base.cycle,
+                    self.name(),
+                    pc,
+                    writeback.rd_addr,
+                    writeback.num_rd_data()
+                );
+
+                Ok(Some(writeback))
             }
             Err(payload) => {
                 let message = payload.downcast::<String>().ok().map(|s| *s);
@@ -424,5 +539,113 @@ impl Warp {
         for (csr_file, thread_idx) in zip(self.base.state.csr_file.iter_mut(), thread_idxs.iter()) {
             csr_file.set_block_thread_bp(block_idx, *thread_idx, bp);
         }
+    }
+
+    fn build_timed_mem_issue(&self, decoded: &DecodedInst, tmask: u32) -> Option<TimedMemIssue> {
+        if decoded.opcode != Opcode::LOAD && decoded.opcode != Opcode::STORE {
+            warn!(
+                "warp {} mem issue requested for non-memory opcode=0x{:02x}",
+                self.wid, decoded.opcode
+            );
+            return None;
+        }
+
+        let active_lanes = tmask.count_ones();
+        if active_lanes == 0 {
+            return None;
+        }
+
+        let bytes_per_lane = 1u32 << (decoded.f3 & 3);
+        let lane_addrs = self.collect_lane_addrs(decoded.rs1_addr, decoded.imm32, tmask);
+
+        Some(TimedMemIssue {
+            opcode: decoded.opcode,
+            opext: decoded.opext,
+            rs1_addr: decoded.rs1_addr,
+            imm32: decoded.imm32,
+            active_lanes,
+            bytes_per_lane,
+            lane_addrs,
+        })
+    }
+
+    fn issue_gmem_request(
+        &self,
+        issue: &TimedMemIssue,
+        scheduler: &mut Scheduler,
+        timing_model: &mut CoreTimingModel,
+        now: Cycle,
+    ) -> Result<(), ()> {
+        debug_assert!(issue.opcode == Opcode::LOAD || issue.opcode == Opcode::STORE);
+        if issue.opext == 1 {
+            warn!(
+                "warp {} smem-routed request reached gmem issuer (opcode=0x{:02x}, rs1={}, imm={})",
+                self.wid, issue.opcode, issue.rs1_addr, issue.imm32
+            );
+            return Ok(());
+        }
+        let total_bytes = issue.bytes_per_lane.saturating_mul(issue.active_lanes);
+        let mut request = GmemRequest::new(
+            self.wid,
+            total_bytes.max(1),
+            issue.active_lanes,
+            issue.opcode == Opcode::LOAD,
+        );
+        request.addr = issue.lane_addrs.iter().copied().min().unwrap_or(0);
+        request.lane_addrs = Some(issue.lane_addrs.clone());
+
+        timing_model
+            .issue_gmem_request(now, self.wid, request, scheduler)
+            .map(|_| ())
+            .map_err(|_| ())
+    }
+
+    fn route_mem_to_smem(&self, decoded: &DecodedInst) -> bool {
+        (decoded.opcode == Opcode::LOAD || decoded.opcode == Opcode::STORE) && decoded.opext == 1
+    }
+
+    fn collect_lane_addrs(&self, rs1_addr: u8, imm32: u32, tmask: u32) -> Vec<u64> {
+        let mut addrs = Vec::new();
+        for (lane, lrf) in self.base.state.reg_file.iter().enumerate() {
+            if !tmask.bit(lane) {
+                continue;
+            }
+            let addr = lrf.read_gpr(rs1_addr).wrapping_add(imm32) as u64;
+            addrs.push(addr);
+        }
+        addrs
+    }
+
+    fn issue_smem_request(
+        &self,
+        issue: &TimedMemIssue,
+        scheduler: &mut Scheduler,
+        timing_model: &mut CoreTimingModel,
+        now: Cycle,
+    ) -> Result<(), ()> {
+        debug_assert!(issue.opcode == Opcode::LOAD || issue.opcode == Opcode::STORE);
+        if issue.opext != 1 {
+            warn!(
+                "warp {} gmem-routed request reached smem issuer (opcode=0x{:02x}, rs1={}, imm={})",
+                self.wid, issue.opcode, issue.rs1_addr, issue.imm32
+            );
+            return Ok(());
+        }
+        let total_bytes = issue.bytes_per_lane.saturating_mul(issue.active_lanes);
+        let bank = self.wid;
+        let mut request = SmemRequest::new(
+            self.wid,
+            total_bytes.max(1),
+            issue.active_lanes,
+            issue.opcode == Opcode::STORE,
+            bank,
+        );
+        request.addr = issue.lane_addrs.iter().copied().min().unwrap_or(0);
+        request.lane_addrs = Some(issue.lane_addrs.clone());
+
+        timing_model
+            .issue_smem_request(now, self.wid, request, scheduler)
+            .map(|_| ())
+            .map_err(|_| ())
     }
 }

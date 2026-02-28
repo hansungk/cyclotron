@@ -16,5 +16,9 @@ Cargo.lock
 # editor
 .vscode
 
+.DS_Store
+
+performance_logs
+
 # logs from run-isa-tests.sh
 logs/

@@ -3,6 +3,7 @@ use crate::muon::core::MuonCore;
 use crate::neutrino::neutrino::Neutrino;
 use crate::sim::flat_mem::FlatMemory;
 use crate::sim::log::Logger;
+use crate::sim::perf_log::PerfLogSession;
 use crate::sim::top::ClusterConfig;
 use log::info;
 use std::sync::{Arc, RwLock};
@@ -15,7 +16,12 @@ pub struct Cluster {
 }
 
 impl Cluster {
-    pub fn new(config: Arc<ClusterConfig>, id: usize, logger: &Arc<Logger>, gmem: Arc<RwLock<FlatMemory>>) -> Self {
+    pub fn new(
+        config: Arc<ClusterConfig>,
+        id: usize,
+        logger: &Arc<Logger>,
+        gmem: Arc<RwLock<FlatMemory>>,
+    ) -> Self {
         let mut cores = Vec::new();
         for cid in 0..config.muon_config.num_cores {
             cores.push(MuonCore::new(
@@ -24,6 +30,38 @@ impl Cluster {
                 cid,
                 logger,
                 gmem.clone(),
+            ));
+        }
+        Cluster {
+            id,
+            cores,
+            neutrino: Neutrino::new(Arc::new(config.neutrino_config)),
+            scheduled_threadblocks: 0,
+        }
+    }
+
+    pub fn new_timed(
+        config: Arc<ClusterConfig>,
+        id: usize,
+        logger: &Arc<Logger>,
+        gmem: Arc<RwLock<FlatMemory>>,
+        gmem_timing: Arc<RwLock<crate::timeflow::ClusterGmemGraph>>,
+        perf_log_session: Option<Arc<PerfLogSession>>,
+    ) -> Self {
+        let mut cores = Vec::new();
+        for cid in 0..config.muon_config.num_cores {
+            let timing_core_id = id * config.muon_config.num_cores + cid;
+            cores.push(MuonCore::new_timed(
+                Arc::new(config.muon_config),
+                id,
+                cid,
+                logger,
+                gmem.clone(),
+                config.timing_config.clone(),
+                timing_core_id,
+                id,
+                gmem_timing.clone(),
+                perf_log_session.clone(),
             ));
         }
         Cluster {
@@ -52,7 +90,9 @@ impl Cluster {
 
     // TODO: This should differentiate between different threadblocks.
     pub fn all_cores_retired(&self) -> bool {
-        self.cores.iter().all(|core| core.all_warps_retired())
+        self.cores
+            .iter()
+            .all(|core| core.all_warps_retired() && !core.has_timing_inflight())
     }
 }
 
