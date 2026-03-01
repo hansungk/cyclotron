@@ -3,6 +3,7 @@ use crate::neutrino::config::NeutrinoConfig;
 use crate::sim::config::{Config, FrontendMode, MemConfig, SimConfig};
 use crate::sim::top::Sim;
 use crate::timeflow::CoreGraphConfig;
+use crate::traffic::config::TrafficConfig;
 use clap::Parser;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -109,6 +110,46 @@ fn load_timing_config(config_path: Option<&Path>, config_table: Option<&Table>) 
     merged.try_into().unwrap_or_default()
 }
 
+fn load_traffic_config(config_path: Option<&Path>, config_table: Option<&Table>) -> TrafficConfig {
+    let base_dir = config_path
+        .and_then(|path| path.parent())
+        .unwrap_or_else(|| Path::new("."));
+
+    let inline = config_table
+        .and_then(|table| table.get("traffic"))
+        .cloned()
+        .unwrap_or_else(|| Value::Table(Table::new()));
+    let mut merged = inline.clone();
+
+    let include_path = inline
+        .as_table()
+        .and_then(|table| table.get("file"))
+        .and_then(Value::as_str)
+        .map(|path| base_dir.join(path));
+
+    if let Some(path) = include_path {
+        let traffic_toml = read_toml(&path);
+        let mut from_file: Value = toml::from_str(&traffic_toml).unwrap_or_else(|err| {
+            eprintln!("failed to parse traffic config {}: {}", path.display(), err);
+            std::process::exit(1);
+        });
+        if let Some(section) = from_file
+            .as_table()
+            .and_then(|table| table.get("traffic"))
+            .cloned()
+        {
+            from_file = section;
+        }
+        merge_values(&mut from_file, merged);
+        merged = from_file;
+    }
+
+    merged.try_into().unwrap_or_else(|err| {
+        eprintln!("failed to deserialize traffic config: {}", err);
+        std::process::exit(1);
+    })
+}
+
 /// Make a Sim object.
 /// If `toml_string` is given, override default configs with TOML values.
 /// If `cli_args` is given, override post-TOML configs with CLI arguments.
@@ -118,14 +159,6 @@ pub fn make_sim(toml_string: Option<&str>, cli_args: &Option<CyclotronArgs>) -> 
     let mem_config = MemConfig::from_section(maybe_get(&config_table, "mem"));
     let mut muon_config = MuonConfig::from_section(maybe_get(&config_table, "muon"));
     let mut neutrino_config = NeutrinoConfig::from_section(maybe_get(&config_table, "neutrino"));
-    let traffic_config = maybe_get(&config_table, "traffic")
-        .map(|value| {
-            value
-                .clone()
-                .try_into()
-                .expect("cannot deserialize traffic config")
-        })
-        .unwrap_or_default();
 
     let config_path = cli_args.as_ref().and_then(|args| {
         if args.config_path.as_os_str().is_empty() {
@@ -135,6 +168,7 @@ pub fn make_sim(toml_string: Option<&str>, cli_args: &Option<CyclotronArgs>) -> 
         }
     });
     let timing_config = load_timing_config(config_path, config_table.as_ref());
+    let traffic_config = load_traffic_config(config_path, config_table.as_ref());
 
     if let Some(args) = cli_args {
         sim_config.elf = args.binary_path.as_ref().cloned().unwrap_or(sim_config.elf);

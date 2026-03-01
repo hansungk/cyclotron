@@ -6,10 +6,10 @@ use crate::sim::config::Config;
 #[serde(default)]
 pub struct TrafficConfig {
     pub enabled: bool,
+    pub file: Option<String>,
     pub lockstep_patterns: bool,
     pub reqs_per_pattern: u32,
     pub num_lanes: usize,
-    pub preset: Option<String>,
     pub address: TrafficAddressConfig,
     pub issue: TrafficIssueConfig,
     pub logging: TrafficLoggingConfig,
@@ -22,10 +22,10 @@ impl Default for TrafficConfig {
     fn default() -> Self {
         Self {
             enabled: false,
+            file: None,
             lockstep_patterns: true,
             reqs_per_pattern: 4096,
             num_lanes: 16,
-            preset: None,
             address: TrafficAddressConfig::default(),
             issue: TrafficIssueConfig::default(),
             logging: TrafficLoggingConfig::default(),
@@ -93,6 +93,16 @@ pub struct TrafficPatternSpec {
     pub kind: String,
     pub req_bytes: u32,
     pub op: String,
+    pub warp_stride: u32,
+    pub lane_stride: u32,
+    pub tile_m: u32,
+    pub tile_n: u32,
+    pub tile_size: u32,
+    pub transpose: bool,
+    pub random_min: u32,
+    pub random_max: u32,
+    pub seed: u64,
+    pub within_bytes: Option<u64>,
 }
 
 impl Default for TrafficPatternSpec {
@@ -102,7 +112,16 @@ impl Default for TrafficPatternSpec {
             kind: String::new(),
             req_bytes: 4,
             op: "read".to_string(),
+            warp_stride: 1,
+            lane_stride: 1,
+            tile_m: 16,
+            tile_n: 16,
+            tile_size: 16,
+            transpose: false,
+            random_min: 0,
+            random_max: 0,
+            seed: 0,
+            within_bytes: None,
         }
     }
 }
-

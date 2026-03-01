@@ -287,6 +287,21 @@ impl CoreTimingModel {
         self.update_scheduler_state(warp, scheduler);
     }
 
+    pub(super) fn add_smem_pending_frontend(
+        &mut self,
+        warp: usize,
+        request_id: u64,
+        ready_at: Cycle,
+        count: usize,
+    ) {
+        if let Some(slot) = self.pending_smem.get_mut(warp) {
+            let repeats = count.max(1);
+            for _ in 0..repeats {
+                slot.push_back((request_id, ready_at));
+            }
+        }
+    }
+
     pub(super) fn remove_smem_pending(
         &mut self,
         warp: usize,

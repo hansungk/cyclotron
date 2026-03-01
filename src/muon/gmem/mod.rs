@@ -24,6 +24,7 @@ pub use metrics::*;
 pub struct CoreTimingModel {
     graph: CoreGraph,
     pending_writeback: VecDeque<WritebackPayload>,
+    smem_completion_events: VecDeque<SmemCompletionEvent>,
     pending_dma: VecDeque<u32>,
     pending_tensor: VecDeque<u32>,
     issue_scheduler: WarpIssueScheduler,
@@ -69,6 +70,17 @@ pub struct CoreTimingModel {
 struct PendingClusterIssue<T> {
     request: T,
     retry_at: Cycle,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct SmemCompletionEvent {
+    pub request_id: u64,
+    pub warp: usize,
+    pub addr: u64,
+    pub bytes: u32,
+    pub is_store: bool,
+    pub ticket_ready_at: Cycle,
+    pub completed_at: Cycle,
 }
 
 #[derive(Clone, Copy)]

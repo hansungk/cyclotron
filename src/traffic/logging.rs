@@ -14,5 +14,8 @@ impl TrafficLogger {
             core_id, pattern_name, cycle
         );
     }
-}
 
+    pub fn log_core_done(core_id: usize) {
+        println!("[TRAFFIC] core {} all done!", core_id);
+    }
+}

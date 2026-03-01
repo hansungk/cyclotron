@@ -148,6 +148,16 @@ impl CoreTimingModel {
         self.maybe_clear_smem_issue_cycle(completed_id);
         self.graph
             .lsu_release_load_data(&LsuPayload::Smem(completion.request.clone()));
+        self.smem_completion_events
+            .push_back(super::SmemCompletionEvent {
+                request_id: completed_id,
+                warp,
+                addr: completion.request.addr,
+                bytes: completion.request.bytes,
+                is_store: completion.request.is_store,
+                ticket_ready_at: completion.ticket_ready_at,
+                completed_at: now,
+            });
         self.trace_event(
             now,
             "smem_complete",

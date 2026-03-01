@@ -154,6 +154,17 @@ impl MuonCore {
         }
     }
 
+    pub fn with_timing_model<R>(
+        &mut self,
+        f: impl FnOnce(&mut CoreTimingModel, &mut Scheduler, u64) -> R,
+    ) -> Option<R> {
+        let now = module_now(&self.scheduler);
+        match &mut self.timing_mode {
+            TimingMode::Disabled => None,
+            TimingMode::Enabled(timing_model) => Some(f(timing_model, &mut self.scheduler, now)),
+        }
+    }
+
     /// Schedule all warps and get per-warp PC/tmasks.
     pub fn schedule(&mut self) -> Vec<Option<Schedule>> {
         (0..self.conf().num_warps)

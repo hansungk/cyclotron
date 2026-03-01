@@ -162,7 +162,7 @@ impl ModuleBehaviors for Cluster {
                 for core in &mut self.cores {
                     core.tick_one();
                 }
-                driver.tick();
+                driver.tick(&mut self.cores);
             }
         }
     }

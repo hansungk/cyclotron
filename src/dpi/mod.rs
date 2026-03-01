@@ -115,9 +115,7 @@ pub extern "C" fn cyclotron_init_rs(c_elfname: *const c_char) {
     Builder::new().filter_level(log_level).init();
 
     let toml_path = PathBuf::from("config.toml");
-    let toml_string = toml_path
-        .exists()
-        .then(|| crate::ui::read_toml(&toml_path));
+    let toml_string = toml_path.exists().then(|| crate::ui::read_toml(&toml_path));
 
     let elfname = unsafe {
         if c_elfname.is_null() {

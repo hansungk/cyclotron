@@ -97,6 +97,7 @@ impl CoreTimingModel {
                 perf_log_session.clone(),
             ),
             pending_writeback: VecDeque::new(),
+            smem_completion_events: VecDeque::new(),
             pending_dma: VecDeque::new(),
             pending_tensor: VecDeque::new(),
             issue_scheduler,
@@ -268,6 +269,10 @@ impl CoreTimingModel {
 
     pub fn outstanding_smem(&self) -> usize {
         self.pending_smem.iter().map(|queue| queue.len()).sum()
+    }
+
+    pub fn drain_smem_completion_events(&mut self) -> Vec<super::SmemCompletionEvent> {
+        self.smem_completion_events.drain(..).collect()
     }
 
     pub fn stats(&self) -> CoreStats {

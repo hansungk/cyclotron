@@ -241,6 +241,82 @@ impl CoreTimingModel {
         }
     }
 
+    pub fn issue_smem_request_frontend(
+        &mut self,
+        now: Cycle,
+        mut request: SmemRequest,
+    ) -> Result<Ticket, Cycle> {
+        let warp = request.warp;
+        if warp >= self.pending_smem.len() {
+            return Err(now.saturating_add(1));
+        }
+
+        if request.id == 0 {
+            request.id = if self.next_smem_id == 0 {
+                1
+            } else {
+                self.next_smem_id
+            };
+        } else if request.id >= self.next_smem_id {
+            self.next_smem_id = request.id.saturating_add(1);
+        }
+        if request.id >= self.next_smem_id {
+            self.next_smem_id = request.id.saturating_add(1);
+        }
+        let request_id = request.id;
+        let split_count = self.split_smem_request(&request).len().max(1);
+        let conflict_sample = self.compute_smem_conflict(&request);
+        let issue_bytes = request.bytes;
+        if let Err(reject) = self.graph.operand_fetch_try_issue(now, request.bytes) {
+            let wait_until = reject.retry_at.max(now.saturating_add(1));
+            return Err(wait_until);
+        }
+
+        match self.graph.lsu_issue_smem(now, request) {
+            Ok(LsuIssue { ticket }) => {
+                let ready_at = ticket.ready_at();
+                self.smem_issue_cycle.entry(request_id).or_insert(now);
+                self.add_smem_pending_frontend(warp, request_id, ready_at, split_count);
+                if let Some(sample) = conflict_sample {
+                    self.record_smem_conflict(now, warp, request_id, sample);
+                }
+                self.trace_event(
+                    now,
+                    "smem_issue_frontend",
+                    warp,
+                    Some(request_id),
+                    issue_bytes,
+                    None,
+                );
+                Ok(ticket)
+            }
+            Err(LsuReject {
+                payload: request,
+                retry_at,
+                reason,
+            }) => {
+                let wait_until = retry_at.max(now.saturating_add(1));
+                let reason_str = match reason {
+                    LsuRejectReason::Busy => "busy",
+                    LsuRejectReason::QueueFull => "queue_full",
+                };
+                let (request_id, request_bytes) = match request {
+                    LsuPayload::Smem(req) => (req.id, req.bytes),
+                    LsuPayload::Gmem(req) => (req.id, req.bytes),
+                };
+                self.trace_event(
+                    now,
+                    "smem_reject_frontend",
+                    warp,
+                    Some(request_id),
+                    request_bytes,
+                    Some(reason_str),
+                );
+                Err(wait_until)
+            }
+        }
+    }
+
     pub fn issue_dma(&mut self, now: Cycle, bytes: u32) -> Result<Ticket, Cycle> {
         match self.graph.dma_try_issue(now, bytes) {
             Ok(ticket) => Ok(ticket),
