@@ -159,10 +159,10 @@ impl ModuleBehaviors for Cluster {
                     .update(&mut self.cores.iter_mut().map(|c| &mut c.scheduler).collect());
             }
             ClusterFrontend::TrafficSmem(driver) => {
-                for core in &mut self.cores {
+                for (core_id, core) in self.cores.iter_mut().enumerate() {
                     core.tick_one();
+                    driver.tick_core(core_id, core);
                 }
-                driver.tick(&mut self.cores);
             }
         }
     }

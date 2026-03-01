@@ -120,16 +120,19 @@ impl SmemTrafficDriver {
         }
     }
 
-    pub fn tick(&mut self, cores: &mut [MuonCore]) {
+    pub fn tick_core(&mut self, core_id: usize, core: &mut MuonCore) {
         if self.done {
+            core.scheduler.tick_one();
             return;
         }
         if self.pattern_engine.is_empty() {
             self.done = true;
             self.maybe_emit_results();
+            core.scheduler.tick_one();
             return;
         }
-        self.ensure_core_state(cores);
+
+        self.ensure_core_state_for(core_id, core);
 
         let reqs_per_pattern = self.config.reqs_per_pattern;
         let max_inflight = self.config.issue.max_inflight_per_lane.max(1);
@@ -138,68 +141,65 @@ impl SmemTrafficDriver {
         let print_lines = self.config.logging.print_traffic_lines;
         let patterns = self.pattern_engine.clone();
 
-        for (core_id, core) in cores.iter_mut().enumerate() {
-            if self
-                .core_states
-                .get(core_id)
-                .map(|state| state.is_done())
-                .unwrap_or(true)
-            {
-                core.scheduler.tick_one();
-                continue;
-            }
-
-            let mut finished_checkpoint: Option<PatternCheckpoint> = None;
-            let mut core_just_done = false;
+        let mut finished_checkpoint: Option<PatternCheckpoint> = None;
+        let mut core_just_done = false;
+        let mut model_none = false;
+        {
             let state = self
                 .core_states
                 .get_mut(core_id)
                 .expect("missing traffic driver state for core");
 
-            let model_present = core.with_timing_model(|timing, scheduler, now| {
-                timing.tick(now, scheduler);
-                let events = timing.drain_smem_completion_events();
-                Self::route_completions(state, &events);
+            if !state.is_done() {
+                let model_present = core.with_timing_model(|timing, scheduler, now| {
+                    timing.tick(now, scheduler);
+                    let events = timing.drain_smem_completion_events();
+                    Self::route_completions(state, &events);
 
-                finished_checkpoint = if lockstep {
-                    Self::tick_core_lockstep(
-                        state,
-                        timing,
-                        now,
-                        &patterns,
-                        reqs_per_pattern,
-                        max_inflight,
-                        retry_backoff,
-                    )
-                } else {
-                    Self::tick_core_independent(
-                        state,
-                        timing,
-                        now,
-                        &patterns,
-                        reqs_per_pattern,
-                        max_inflight,
-                        retry_backoff,
-                    )
-                };
-                core_just_done = state.is_done();
-            });
-            if model_present.is_none() {
-                panic!("frontend_mode=traffic_smem requires sim.timing=true");
+                    finished_checkpoint = if lockstep {
+                        Self::tick_core_lockstep(
+                            state,
+                            timing,
+                            now,
+                            &patterns,
+                            reqs_per_pattern,
+                            max_inflight,
+                            retry_backoff,
+                        )
+                    } else {
+                        Self::tick_core_independent(
+                            state,
+                            timing,
+                            now,
+                            &patterns,
+                            reqs_per_pattern,
+                            max_inflight,
+                            retry_backoff,
+                        )
+                    };
+                    core_just_done = state.is_done();
+                });
+                model_none = model_present.is_none();
             }
+        }
 
-            core.scheduler.tick_one();
+        if model_none {
+            panic!("frontend_mode=traffic_smem requires sim.timing=true");
+        }
 
-            if let Some(checkpoint) = finished_checkpoint {
-                if print_lines {
-                    TrafficLogger::log_pattern_checkpoint(
-                        checkpoint.core_id,
-                        &checkpoint.pattern_name,
-                        checkpoint.finished_cycle,
-                    );
-                }
+        core.scheduler.tick_one();
+
+        if let Some(checkpoint) = finished_checkpoint {
+            if print_lines {
+                TrafficLogger::log_pattern_checkpoint(
+                    checkpoint.core_id,
+                    &checkpoint.pattern_name,
+                    checkpoint.finished_cycle,
+                );
             }
+        }
 
+        if let Some(state) = self.core_states.get_mut(core_id) {
             if core_just_done && !state.done_logged {
                 state.done_logged = true;
                 if print_lines {
@@ -216,20 +216,24 @@ impl SmemTrafficDriver {
         self.done
     }
 
-    fn ensure_core_state(&mut self, cores: &[MuonCore]) {
-        while self.core_states.len() < cores.len() {
-            let core_id = self.core_states.len();
-            let lane_cap = cores[core_id].warps.len();
+    fn ensure_core_state_for(&mut self, core_id: usize, core: &MuonCore) {
+        while self.core_states.len() <= core_id {
+            let new_core_id = self.core_states.len();
+            let lane_cap = if new_core_id == core_id {
+                core.warps.len()
+            } else {
+                self.config.num_lanes
+            };
             assert!(
                 self.config.num_lanes <= lane_cap,
                 "traffic.num_lanes={} exceeds core {} warp capacity {}. Set muon.num_warps >= traffic.num_lanes for traffic_smem mode.",
                 self.config.num_lanes,
-                core_id,
+                new_core_id,
                 lane_cap
             );
             let lanes = (0..self.config.num_lanes).map(LaneState::new).collect();
             self.core_states.push(CoreState {
-                core_id,
+                core_id: new_core_id,
                 lanes,
                 barrier: PatternBarrierState {
                     current_pattern_idx: 0,
