@@ -4,11 +4,12 @@ use crate::cluster::Cluster;
 use crate::command_proc::CommandProcessor;
 use crate::muon::config::MuonConfig;
 use crate::neutrino::config::NeutrinoConfig;
-use crate::sim::config::{MemConfig, SimConfig};
+use crate::sim::config::{FrontendMode, MemConfig, SimConfig};
 use crate::sim::elf::ElfBackedMem;
 use crate::sim::flat_mem::FlatMemory;
 use crate::sim::log::Logger;
 use crate::sim::perf_log::PerfLogSession;
+use crate::traffic::config::TrafficConfig;
 use crate::timeflow::CoreGraphConfig;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
@@ -48,6 +49,7 @@ impl Sim {
             neutrino_config,
             mem_config,
             CoreGraphConfig::default(),
+            TrafficConfig::default(),
         )
     }
 
@@ -57,6 +59,7 @@ impl Sim {
         neutrino_config: NeutrinoConfig,
         mem_config: MemConfig,
         timing_config: CoreGraphConfig,
+        traffic_config: TrafficConfig,
     ) -> Sim {
         let perf_log_session = if sim_config.timing {
             PerfLogSession::new().map(Arc::new)
@@ -75,6 +78,8 @@ impl Sim {
                 },
                 mem_config,
                 timing_enabled: sim_config.timing,
+                frontend_mode: sim_config.frontend_mode,
+                traffic_config,
             }),
             &logger,
             perf_log_session.clone(),
@@ -141,6 +146,8 @@ pub struct CyclotronConfig {
     pub cluster_config: ClusterConfig,
     pub mem_config: MemConfig,
     pub timing_enabled: bool,
+    pub frontend_mode: FrontendMode,
+    pub traffic_config: TrafficConfig,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -191,6 +198,8 @@ impl CyclotronTop {
                     gmem.clone(),
                     gmem_timing.clone(),
                     perf_log_session.clone(),
+                    config.frontend_mode,
+                    config.traffic_config.clone(),
                 ));
             }
         } else {
@@ -200,6 +209,8 @@ impl CyclotronTop {
                     id,
                     logger,
                     gmem.clone(),
+                    config.frontend_mode,
+                    config.traffic_config.clone(),
                 ));
             }
         }
@@ -215,6 +226,14 @@ impl CyclotronTop {
     }
 
     pub fn schedule_clusters(&mut self) {
+        if self
+            .clusters
+            .first()
+            .map(|cluster| !cluster.uses_command_processor())
+            .unwrap_or(false)
+        {
+            return;
+        }
         let tb_schedule = self.cproc.schedule();
         let num_clusters = self.clusters.len();
         for id in 0..num_clusters {
@@ -256,6 +275,15 @@ impl ModuleBehaviors for CyclotronTop {
         self.schedule_clusters();
 
         self.clusters.iter_mut().for_each(Cluster::tick_one);
+
+        if self
+            .clusters
+            .first()
+            .map(|cluster| !cluster.uses_command_processor())
+            .unwrap_or(false)
+        {
+            return;
+        }
 
         // FIXME: if tick_one() is called after finished() is true, the retire() call might result
         // in an underflow.

@@ -1,10 +1,11 @@
 use crate::muon::config::MuonConfig;
 use crate::neutrino::config::NeutrinoConfig;
-use crate::sim::config::{Config, MemConfig, SimConfig};
+use crate::sim::config::{Config, FrontendMode, MemConfig, SimConfig};
 use crate::sim::top::Sim;
 use crate::timeflow::CoreGraphConfig;
 use clap::Parser;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 use toml::{Table, Value};
 
 #[derive(Parser, Default)]
@@ -26,6 +27,12 @@ pub struct CyclotronArgs {
     pub gen_trace: Option<bool>,
     #[arg(long, help = "Enable timing model")]
     pub timing: bool,
+    #[arg(
+        long,
+        help = "Override frontend mode (elf|traffic_smem)",
+        value_parser = ["elf", "traffic_smem"]
+    )]
+    pub frontend_mode: Option<String>,
 }
 
 pub fn read_toml(filepath: &Path) -> String {
@@ -111,6 +118,14 @@ pub fn make_sim(toml_string: Option<&str>, cli_args: &Option<CyclotronArgs>) -> 
     let mem_config = MemConfig::from_section(maybe_get(&config_table, "mem"));
     let mut muon_config = MuonConfig::from_section(maybe_get(&config_table, "muon"));
     let mut neutrino_config = NeutrinoConfig::from_section(maybe_get(&config_table, "neutrino"));
+    let traffic_config = maybe_get(&config_table, "traffic")
+        .map(|value| {
+            value
+                .clone()
+                .try_into()
+                .expect("cannot deserialize traffic config")
+        })
+        .unwrap_or_default();
 
     let config_path = cli_args.as_ref().and_then(|args| {
         if args.config_path.as_os_str().is_empty() {
@@ -128,6 +143,12 @@ pub fn make_sim(toml_string: Option<&str>, cli_args: &Option<CyclotronArgs>) -> 
         if args.timing {
             sim_config.timing = true;
         }
+        if let Some(mode) = args.frontend_mode.as_deref() {
+            sim_config.frontend_mode = FrontendMode::from_str(mode).unwrap_or_else(|err| {
+                eprintln!("invalid --frontend-mode: {}", err);
+                std::process::exit(1);
+            });
+        }
         muon_config.num_lanes = args.num_lanes.unwrap_or(muon_config.num_lanes);
         muon_config.num_warps = args.num_warps.unwrap_or(muon_config.num_warps);
         muon_config.num_cores = args.num_cores.unwrap_or(muon_config.num_cores);
@@ -141,5 +162,6 @@ pub fn make_sim(toml_string: Option<&str>, cli_args: &Option<CyclotronArgs>) -> 
         neutrino_config,
         mem_config,
         timing_config,
+        traffic_config,
     )
 }

@@ -7,6 +7,7 @@ pub mod memfuzz;
 pub mod muon;
 pub mod neutrino;
 pub mod sim;
+pub mod traffic;
 pub mod timeflow;
 pub mod timeq;
 pub mod ui;

@@ -1,9 +1,33 @@
 use std::path::PathBuf;
+use std::str::FromStr;
 
 use log::warn;
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use toml::*;
+
+#[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum FrontendMode {
+    #[default]
+    Elf,
+    TrafficSmem,
+}
+
+impl FromStr for FrontendMode {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "elf" => Ok(Self::Elf),
+            "traffic_smem" => Ok(Self::TrafficSmem),
+            _ => Err(format!(
+                "unsupported frontend mode '{}', expected one of: elf, traffic_smem",
+                value
+            )),
+        }
+    }
+}
 
 #[derive(Debug, Deserialize, Clone)]
 #[serde(default)]
@@ -13,6 +37,7 @@ pub struct SimConfig {
     pub timeout: u64,
     pub trace: bool,
     pub timing: bool,
+    pub frontend_mode: FrontendMode,
 }
 
 pub trait Config: DeserializeOwned + Default {
@@ -37,6 +62,7 @@ impl Default for SimConfig {
             timeout: 10000000,
             trace: false,
             timing: false,
+            frontend_mode: FrontendMode::Elf,
         }
     }
 }
