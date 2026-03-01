@@ -84,3 +84,21 @@ Each run directory contains:
 
 Timing parameters are modular — see `config/timing/` for individual component configurations (cache sizes, queue depths, latencies, etc.).
 
+## Tuning Parameters
+
+### SMEM traffic workflow 
+
+Generate a Cyclotron traffic config directly from a Radiance `.out` reference:
+
+```bash
+./scripts/generate_smem_traffic_toml.py \
+  --reference-out ../radiance/none.smem_test.out \
+  --output config/traffic/smem_radiance.toml
+```
+
+Run STF (synthetic traffic frontend) mode and compare against the same reference:
+
+```bash
+./scripts/validate_smem_parity.py \
+  --reference-out ../radiance/none.smem_test.out
+```

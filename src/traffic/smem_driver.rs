@@ -139,7 +139,7 @@ impl SmemTrafficDriver {
         let retry_backoff = self.config.issue.retry_backoff_min.max(1);
         let lockstep = self.config.lockstep_patterns;
         let print_lines = self.config.logging.print_traffic_lines;
-        let patterns = self.pattern_engine.clone();
+        let patterns = &self.pattern_engine;
 
         let mut finished_checkpoint: Option<PatternCheckpoint> = None;
         let mut core_just_done = false;
@@ -161,7 +161,7 @@ impl SmemTrafficDriver {
                             state,
                             timing,
                             now,
-                            &patterns,
+                            patterns,
                             reqs_per_pattern,
                             max_inflight,
                             retry_backoff,
@@ -171,7 +171,7 @@ impl SmemTrafficDriver {
                             state,
                             timing,
                             now,
-                            &patterns,
+                            patterns,
                             reqs_per_pattern,
                             max_inflight,
                             retry_backoff,

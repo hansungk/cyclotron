@@ -1,4 +1,7 @@
 use crate::traffic::config::{TrafficConfig, TrafficPatternSpec};
+use rand::rngs::StdRng;
+use rand::{Rng, SeedableRng};
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PatternOp {
@@ -39,6 +42,14 @@ enum PatternKind {
         max: u64,
         seed: u64,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct RandomStreamKey {
+    min: u64,
+    max: u64,
+    seed: u64,
+    req_bytes: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -99,14 +110,28 @@ impl CompiledPattern {
                 if max <= min {
                     return min.saturating_mul(req_bytes);
                 }
-                let span = max - min;
+                // Fallback path for out-of-range indexed requests (normal path uses
+                // precomputed random tables in PatternEngine for Radiance parity).
                 let key = seed
                     ^ ((lane_idx as u64) << 32)
                     ^ (req_idx as u64)
                     ^ ((self.req_bytes as u64) << 48);
+                let span = max - min;
                 let sample = min + (mix64(key) % span);
                 sample.saturating_mul(req_bytes)
             }
+        }
+    }
+
+    fn random_stream_key(&self) -> Option<RandomStreamKey> {
+        match self.kind {
+            PatternKind::Random { min, max, seed } => Some(RandomStreamKey {
+                min,
+                max,
+                seed,
+                req_bytes: self.req_bytes.max(1),
+            }),
+            _ => None,
         }
     }
 
@@ -121,23 +146,29 @@ impl CompiledPattern {
 pub struct PatternEngine {
     patterns: Vec<CompiledPattern>,
     lanes: usize,
+    reqs_per_pattern: usize,
     smem_base: u64,
+    random_tables: Vec<Option<Vec<u64>>>, // flattened [lane * reqs_per_pattern + t]
 }
 
 impl PatternEngine {
     pub fn new(config: &TrafficConfig) -> Self {
         let lanes = config.num_lanes.max(1);
         let smem_base = config.address.smem_base;
-        let patterns = config
+        let reqs_per_pattern = config.reqs_per_pattern.max(1) as usize;
+        let patterns: Vec<CompiledPattern> = config
             .patterns
             .iter()
             .enumerate()
             .map(|(idx, spec)| compile_pattern(spec, idx, config))
             .collect();
+        let random_tables = precompute_random_tables(&patterns, lanes, reqs_per_pattern);
         Self {
             patterns,
             lanes,
+            reqs_per_pattern,
             smem_base,
+            random_tables,
         }
     }
 
@@ -158,10 +189,64 @@ impl PatternEngine {
     }
 
     pub fn lane_addr(&self, pattern_idx: usize, req_idx: u32, lane_idx: usize) -> Option<u64> {
-        self.patterns
-            .get(pattern_idx)
-            .map(|p| p.lane_addr(req_idx, lane_idx, self.lanes, self.smem_base))
+        let pattern = self.patterns.get(pattern_idx)?;
+        let offset = self
+            .random_offset(pattern_idx, req_idx, lane_idx)
+            .unwrap_or_else(|| pattern.offset_bytes(req_idx, lane_idx, self.lanes));
+        let within = pattern.within_bytes.max(pattern.req_bytes.max(1) as u64);
+        Some(self.smem_base.saturating_add(offset % within))
     }
+
+    fn random_offset(&self, pattern_idx: usize, req_idx: u32, lane_idx: usize) -> Option<u64> {
+        let table = self.random_tables.get(pattern_idx)?.as_ref()?;
+        if lane_idx >= self.lanes {
+            return None;
+        }
+        let idx = lane_idx
+            .checked_mul(self.reqs_per_pattern)?
+            .checked_add(req_idx as usize)?;
+        table.get(idx).copied()
+    }
+}
+
+fn precompute_random_tables(
+    patterns: &[CompiledPattern],
+    lanes: usize,
+    reqs_per_pattern: usize,
+) -> Vec<Option<Vec<u64>>> {
+    let mut tables: Vec<Option<Vec<u64>>> = vec![None; patterns.len()];
+    if patterns.is_empty() || lanes == 0 || reqs_per_pattern == 0 {
+        return tables;
+    }
+
+    // Radiance parity mode:
+    // lane-major, then pattern-major, then t-major random draws.
+    // Streams are shared by random specs with the same (seed, min/max, req_size),
+    // matching the Scala object-level Random generator reuse.
+    let mut streams: HashMap<RandomStreamKey, StdRng> = HashMap::new();
+    for lane in 0..lanes {
+        for (pattern_idx, pattern) in patterns.iter().enumerate() {
+            let Some(key) = pattern.random_stream_key() else {
+                continue;
+            };
+            let stream = streams
+                .entry(key)
+                .or_insert_with(|| StdRng::seed_from_u64(key.seed));
+            let slot = tables[pattern_idx]
+                .get_or_insert_with(|| vec![0; lanes.saturating_mul(reqs_per_pattern)]);
+            let row_base = lane.saturating_mul(reqs_per_pattern);
+            for t in 0..reqs_per_pattern {
+                let sample = if key.max <= key.min {
+                    key.min
+                } else {
+                    stream.gen_range(key.min..key.max)
+                };
+                slot[row_base + t] = sample.saturating_mul(pattern.req_bytes.max(1) as u64);
+            }
+        }
+    }
+
+    tables
 }
 
 fn compile_pattern(
@@ -272,4 +357,88 @@ fn mix64(mut x: u64) -> u64 {
     x ^= x >> 27;
     x = x.wrapping_mul(0x94d0_49bb_1331_11eb);
     x ^ (x >> 31)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::traffic::config::{
+        TrafficAddressConfig, TrafficConfig, TrafficIssueConfig, TrafficLoggingConfig,
+    };
+
+    fn base_cfg(patterns: Vec<TrafficPatternSpec>, lanes: usize, reqs: u32) -> TrafficConfig {
+        TrafficConfig {
+            enabled: true,
+            file: None,
+            lockstep_patterns: true,
+            reqs_per_pattern: reqs,
+            num_lanes: lanes,
+            address: TrafficAddressConfig {
+                cluster_id: 0,
+                smem_base: 0x4000_0000,
+                smem_size_bytes: 128 << 10,
+            },
+            issue: TrafficIssueConfig::default(),
+            logging: TrafficLoggingConfig::default(),
+            patterns,
+        }
+    }
+
+    fn spec(kind: &str, op: &str) -> TrafficPatternSpec {
+        TrafficPatternSpec {
+            kind: kind.to_string(),
+            op: op.to_string(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn strided_formula_matches_radiance_definition() {
+        let mut p = spec("strided", "read");
+        p.req_bytes = 4;
+        p.warp_stride = 2;
+        p.lane_stride = 8;
+        let cfg = base_cfg(vec![p], 16, 8);
+        let engine = PatternEngine::new(&cfg);
+
+        let lane0_t0 = engine.lane_addr(0, 0, 0).unwrap();
+        let lane3_t2 = engine.lane_addr(0, 2, 3).unwrap();
+        assert_eq!(lane0_t0, 0x4000_0000);
+        // ((2*2)*16 + 3) * 8 * 4 = 2144
+        assert_eq!(lane3_t2, 0x4000_0000 + 2144);
+    }
+
+    #[test]
+    fn random_stream_is_deterministic_and_bounded() {
+        let mut p0 = spec("random", "write");
+        p0.name = "random(0)_w".to_string();
+        p0.seed = 0;
+        p0.req_bytes = 4;
+        p0.random_min = 0;
+        p0.random_max = 16;
+
+        let mut p1 = spec("random", "read");
+        p1.name = "random(0)_r".to_string();
+        p1.seed = 0;
+        p1.req_bytes = 4;
+        p1.random_min = 0;
+        p1.random_max = 16;
+
+        let cfg = base_cfg(vec![p0, p1], 2, 3);
+        let engine_a = PatternEngine::new(&cfg);
+        let engine_b = PatternEngine::new(&cfg);
+
+        for lane in 0..2 {
+            for t in 0..3 {
+                let a0 = engine_a.lane_addr(0, t, lane).unwrap();
+                let b0 = engine_b.lane_addr(0, t, lane).unwrap();
+                let a1 = engine_a.lane_addr(1, t, lane).unwrap();
+                let b1 = engine_b.lane_addr(1, t, lane).unwrap();
+                assert_eq!(a0, b0);
+                assert_eq!(a1, b1);
+                assert!((0x4000_0000..0x4000_0000 + 64).contains(&a0));
+                assert!((0x4000_0000..0x4000_0000 + 64).contains(&a1));
+            }
+        }
+    }
 }
