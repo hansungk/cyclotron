@@ -24,7 +24,7 @@ impl Default for MuonConfig {
             num_cores: 1,
             num_regs: 256,
             start_pc: 0x10000000u32,
-            smem_size: 0x1_0000, // 64 KiB
+            smem_size: 0x10_0000, // includes MMIO space
             lane_config: LaneConfig::default(),
         }
     }

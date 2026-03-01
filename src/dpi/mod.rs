@@ -28,12 +28,13 @@ const NUM_CLUSTERS: usize = 16;
 struct Context {
     /// cyclotron instance for the ISA model
     sim_isa: Sim,
+    // TODO: Separate per-core context to a struct
     /// holds fetch/decoded, but not issued, instructions to be used for diff-testing against RTL
-    /// issue
-    issue_queue: Vec<IssueQueue>,
+    /// issue.  Per-core, per-warp.
+    issue_queue: Vec<Vec<IssueQueue>>,
     /// cyclotron instance for the backend model
     sim_be: Sim,
-    // TODO: Separate per-core context to a struct
+    trace_db_path: PathBuf,
     /// load/store queue used to match req-resp for memory tracing.  Per-core.
     trace_memory_queue: Vec<MemQueue>,
     pipeline_context: PipelineContext,
@@ -113,8 +114,10 @@ pub extern "C" fn cyclotron_init_rs(c_elfname: *const c_char) {
     let log_level = LevelFilter::Debug;
     Builder::new().filter_level(log_level).init();
 
-    // let toml_path = PathBuf::from("config.toml");
-    // let toml_string = crate::ui::read_toml(&toml_path);
+    let toml_path = PathBuf::from("config.toml");
+    let toml_string = toml_path
+        .exists()
+        .then(|| crate::ui::read_toml(&toml_path));
 
     let elfname = unsafe {
         if c_elfname.is_null() {
@@ -127,14 +130,21 @@ pub extern "C" fn cyclotron_init_rs(c_elfname: *const c_char) {
     if !elfname.is_empty() {
         cyclotron_args.binary_path = Some(PathBuf::from(&elfname));
     }
+    let trace_db_path = if elfname.is_empty() {
+        PathBuf::from("cyclotron_trace.sqlite")
+    } else {
+        PathBuf::from(&elfname)
+            .file_name()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("cyclotron_trace.sqlite"))
+            .with_extension("sqlite")
+    };
 
     // make separate sim instances for the golden ISA model and the backend model to prevent
     // double-execution on the same GMEM
     let arg = Some(cyclotron_args);
-    let sim_isa = crate::ui::make_sim(None, &arg);
-    let sim_be = crate::ui::make_sim(None, &arg);
-    assert_single_core(&sim_isa);
-    assert_single_core(&sim_be);
+    let sim_isa = crate::ui::make_sim(toml_string.as_deref(), &arg);
+    let sim_be = crate::ui::make_sim(toml_string.as_deref(), &arg);
 
     let config = sim_isa.top.clusters[0].cores[0].conf().clone();
     let num_clusters = sim_isa.top.clusters.len();
@@ -150,6 +160,7 @@ pub extern "C" fn cyclotron_init_rs(c_elfname: *const c_char) {
         sim_isa,
         issue_queue: Vec::new(),
         sim_be,
+        trace_db_path,
         trace_memory_queue: Vec::new(),
         pipeline_context: PipelineContext::new(config.num_lanes),
         cycles_after_cyclotron_finished: 0,
@@ -159,7 +170,10 @@ pub extern "C" fn cyclotron_init_rs(c_elfname: *const c_char) {
     c.sim_isa.top.reset();
     c.sim_be.top.reset();
 
-    c.issue_queue = vec![VecDeque::new(); config.num_warps];
+    c.issue_queue = vec![Vec::new(); config.num_cores];
+    for issue_queue_per_core in &mut c.issue_queue {
+        *issue_queue_per_core = vec![VecDeque::new(); config.num_warps];
+    }
     c.trace_memory_queue = vec![VecDeque::new(); NUM_CLUSTERS * CORES_PER_CLUSTER];
 
     let mut context = CELL.write().unwrap();
@@ -269,9 +283,7 @@ pub unsafe extern "C" fn cyclotron_gmem_rs(
         .as_mut()
         .expect("DPI context not initialized!");
     let sim = &mut context.sim_be;
-
-    let core = &mut sim.top.clusters[0].cores[0];
-    let num_lanes = core.conf().num_lanes;
+    let num_lanes = sim.top.clusters[0].cores[0].conf().num_lanes;
 
     let req_valid = std::slice::from_raw_parts(req_valid_ptr, num_lanes);
     let req_ready = std::slice::from_raw_parts_mut(req_ready_ptr, num_lanes);
@@ -391,7 +403,9 @@ pub unsafe extern "C" fn cyclotron_frontend_rs(
         .expect("DPI context not initialized!");
     let sim = &mut context.sim_isa;
 
-    let core = &mut sim.top.clusters[0].cores[0];
+    assert_single_core(sim);
+    let core_id = 0;
+    let core = &mut sim.top.clusters[0].cores[core_id];
     let config = core.conf().clone();
 
     // SAFETY: precondition of function guarantees this is valid
@@ -418,7 +432,7 @@ pub unsafe extern "C" fn cyclotron_frontend_rs(
     // queue.  This has to happen before the sim::tick() call below, so that it respects the
     // dequeue->enqueue data hazard
     let per_warp_ready = ready.iter().map(|r| *r == 1).collect::<Vec<bool>>();
-    push_issue_queue(core, &mut context.issue_queue, &per_warp_ready);
+    push_issue_queue(core, &mut context.issue_queue[core_id], &per_warp_ready);
 
     // advance simulation to populate the tracer buffers
     sim.tick();
@@ -515,6 +529,7 @@ pub unsafe fn cyclotron_backend_rs(
         .as_mut()
         .expect("DPI context not initialized!");
     let sim = &mut context.sim_be;
+    assert_single_core(sim);
     let cluster = &mut sim.top.clusters[0];
     let core = &mut cluster.cores[0];
     // let config = *core.conf();
@@ -712,9 +727,8 @@ pub unsafe extern "C" fn cyclotron_trace_rs(
     let context = context_guard
         .as_mut()
         .expect("DPI context not initialized!");
-    let config = context.sim_isa.top.clusters[0].cores[0].conf().clone();
+    let num_lanes = context.sim_isa.top.clusters[0].cores[0].conf().num_lanes;
     let global_core_id = cluster_id as usize * CORES_PER_CLUSTER + core_id as usize;
-    let num_lanes = config.num_lanes;
 
     let _inst_rs1_data = unsafe { from_raw_parts(inst_rs1_data_vec, num_lanes) };
     let _inst_rs2_data = unsafe { from_raw_parts(inst_rs2_data_vec, num_lanes) };
@@ -745,7 +759,7 @@ pub unsafe extern "C" fn cyclotron_trace_rs(
     TRACE_CONN.with(|t| {
         let mut conn_opt = t.borrow_mut();
         if conn_opt.is_none() {
-            *conn_opt = Some(create_new_db_overwrite());
+            *conn_opt = Some(create_new_db_overwrite(&context.trace_db_path));
         }
 
         // record inst
@@ -754,8 +768,9 @@ pub unsafe extern "C" fn cyclotron_trace_rs(
                 .as_ref()
                 .expect("trace connection not initialized")
                 .execute(
-                    "INSERT INTO inst (pc, warp) VALUES (?1, ?2)",
-                    (inst_pc, inst_warp_id),
+                    "INSERT INTO inst (cluster_id, core_id, warp, pc)
+                                      VALUES (?1, ?2, ?3, ?4)",
+                    (cluster_id, core_id, inst_warp_id, inst_pc),
                 )
                 .expect("failed to insert to inst");
         }
@@ -940,21 +955,24 @@ fn record_mem_req_to_db(conn: &Connection, line: &MemQueueLine, is_smem: bool) {
     .expect("failed to insert to inst");
 }
 
-fn create_new_db_overwrite() -> Connection {
-    let db_path =
-        std::env::var("CYCLOTRON_TRACE_DB").unwrap_or("cyclotron_trace.sqlite".to_string());
-    match std::fs::remove_file(&db_path) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => panic!("failed to remove existing trace database file {db_path}: {e}"),
+fn create_new_db_overwrite(db_path: &PathBuf) -> Connection {
+    for suffix in ["", "-wal", "-shm"] {
+        let path = format!("{}{}", db_path.display(), suffix);
+        match std::fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => panic!("failed to remove existing trace database file {path}: {e}"),
+        }
     }
-    let conn = Connection::open(&db_path).expect("failed to open sqlite trace database");
+    let conn = Connection::open(db_path).expect("failed to open sqlite trace database");
 
     conn.execute(
         "CREATE TABLE inst (
                     id    INTEGER PRIMARY KEY AUTOINCREMENT,
-                    pc    INTEGER NOT NULL,
-                    warp  INTEGER NOT NULL
+                    cluster_id INTEGER NOT NULL,
+                    core_id    INTEGER NOT NULL,
+                    warp       INTEGER NOT NULL,
+                    pc         INTEGER NOT NULL
                 )",
         (),
     )
@@ -998,6 +1016,8 @@ fn create_new_db_overwrite() -> Connection {
 /// values logged in Cyclotron trace.
 pub unsafe extern "C" fn cyclotron_difftest_reg_rs(
     sim_tick: u8,
+    cluster_id: u32,
+    core_id: u32,
     valid: u8,
     pc: u32,
     warp_id: u32,
@@ -1017,15 +1037,18 @@ pub unsafe extern "C" fn cyclotron_difftest_reg_rs(
         .as_mut()
         .expect("DPI context not initialized!");
     let sim = &mut context.sim_isa;
-    let config = sim.top.clusters[0].cores[0].conf().clone();
+
+    let cluster_id = cluster_id as usize;
+    let core_id = core_id as usize;
+    let config = sim.top.clusters[cluster_id].cores[core_id].conf().clone();
 
     // runs regardless of valid == 0/1 to ensure model run-ahead of rtl
     if sim_tick == 1 {
         sim.tick();
 
         let all_warp_pop = vec![true; config.num_warps];
-        let core = &mut sim.top.clusters[0].cores[0];
-        push_issue_queue(core, &mut context.issue_queue, &all_warp_pop);
+        let core = &mut sim.top.clusters[cluster_id].cores[core_id];
+        push_issue_queue(core, &mut context.issue_queue[core_id], &all_warp_pop);
     }
 
     if valid == 0 {
@@ -1035,12 +1058,12 @@ pub unsafe extern "C" fn cyclotron_difftest_reg_rs(
     let rs2_data = unsafe { std::slice::from_raw_parts(rs2_data_vec, config.num_lanes) };
     let rs3_data = unsafe { std::slice::from_raw_parts(rs3_data_vec, config.num_lanes) };
 
-    let isq = &mut context.issue_queue[warp_id as usize];
+    let isq = &mut context.issue_queue[core_id][warp_id as usize];
 
     if isq.is_empty() {
         println!(
-            "DIFFTEST fail: rtl over-ran model, first remaining inst: pc:{:x}, warp:{}",
-            pc, warp_id
+            "DIFFTEST fail: rtl over-ran model, first remaining inst: cluster:{}, core:{}, warp:{}, pc:{:x}",
+            cluster_id, core_id, warp_id, pc
         );
         panic!("DIFFTEST fail");
     }
@@ -1061,13 +1084,17 @@ pub unsafe extern "C" fn cyclotron_difftest_reg_rs(
         let model_tmask = line.inst.tmask & num_lane_mask;
         if model_tmask != tmask {
             println!(
-                "DIFFTEST fail: tmask mismatch, pc:{:x}, warp:{}, rtl:{:x}, model:{:x}",
-                pc, warp_id, tmask, model_tmask
+                "DIFFTEST fail: tmask mismatch, cluster:{}, core:{}, warp:{}, pc:{:x}, rtl:{:x}, model:{:x}",
+                cluster_id, core_id, warp_id, pc, tmask, model_tmask
             );
             panic!("DIFFTEST fail");
         }
 
         let compare_reg_addr_and_exit = |_rtl: u8, _model: u8, _name: &str| {
+            // register address check is disabled due to physical register renaming not being
+            // implemented in cyclotron.  How registers are renamed is not specified in the ISA,
+            // making hardening this in cyclotron awkward
+            //
             // if rtl != model {
             //     println!(
             //         "DIFFTEST fail: {} address mismatch, pc:{:x}, warp: {}, rtl:{}, model:{}",
@@ -1081,9 +1108,9 @@ pub unsafe extern "C" fn cyclotron_difftest_reg_rs(
             match res {
                 Err(e) => {
                     println!(
-                        "DIFFTEST fail: {} data mismatch, pc:{:x}, warp:{}, lane:{}, \
+                        "DIFFTEST fail: {} data mismatch, cluster:{}, core:{}, warp:{}, pc:{:x}, lane:{}, \
                         rtl:{:x}, model:{:x}",
-                        name, pc, warp_id, e.lane, e.rtl, e.model
+                        name, cluster_id, core_id, warp_id, pc, e.lane, e.rtl, e.model
                     );
                     panic!("DIFFTEST fail");
                 }
@@ -1118,8 +1145,9 @@ pub unsafe extern "C" fn cyclotron_difftest_reg_rs(
 
     if !one_or_more_match {
         println!(
-            "DIFFTEST fail: pc mismatch: rtl reached instruction unseen by model, pc:{:x}, warp:{}",
-            pc, warp_id
+            "DIFFTEST fail: pc mismatch: rtl reached instruction unseen by model; \
+            cluster:{}, core:{}, warp:{}, pc:{:x}",
+            cluster_id, core_id, warp_id, pc
         );
         println!("DIFFTEST: below is the content of model issue queue:");
         for line in isq.iter_mut() {
@@ -1170,7 +1198,6 @@ fn compare_vector_reg_data(
     regs_model: &[Option<u32>],
 ) -> Result<(), RegMatchError> {
     for (i, (rtl, model)) in zip(regs_rtl, regs_model).enumerate() {
-        // TODO: instead of skipping None, compare with tmask
         if let Some(m) = model {
             if *rtl != *m {
                 return Err(RegMatchError {
@@ -1242,7 +1269,7 @@ pub unsafe extern "C" fn profile_perf_counters_rs(
     // filter out bogus finishes, e.g. right after reset drop but before softreset goes up.
     if inst_retired == 0 {
         println!("Kernel had no instructions run; Skipping performance report.");
-        println!("");
+        return;
     }
     println!("");
     println!("+-----------------------+");
@@ -1255,7 +1282,7 @@ pub unsafe extern "C" fn profile_perf_counters_rs(
     println!("└─ with issued insts: {} ({:.2}%)", cycles_issued, percent(cycles_issued));
     println!("Per-warp cycles:");
     println!("├─ with decoded insts [warp 0]: {}", per_warp_cycles_decoded[0]);
-    println!("├─ avg. active warps: {}", avg_active_warps);
+    println!("├─ avg. active warps: {:.2}", avg_active_warps);
     println!("├─ avg. stalls due to write-after-write: {:.2}", avg_warp_stalls_waw);
     println!("├─ avg. stalls due to write-after-read:  {:.2}", avg_warp_stalls_war);
     println!("└─ avg. stalls due to busy FUs: {:.2}", avg_warp_stalls_busy);

@@ -4,6 +4,7 @@ use crate::muon::scheduler::{Scheduler, SchedulerWriteback};
 use crate::muon::warp::{ExWriteback, MemRequest, MemResponse};
 use crate::neutrino::neutrino::Neutrino;
 use crate::utils::BitSlice;
+use half::bf16;
 use log::{debug, error};
 use num_derive::FromPrimitive;
 use num_traits::ToPrimitive;
@@ -210,7 +211,7 @@ impl ExecuteUnit {
     }
 
     pub fn fpu(issued_inst: &IssuedInst, lane: usize) -> Option<u32> {
-        fn fp_op(a: u32, b: u32, op: fn(f32, f32) -> f32) -> u32 {
+        fn fp32_op(a: u32, b: u32, op: fn(f32, f32) -> f32) -> u32 {
             let result = op(f32::from_bits(a), f32::from_bits(b)).to_bits();
             // info!("result of the fp operation is {:08x}", result);
             if [0xffc00000, 0x7fffffff, 0xffffffff].contains(&result) {
@@ -220,7 +221,20 @@ impl ExecuteUnit {
             }
         }
 
-        fn fp_op_3(a: u32, b: u32, c: u32, op: fn(f32, f32, f32) -> f32) -> u32 {
+        fn bf16_op(a: u32, b: u32, op: fn(bf16, bf16) -> bf16) -> u32 {
+            let result = op(
+                bf16::from_bits((a & 0xffff) as u16),
+                bf16::from_bits((b & 0xffff) as u16),
+            )
+            .to_bits();
+            if [0xffc0, 0x7fff, 0xffff].contains(&result) {
+                0x7fc0 // canonical qNaN in bfloat16 encoding
+            } else {
+                sign_ext::<16>(result as u32) as u32
+            }
+        }
+
+        fn fp32_op_3(a: u32, b: u32, c: u32, op: fn(f32, f32, f32) -> f32) -> u32 {
             let result = op(f32::from_bits(a), f32::from_bits(b), f32::from_bits(c)).to_bits();
             if [0xffc00000, 0x7fffffff, 0xffffffff].contains(&result) {
                 0x7fc00000 // risc-v only ever generates this qNaNf
@@ -229,17 +243,31 @@ impl ExecuteUnit {
             }
         }
 
-        fn fcmp_op(a: u32, b: u32, op: fn(f32, f32) -> bool) -> u32 {
+        fn bf16_op_3(a: u32, b: u32, c: u32, op: fn(bf16, bf16, bf16) -> bf16) -> u32 {
+            let result = op(
+                bf16::from_bits((a & 0xffff) as u16),
+                bf16::from_bits((b & 0xffff) as u16),
+                bf16::from_bits((c & 0xffff) as u16),
+            )
+            .to_bits();
+            if [0xffc0, 0x7fff, 0xffff].contains(&result) {
+                0x7fc0 // canonical qNaN in bfloat16 encoding
+            } else {
+                sign_ext::<16>(result as u32) as u32
+            }
+        }
+
+        fn fp32_cmp_op(a: u32, b: u32, op: fn(f32, f32) -> bool) -> u32 {
             op(f32::from_bits(a), f32::from_bits(b)) as u32
         }
 
-        fn fsgn_op(a: u32, b: u32, op: fn(f32, u32) -> f32) -> u32 {
+        fn fp32_fsgn_op(a: u32, b: u32, op: fn(f32, u32) -> f32) -> u32 {
             op(f32::from_bits(a), b).to_bits()
         }
 
         // NOTE: this really should just be the f32::minimum/maximum functions, but
         // they are unstable. we should swap that in when that goes into stable.
-        fn fminmax(a: f32, b: f32, min: bool) -> f32 {
+        fn fp32_fminmax(a: f32, b: f32, min: bool) -> f32 {
             if a.is_nan() {
                 return b;
             }
@@ -261,7 +289,7 @@ impl ExecuteUnit {
             }
         }
 
-        fn fcvt_saturate(a: u32, unsigned: bool) -> u32 {
+        fn fp32_fcvt_saturate(a: u32, unsigned: bool) -> u32 {
             let f = f32::from_bits(a);
             if unsigned {
                 f.to_u32()
@@ -277,7 +305,7 @@ impl ExecuteUnit {
             }
         }
 
-        fn fclass(a: u32) -> u32 {
+        fn fp32_fclass(a: u32) -> u32 {
             let f = f32::from_bits(a);
             let conds = [
                 f == f32::NEG_INFINITY,            // 0
@@ -295,27 +323,37 @@ impl ExecuteUnit {
         }
 
         static OPFP_F3F7_INSTS: phf::Map<u16, InstImp<2>> = phf_map! {
-            0b000_0010000u16 => InstImp("fsgnj.s",  |[a, b]| { fsgn_op(a, b, |x, y| { if y.bit(31) { -x.abs() } else { x.abs() } }) }),
-            0b001_0010000u16 => InstImp("fsgnjn.s", |[a, b]| { fsgn_op(a, b, |x, y| { if y.bit(31) { x.abs() } else { -x.abs() } }) }),
-            0b010_0010000u16 => InstImp("fsgnjx.s", |[a, b]| { fsgn_op(a, b, |x, y| { if y.bit(31) { -1.0 * x } else { x } }) }),
-            0b000_0010100u16 => InstImp("fmin.s",   |[a, b]| { fp_op(a, b, |x, y| { fminmax(x, y, true) }) }),
-            0b001_0010100u16 => InstImp("fmax.s",   |[a, b]| { fp_op(a, b, |x, y| { fminmax(x, y, false) }) }),
-            0b010_1010000u16 => InstImp("feq.s",    |[a, b]| { fcmp_op(a, b, |x, y| { x == y }) }),
-            0b001_1010000u16 => InstImp("flt.s",    |[a, b]| { fcmp_op(a, b, |x, y| { x < y }) }),
-            0b000_1010000u16 => InstImp("fle.s",    |[a, b]| { fcmp_op(a, b, |x, y| { x <= y }) }),
-            0b001_1110000u16 => InstImp("fclass.s", |[a, _b]| { fclass(a) }),
+            0b000_0010000u16 => InstImp("fsgnj.s",  |[a, b]| { fp32_fsgn_op(a, b, |x, y| { if y.bit(31) { -x.abs() } else { x.abs() } }) }),
+            0b001_0010000u16 => InstImp("fsgnjn.s", |[a, b]| { fp32_fsgn_op(a, b, |x, y| { if y.bit(31) { x.abs() } else { -x.abs() } }) }),
+            0b010_0010000u16 => InstImp("fsgnjx.s", |[a, b]| { fp32_fsgn_op(a, b, |x, y| { if y.bit(31) { -1.0 * x } else { x } }) }),
+            0b000_0010100u16 => InstImp("fmin.s",   |[a, b]| { fp32_op(a, b, |x, y| { fp32_fminmax(x, y, true) }) }),
+            0b001_0010100u16 => InstImp("fmax.s",   |[a, b]| { fp32_op(a, b, |x, y| { fp32_fminmax(x, y, false) }) }),
+            0b010_1010000u16 => InstImp("feq.s",    |[a, b]| { fp32_cmp_op(a, b, |x, y| { x == y }) }),
+            0b001_1010000u16 => InstImp("flt.s",    |[a, b]| { fp32_cmp_op(a, b, |x, y| { x < y }) }),
+            0b000_1010000u16 => InstImp("fle.s",    |[a, b]| { fp32_cmp_op(a, b, |x, y| { x <= y }) }),
+            0b001_1110000u16 => InstImp("fclass.s", |[a, _b]| { fp32_fclass(a) }),
         };
 
-        static OPFP_F7_INSTS: phf::Map<u8, InstImp<3>> = phf_map! {
-            0b0000000u8 => InstImp("fadd.s",   |[a, b, _rs2_addr]| { fp_op(a, b, |x, y| { x + y }) }),
-            0b0000100u8 => InstImp("fsub.s",   |[a, b, _rs2_addr]| { fp_op(a, b, |x, y| { x - y }) }),
-            0b0001000u8 => InstImp("fmul.s",   |[a, b, _rs2_addr]| { fp_op(a, b, |x, y| { x * y }) }),
-            0b0001100u8 => InstImp("fdiv.s",   |[a, b, _rs2_addr]| { fp_op(a, b, |x, y| { x / y }) }),
-            0b0101100u8 => InstImp("fsqrt.s",  |[a, b, _rs2_addr]| { fp_op(a, b, |x, _y| { x.sqrt() }) }),
-            0b1100000u8 => InstImp("fcvt.*.s", |[a, _b, rs2_addr]| { fcvt_saturate(a, rs2_addr > 0) }),
+        static OPFP_F7_FP32_INSTS: phf::Map<u8, InstImp<3>> = phf_map! {
+            0b0000000u8 => InstImp("fadd.s",   |[a, b, _rs2_addr]| { fp32_op(a, b, |x, y| { x + y }) }),
+            0b0000100u8 => InstImp("fsub.s",   |[a, b, _rs2_addr]| { fp32_op(a, b, |x, y| { x - y }) }),
+            0b0001000u8 => InstImp("fmul.s",   |[a, b, _rs2_addr]| { fp32_op(a, b, |x, y| { x * y }) }),
+            0b0001100u8 => InstImp("fdiv.s",   |[a, b, _rs2_addr]| { fp32_op(a, b, |x, y| { x / y }) }),
+            0b0101100u8 => InstImp("fsqrt.s",  |[a, b, _rs2_addr]| { fp32_op(a, b, |x, _y| { x.sqrt() }) }),
+            0b1100000u8 => InstImp("fcvt.*.s", |[a, _b, rs2_addr]| { fp32_fcvt_saturate(a, rs2_addr > 0) }),
             0b1101000u8 => InstImp("fcvt.s.*", |[a, _b, rs2_addr]| { if rs2_addr > 0 { f32::to_bits(a as f32) } else { f32::to_bits(a as i32 as f32) } }),
         };
 
+        static OPFP_F7_BF16_INSTS: phf::Map<u8, InstImp<3>> = phf_map! {
+            0b0000000u8 => InstImp("fadd.h",  |[a, b, _rs2_addr]| { bf16_op(a, b, |x, y| { x + y }) }),
+            0b0000100u8 => InstImp("fsub.h",  |[a, b, _rs2_addr]| { bf16_op(a, b, |x, y| { x - y }) }),
+            0b0001000u8 => InstImp("fmul.h",  |[a, b, _rs2_addr]| { bf16_op(a, b, |x, y| { x * y }) }),
+            0b0001100u8 => InstImp("fdiv.h",  |[a, b, _rs2_addr]| { bf16_op(a, b, |x, y| { x / y }) }),
+            0b0101100u8 => InstImp("fsqrt.h", |[a, b, _rs2_addr]| { bf16_op(a, b, |x, _y| { bf16::from_f32(x.to_f32().sqrt()) }) }),
+        };
+
+        let fmt = issued_inst.f7 & 0b11;
+        let f7_base = issued_inst.f7 & !0b11;
         let rd_data = match issued_inst.opcode {
             Opcode::OP_FP => OPFP_F3F7_INSTS
                 .get(&(f3_f7_mask!(issued_inst.f3, issued_inst.f7)))
@@ -329,7 +367,12 @@ impl ExecuteUnit {
                     ))
                 })
                 .or_else(|| {
-                    OPFP_F7_INSTS.get(&issued_inst.f7).and_then(|imp| {
+                    let opfp_f7_insts = if fmt == 0b10 {
+                        &OPFP_F7_BF16_INSTS
+                    } else {
+                        &OPFP_F7_FP32_INSTS
+                    };
+                    opfp_f7_insts.get(&f7_base).and_then(|imp| {
                         Some(print_and_execute!(
                             imp,
                             [
@@ -341,21 +384,45 @@ impl ExecuteUnit {
                     })
                 }),
             Opcode::MADD | Opcode::MSUB | Opcode::NM_ADD | Opcode::NM_SUB => {
-                let imp = match issued_inst.opcode {
-                    Opcode::MADD => InstImp("fmadd.s", |[a, b, c]| {
-                        fp_op_3(a, b, c, |x, y, z| f32::mul_add(x, y, z))
-                    }),
-                    Opcode::MSUB => InstImp("fmsub.s", |[a, b, c]| {
-                        fp_op_3(a, b, c, |x, y, z| f32::mul_add(x, y, -z))
-                    }),
-                    Opcode::NM_ADD => InstImp("fnmadd.s", |[a, b, c]| {
-                        fp_op_3(a, b, c, |x, y, z| f32::mul_add(-x, y, -z))
-                    }),
-                    Opcode::NM_SUB => InstImp("fnmsub.s", |[a, b, c]| {
-                        fp_op_3(a, b, c, |x, y, z| f32::mul_add(-x, y, z))
-                    }),
-                    _ => {
-                        panic!()
+                let imp = if fmt == 0b10 {
+                    match issued_inst.opcode {
+                        Opcode::MADD => InstImp("fmadd.h", |[a, b, c]| {
+                            bf16_op_3(a, b, c, |x, y, z| {
+                                bf16::from_f32(x.to_f32().mul_add(y.to_f32(), z.to_f32()))
+                            })
+                        }),
+                        Opcode::MSUB => InstImp("fmsub.h", |[a, b, c]| {
+                            bf16_op_3(a, b, c, |x, y, z| {
+                                bf16::from_f32(x.to_f32().mul_add(y.to_f32(), -z.to_f32()))
+                            })
+                        }),
+                        Opcode::NM_ADD => InstImp("fnmadd.h", |[a, b, c]| {
+                            bf16_op_3(a, b, c, |x, y, z| {
+                                bf16::from_f32((-x.to_f32()).mul_add(y.to_f32(), -z.to_f32()))
+                            })
+                        }),
+                        Opcode::NM_SUB => InstImp("fnmsub.h", |[a, b, c]| {
+                            bf16_op_3(a, b, c, |x, y, z| {
+                                bf16::from_f32((-x.to_f32()).mul_add(y.to_f32(), z.to_f32()))
+                            })
+                        }),
+                        _ => panic!(),
+                    }
+                } else {
+                    match issued_inst.opcode {
+                        Opcode::MADD => InstImp("fmadd.s", |[a, b, c]| {
+                            fp32_op_3(a, b, c, |x, y, z| f32::mul_add(x, y, z))
+                        }),
+                        Opcode::MSUB => InstImp("fmsub.s", |[a, b, c]| {
+                            fp32_op_3(a, b, c, |x, y, z| f32::mul_add(x, y, -z))
+                        }),
+                        Opcode::NM_ADD => InstImp("fnmadd.s", |[a, b, c]| {
+                            fp32_op_3(a, b, c, |x, y, z| f32::mul_add(-x, y, -z))
+                        }),
+                        Opcode::NM_SUB => InstImp("fnmsub.s", |[a, b, c]| {
+                            fp32_op_3(a, b, c, |x, y, z| f32::mul_add(-x, y, z))
+                        }),
+                        _ => panic!(),
                     }
                 };
                 Some(print_and_execute!(
@@ -622,7 +689,10 @@ impl ExecuteUnit {
         // lane id of first active thread
         let first_lid = tmask.trailing_zeros() as usize;
 
-        debug!("ISSUE: {}, tmask: {:b}", issued, tmask);
+        debug!(
+            "ISSUE: core:{}, warp:{}, {}, tmask: {:b}",
+            cid, wid, issued, tmask
+        );
 
         let empty = vec![None::<u32>; num_lanes];
         let empty_mem = vec![None::<MemRequest>; num_lanes];

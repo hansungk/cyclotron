@@ -17,7 +17,7 @@ Disassembly of section .text.init:
 10000030: 6f 00 00 f0 0f fe ff 0f      	j	0x10000010 <write_tohost>
 
 10000038 <reset_vector>:
-10000038: 13 0a 00 00 10 00 00 00      	li	t0, 0x1
+10000038: 13 0a 00 f0 ff ff ff 0f      	li	t0, -0x1
 10000040: 0b 00 50 00 00 00 00 00      	vx_tmc	t0
 10000048: 13 02 00 00 00 00 00 00      	li	ra, 0x0
 10000050: 13 04 00 00 00 00 00 00      	li	sp, 0x0
@@ -256,3 +256,337 @@ Disassembly of section .text.init:
 100006d8: 13 00 00 00 00 00 00 00      	nop
 100006e0: 13 00 00 00 00 00 00 00      	nop
 100006e8: 73 00 02 00 00 c0 00 00      	unimp
+
+Disassembly of section .tohost:
+
+10001000 <tohost>:
+		...
+
+10001040 <fromhost>:
+		...
+
+Disassembly of section .riscv.attributes:
+
+00000000 <.riscv.attributes>:
+       0: 41 45        	<unknown>
+       2: 00 00        	<unknown>
+       4: 00 72        	<unknown>
+       6: 69 73        	<unknown>
+       8: 63 76 00 01 3b 00 00 00      	<unknown>
+      10: 05 72        	<unknown>
+      12: 76 33        	<unknown>
+      14: 32 69        	<unknown>
+      16: 32 70        	<unknown>
+      18: 31 5f        	<unknown>
+      1a: 6d 32        	<unknown>
+      1c: 70 30        	<unknown>
+      1e: 5f 7a 69 63 73 72 32 70      	<unknown>
+      26: 30 5f        	<unknown>
+      28: 7a 66        	<unknown>
+      2a: 69 6e        	<unknown>
+      2c: 78 31        	<unknown>
+      2e: 70 30        	<unknown>
+      30: 5f 7a 68 69 6e 78 31 70      	<unknown>
+      38: 30 5f        	<unknown>
+      3a: 7a 68        	<unknown>
+      3c: 69 6e        	<unknown>
+      3e: 78 6d        	<unknown>
+      40: 69 6e        	<unknown>
+      42: 31 70        	<unknown>
+      44: 30 00        	<unknown>
+
+Disassembly of section .comment:
+
+00000000 <.comment>:
+       0: 4c 69        	<unknown>
+       2: 6e 6b        	<unknown>
+       4: 65 72        	<unknown>
+       6: 3a 20        	<unknown>
+       8: 4c 4c        	<unknown>
+       a: 44 20        	<unknown>
+       c: 31 38        	<unknown>
+       e: 2e 31        	<unknown>
+      10: 2e 37        	<unknown>
+      12: 00           	<unknown>
+
+Disassembly of section .symtab:
+
+00000000 <.symtab>:
+		...
+      10: 01 00        	<unknown>
+      12: 00 00        	<unknown>
+      14: 00 00        	<unknown>
+      16: 00 10        	<unknown>
+      18: 00 00        	<unknown>
+      1a: 00 00        	<unknown>
+      1c: 00 00        	<unknown>
+      1e: 01 00        	<unknown>
+      20: 06 00        	<unknown>
+      22: 00 00        	<unknown>
+      24: 38 00        	<unknown>
+      26: 00 10        	<unknown>
+      28: 00 00        	<unknown>
+      2a: 00 00        	<unknown>
+      2c: 00 00        	<unknown>
+      2e: 01 00        	<unknown>
+      30: 13 00 00 00 08 00 00 10      	<unknown>
+      38: 00 00        	<unknown>
+      3a: 00 00        	<unknown>
+      3c: 00 00        	<unknown>
+      3e: 01 00        	<unknown>
+      40: 24 00        	<unknown>
+      42: 00 00        	<unknown>
+      44: 08 00        	<unknown>
+      46: 00 10        	<unknown>
+      48: 00 00        	<unknown>
+      4a: 00 00        	<unknown>
+      4c: 00 00        	<unknown>
+      4e: 01 00        	<unknown>
+      50: 34 00        	<unknown>
+      52: 00 00        	<unknown>
+      54: 10 00        	<unknown>
+      56: 00 10        	<unknown>
+      58: 00 00        	<unknown>
+      5a: 00 00        	<unknown>
+      5c: 00 00        	<unknown>
+      5e: 01 00        	<unknown>
+      60: 41 00        	<unknown>
+      62: 00 00        	<unknown>
+      64: a0 04        	<unknown>
+      66: 00 10        	<unknown>
+      68: 00 00        	<unknown>
+      6a: 00 00        	<unknown>
+      6c: 00 00        	<unknown>
+      6e: 01 00        	<unknown>
+      70: 48 00        	<unknown>
+      72: 00 00        	<unknown>
+      74: 88 06        	<unknown>
+      76: 00 10        	<unknown>
+      78: 00 00        	<unknown>
+      7a: 00 00        	<unknown>
+      7c: 00 00        	<unknown>
+      7e: 01 00        	<unknown>
+      80: 4d 00        	<unknown>
+      82: 00 00        	<unknown>
+      84: d0 04        	<unknown>
+      86: 00 10        	<unknown>
+      88: 00 00        	<unknown>
+      8a: 00 00        	<unknown>
+      8c: 00 00        	<unknown>
+      8e: 01 00        	<unknown>
+      90: 54 00        	<unknown>
+      92: 00 00        	<unknown>
+      94: 00 05        	<unknown>
+      96: 00 10        	<unknown>
+      98: 00 00        	<unknown>
+      9a: 00 00        	<unknown>
+      9c: 00 00        	<unknown>
+      9e: 01 00        	<unknown>
+      a0: 5b 00 00 00 30 05 00 10      	<unknown>
+      a8: 00 00        	<unknown>
+      aa: 00 00        	<unknown>
+      ac: 00 00        	<unknown>
+      ae: 01 00        	<unknown>
+      b0: 62 00        	<unknown>
+      b2: 00 00        	<unknown>
+      b4: 60 05        	<unknown>
+      b6: 00 10        	<unknown>
+      b8: 00 00        	<unknown>
+      ba: 00 00        	<unknown>
+      bc: 00 00        	<unknown>
+      be: 01 00        	<unknown>
+      c0: 69 00        	<unknown>
+      c2: 00 00        	<unknown>
+      c4: 90 05        	<unknown>
+      c6: 00 10        	<unknown>
+      c8: 00 00        	<unknown>
+      ca: 00 00        	<unknown>
+      cc: 00 00        	<unknown>
+      ce: 01 00        	<unknown>
+      d0: 70 00        	<unknown>
+      d2: 00 00        	<unknown>
+      d4: c0 05        	<unknown>
+      d6: 00 10        	<unknown>
+      d8: 00 00        	<unknown>
+      da: 00 00        	<unknown>
+      dc: 00 00        	<unknown>
+      de: 01 00        	<unknown>
+      e0: 77 00 00 00 f0 05 00 10      	<unknown>
+      e8: 00 00        	<unknown>
+      ea: 00 00        	<unknown>
+      ec: 00 00        	<unknown>
+      ee: 01 00        	<unknown>
+      f0: 7e 00        	<unknown>
+      f2: 00 00        	<unknown>
+      f4: 20 06        	<unknown>
+      f6: 00 10        	<unknown>
+      f8: 00 00        	<unknown>
+      fa: 00 00        	<unknown>
+      fc: 00 00        	<unknown>
+      fe: 01 00        	<unknown>
+     100: 86 00        	<unknown>
+     102: 00 00        	<unknown>
+     104: 50 06        	<unknown>
+     106: 00 10        	<unknown>
+     108: 00 00        	<unknown>
+     10a: 00 00        	<unknown>
+     10c: 00 00        	<unknown>
+     10e: 01 00        	<unknown>
+     110: 8e 00        	<unknown>
+     112: 00 00        	<unknown>
+     114: b8 06        	<unknown>
+     116: 00 10        	<unknown>
+     118: 00 00        	<unknown>
+     11a: 00 00        	<unknown>
+     11c: 00 00        	<unknown>
+     11e: 01 00        	<unknown>
+     120: 93 00 00 00 00 10 00 10      	<unknown>
+     128: 00 00        	<unknown>
+     12a: 00 00        	<unknown>
+     12c: 00 00        	<unknown>
+     12e: 02 00        	<unknown>
+     130: 98 00        	<unknown>
+		...
+     13e: f1 ff        	<unknown>
+     140: 9d 00        	<unknown>
+     142: 00 00        	<unknown>
+     144: 00 00        	<unknown>
+     146: 00 10        	<unknown>
+     148: 00 00        	<unknown>
+     14a: 00 00        	<unknown>
+     14c: 10 00        	<unknown>
+     14e: 01 00        	<unknown>
+     150: a4 00        	<unknown>
+     152: 00 00        	<unknown>
+     154: 00 10        	<unknown>
+     156: 00 10        	<unknown>
+     158: 08 00        	<unknown>
+     15a: 00 00        	<unknown>
+     15c: 10 00        	<unknown>
+     15e: 02 00        	<unknown>
+     160: ab 00 00 00 40 10 00 10      	<unknown>
+     168: 08 00        	<unknown>
+     16a: 00 00        	<unknown>
+     16c: 10 00        	<unknown>
+     16e: 02 00        	<unknown>
+     170: b4 00        	<unknown>
+     172: 00 00        	<unknown>
+     174: 00 20        	<unknown>
+     176: 00 10        	<unknown>
+     178: 00 00        	<unknown>
+     17a: 00 00        	<unknown>
+     17c: 10 00        	<unknown>
+     17e: 04 00        	<unknown>
+     180: c4 00        	<unknown>
+     182: 00 00        	<unknown>
+     184: 00 20        	<unknown>
+     186: 00 10        	<unknown>
+     188: 00 00        	<unknown>
+     18a: 00 00        	<unknown>
+     18c: 10 00        	<unknown>
+     18e: 04 00        	<unknown>
+     190: d2 00        	<unknown>
+     192: 00 00        	<unknown>
+     194: 00 20        	<unknown>
+     196: 00 10        	<unknown>
+     198: 00 00        	<unknown>
+     19a: 00 00        	<unknown>
+     19c: 10 00        	<unknown>
+     19e: 04 00        	<unknown>
+     1a0: e3 00 00 00 00 20 00 10      	<unknown>
+     1a8: 00 00        	<unknown>
+     1aa: 00 00        	<unknown>
+     1ac: 10 00        	<unknown>
+     1ae: 04 00        	<unknown>
+
+Disassembly of section .shstrtab:
+
+00000000 <.shstrtab>:
+       0: 00 2e        	<unknown>
+       2: 74 65        	<unknown>
+       4: 78 74        	<unknown>
+       6: 2e 69        	<unknown>
+       8: 6e 69        	<unknown>
+       a: 74 00        	<unknown>
+       c: 2e 74        	<unknown>
+       e: 6f 68 6f 73 74 00 2e 74      	<unknown>
+      16: 65 78        	<unknown>
+      18: 74 00        	<unknown>
+      1a: 2e 64        	<unknown>
+      1c: 61 74        	<unknown>
+      1e: 61 00        	<unknown>
+      20: 2e 72        	<unknown>
+      22: 69 73        	<unknown>
+      24: 63 76 2e 61 74 74 72 69      	<unknown>
+      2c: 62 75        	<unknown>
+      2e: 74 65        	<unknown>
+      30: 73 00 2e 63 6f 6d 6d 65      	<unknown>
+      38: 6e 74        	<unknown>
+      3a: 00 2e        	<unknown>
+      3c: 73 79 6d 74 61 62 00 2e      	<unknown>
+      44: 73 68 73 74 72 74 61 62      	<unknown>
+      4c: 00 2e        	<unknown>
+      4e: 73           	<unknown>
+      4f: 74 72        	<unknown>
+      51: 74 61        	<unknown>
+      53: 62 00        	<unknown>
+
+Disassembly of section .strtab:
+
+00000000 <.strtab>:
+       0: 00 24        	<unknown>
+       2: 78 2e        	<unknown>
+       4: 30 00        	<unknown>
+       6: 72 65        	<unknown>
+       8: 73 65 74 5f 76 65 63 74      	<unknown>
+      10: 6f 72 00 68 61 6e 64 6c      	<unknown>
+      18: 65 5f        	<unknown>
+      1a: 65 78        	<unknown>
+      1c: 63 65 70 74 69 6f 6e 00      	<unknown>
+      24: 6f 74 68 65 72 5f 65 78      	<unknown>
+      2c: 63 65 70 74 69 6f 6e 00      	<unknown>
+      34: 77 72 69 74 65 5f 74 6f      	<unknown>
+      3c: 68 6f        	<unknown>
+      3e: 73 74 00 74 65 73 74 5f      	<unknown>
+      46: 32 00        	<unknown>
+      48: 66 61        	<unknown>
+      4a: 69 6c        	<unknown>
+      4c: 00 74        	<unknown>
+      4e: 65 73        	<unknown>
+      50: 74 5f        	<unknown>
+      52: 33 00 74 65 73 74 5f 34      	<unknown>
+      5a: 00 74        	<unknown>
+      5c: 65 73        	<unknown>
+      5e: 74 5f        	<unknown>
+      60: 35 00        	<unknown>
+      62: 74 65        	<unknown>
+      64: 73 74 5f 36 00 74 65 73      	<unknown>
+      6c: 74 5f        	<unknown>
+      6e: 37 00 74 65 73 74 5f 38      	<unknown>
+      76: 00 74        	<unknown>
+      78: 65 73        	<unknown>
+      7a: 74 5f        	<unknown>
+      7c: 39 00        	<unknown>
+      7e: 74 65        	<unknown>
+      80: 73 74 5f 31 30 00 74 65      	<unknown>
+      88: 73 74 5f 31 31 00 70 61      	<unknown>
+      90: 73 73 00 24 64 2e 31 00      	<unknown>
+      98: 24 64        	<unknown>
+      9a: 2e 32        	<unknown>
+      9c: 00 5f        	<unknown>
+      9e: 73 74 61 72 74 00 74 6f      	<unknown>
+      a6: 68 6f        	<unknown>
+      a8: 73 74 00 66 72 6f 6d 68      	<unknown>
+      b0: 6f 73 74 00 62 65 67 69      	<unknown>
+      b8: 6e 5f        	<unknown>
+      ba: 73 69 67 6e 61 74 75 72      	<unknown>
+      c2: 65 00        	<unknown>
+      c4: 65 6e        	<unknown>
+      c6: 64 5f        	<unknown>
+      c8: 73 69 67 6e 61 74 75 72      	<unknown>
+      d0: 65 00        	<unknown>
+      d2: 5f 5f 67 6c 6f 62 61 6c      	<unknown>
+      da: 5f 70 6f 69 6e 74 65 72      	<unknown>
+      e2: 00 5f        	<unknown>
+      e4: 65 6e        	<unknown>
+      e6: 64 00        	<unknown>
