@@ -1,0 +1,42 @@
+[lsu]
+link_capacity = 4
+
+[lsu.resources]
+address_entries = 16
+store_data_entries = 8
+load_data_entries = 16
+
+[lsu.queues.global_ldq]
+queue_capacity = 8
+bytes_per_cycle = 1024
+base_latency = 0
+completions_per_cycle = 1
+
+[lsu.queues.global_stq]
+queue_capacity = 4
+bytes_per_cycle = 1024
+base_latency = 0
+completions_per_cycle = 1
+
+[lsu.queues.shared_ldq]
+queue_capacity = 4
+bytes_per_cycle = 1024
+base_latency = 0
+completions_per_cycle = 1
+
+[lsu.queues.shared_stq]
+queue_capacity = 2
+bytes_per_cycle = 1024
+base_latency = 0
+completions_per_cycle = 1
+
+[lsu.issue]
+queue_capacity = 1
+bytes_per_cycle = 1024
+base_latency = 1
+completions_per_cycle = 1
+
+[scheduler]
+enabled = false
+# warp scheduler is single-issue per cycle
+issue_width = 1

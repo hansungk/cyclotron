@@ -6,15 +6,13 @@ use serde::Deserialize;
 use toml::*;
 
 #[derive(Debug, Deserialize, Clone)]
+#[serde(default)]
 pub struct SimConfig {
-    #[serde(default)]
     pub elf: PathBuf,
-    #[serde(default)]
     pub log_level: u64,
-    #[serde(default)]
     pub timeout: u64,
-    #[serde(default)]
     pub trace: bool,
+    pub timing: bool,
 }
 
 pub trait Config: DeserializeOwned + Default {
@@ -38,6 +36,7 @@ impl Default for SimConfig {
             log_level: 0,
             timeout: 10000000,
             trace: false,
+            timing: false,
         }
     }
 }

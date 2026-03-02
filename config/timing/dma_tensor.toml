@@ -1,0 +1,19 @@
+[dma]
+enabled = false
+mmio_base = 0x40023000
+mmio_size = 0x1000
+csr_addrs = []
+base_latency = 50
+bytes_per_cycle = 256
+queue_capacity = 8
+completions_per_cycle = 1
+
+[tensor]
+enabled = false
+mmio_base = 0x40084000
+mmio_size = 0x1000
+csr_addrs = []
+base_latency = 50
+bytes_per_cycle = 256
+queue_capacity = 8
+completions_per_cycle = 1

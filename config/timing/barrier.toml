@@ -1,0 +1,8 @@
+[barrier]
+enabled = false
+expected_warps = 0
+barrier_id_bits = 4
+base_latency = 2
+bytes_per_cycle = 1
+queue_capacity = 4
+completions_per_cycle = 1

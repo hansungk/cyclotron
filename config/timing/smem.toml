@@ -1,0 +1,32 @@
+[smem]
+num_banks = 4
+num_lanes = 16
+num_subbanks = 4
+word_bytes = 4
+serialize_cores = true
+link_capacity = 16
+
+[smem.lane]
+base_latency = 0
+bytes_per_cycle = 64
+queue_capacity = 8
+
+[smem.serial]
+base_latency = 0
+bytes_per_cycle = 64
+queue_capacity = 1
+
+[smem.crossbar]
+base_latency = 1
+bytes_per_cycle = 32
+queue_capacity = 32
+
+[smem.subbank]
+base_latency = 1
+bytes_per_cycle = 32
+queue_capacity = 16
+
+[smem.bank]
+base_latency = 2
+bytes_per_cycle = 64
+queue_capacity = 32

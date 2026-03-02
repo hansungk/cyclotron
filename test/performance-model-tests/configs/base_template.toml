@@ -1,0 +1,31 @@
+[muon]
+num_lanes = __NUM_LANES__
+num_warps = __NUM_WARPS__
+num_cores = __NUM_CORES__
+num_regs = 256
+start_pc = 0x80000000
+__SMEM_BASE_ADDR_LINE__
+smem_size = 65536
+
+[mem]
+io_cout_addr = 0xFF080000
+io_cout_size = 64
+
+[sim]
+elf = "test/performance-model-tests/__ELF__"
+timeout = __TIMEOUT__
+trace = false
+
+[timing]
+include = [
+  "../../../config/timing/gmem.toml",
+  "../../../config/timing/icache.toml",
+  "../../../config/timing/lsu_scheduler.toml",
+  "../../../config/timing/smem.toml",
+  "../../../config/timing/writeback_operand_fetch.toml",
+  "../../../config/timing/barrier.toml",
+  "../../../config/timing/fence.toml",
+  "../../../config/timing/dma_tensor.toml",
+  "../../../config/timing/execute.toml",
+__PROFILE_INCLUDE_LINES__
+]

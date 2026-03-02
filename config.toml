@@ -13,3 +13,16 @@ io_cout_size = 64
 elf = "test/isa-tests/rv32ui-p-add"
 timeout = 1000000
 trace = false
+
+[timing]
+include = [
+  "config/timing/gmem.toml",
+  "config/timing/icache.toml",
+  "config/timing/lsu_scheduler.toml",
+  "config/timing/smem.toml",
+  "config/timing/writeback_operand_fetch.toml",
+  "config/timing/barrier.toml",
+  "config/timing/fence.toml",
+  "config/timing/dma_tensor.toml",
+  "config/timing/execute.toml",
+]

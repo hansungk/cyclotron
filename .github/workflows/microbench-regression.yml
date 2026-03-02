@@ -1,0 +1,37 @@
+name: microbench regression
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Build release
+        run: cargo build --release
+
+      - name: Run microbench tests
+        run: bash test/run-microbench-tests.sh
+
+      - name: Upload logs
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: microbench-failed-outputs
+          path: |
+            logs/
+            performance_logs/
