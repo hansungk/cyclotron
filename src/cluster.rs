@@ -27,7 +27,7 @@ impl Cluster {
             cores.push(MuonCore::new(
                 Arc::new(config.muon_config),
                 id,
-                cid,
+                cid, // cluster-local
                 logger,
                 gmem.clone(),
             ));
