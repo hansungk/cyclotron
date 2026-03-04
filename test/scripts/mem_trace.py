@@ -126,7 +126,10 @@ def clipped_payload(row, start: int, end: int) -> bytes:
     address = row[5]
     size = int(row[6])
     data = int(row[7])
-    payload = data.to_bytes(max(1, size), byteorder="little", signed=False)
+    # trace DB stores request/load data already shifted to the LSB
+    size = max(1, size)
+    mask = (1 << (size * 8)) - 1
+    payload = (data & mask).to_bytes(size, byteorder="little", signed=False)
 
     payload_end = address + len(payload)
     clip_lo = max(start, address)
