@@ -343,9 +343,9 @@ pub unsafe extern "C" fn cyclotron_gmem_rs(
             let size = req_bits_size[lane];
             let data = req_bits_data[lane];
             // this relies on `address` not being beat-aligned, but `data` always aligned
-            let word_offset = address % beat_width_bytes;
-            let data_unaligned = data >> (word_offset * 8);
-            top.gmem_store(address, data_unaligned, size as u32);
+            let offset_in_beat = address % beat_width_bytes;
+            let data_shifted = data >> (offset_in_beat * 8);
+            top.gmem_store(address, data_shifted, size as u32);
             // 1-cycle latency
             resp_valid[lane] = 1;
             resp_bits_tag[lane] = req_bits_tag[lane];
@@ -818,6 +818,24 @@ pub unsafe extern "C" fn cyclotron_trace_rs(
     // TODO: create sql indices
 }
 
+fn shift_data_to_lsb(
+    data: u32,
+    address: u32,
+    size: u8,
+) -> u32 {
+    let beat_width_bytes = 4;
+    let offset_in_beat = address % beat_width_bytes;
+    assert!(offset_in_beat % size as u32 == 0, "misaligned data");
+    let data_shifted = data >> (offset_in_beat * 8);
+    // rust panics on overflow when shifting
+    let mask = if size >= 4 {
+        u32::MAX
+    } else {
+        (1u32 << (size * 8)) - 1
+    };
+    data_shifted & mask
+}
+
 fn record_mem_bundle(
     conn: &Connection,
     queue: &mut MemQueue,
@@ -843,7 +861,8 @@ fn record_mem_bundle(
         let address = req_address[i];
         let size = 1 << req_size[i];
         let tag = req_tag[i];
-        let data = store.then_some(req_data[i]);
+        let req_data_shifted = shift_data_to_lsb(req_data[i], address, size);
+        let data = store.then_some(req_data_shifted);
         push_memory_queue(
             queue,
             MemQueueLine {
@@ -903,7 +922,8 @@ fn match_response_in_mem_queue(
 
         if !line.store {
             assert!(line.data.is_none(), "load req already has data?");
-            line.data = Some(resp_data);
+            let data_shifted = shift_data_to_lsb(resp_data, line.address, line.size);
+            line.data = Some(data_shifted);
         }
 
         line.checked = true;
