@@ -35,8 +35,9 @@ struct Context {
     /// cyclotron instance for the backend model
     sim_be: Sim,
     trace_db_path: PathBuf,
-    /// load/store queue used to match req-resp for memory tracing.  Per-core.
-    trace_memory_queue: Vec<MemQueue>,
+    /// load/store queue used to match req-resp for memory tracing.  Vector is for all cores.
+    trace_memory_queue_dmem: Vec<MemQueue>,
+    trace_memory_queue_smem: Vec<MemQueue>,
     pipeline_context: PipelineContext,
     cycles_after_cyclotron_finished: usize,
     prev_rtl_finished: Vec<bool>,
@@ -161,7 +162,8 @@ pub extern "C" fn cyclotron_init_rs(c_elfname: *const c_char) {
         issue_queue: Vec::new(),
         sim_be,
         trace_db_path,
-        trace_memory_queue: Vec::new(),
+        trace_memory_queue_dmem: Vec::new(),
+        trace_memory_queue_smem: Vec::new(),
         pipeline_context: PipelineContext::new(config.num_lanes),
         cycles_after_cyclotron_finished: 0,
         prev_rtl_finished: vec![false; NUM_CLUSTERS * CORES_PER_CLUSTER],
@@ -174,7 +176,8 @@ pub extern "C" fn cyclotron_init_rs(c_elfname: *const c_char) {
     for issue_queue_per_core in &mut c.issue_queue {
         *issue_queue_per_core = vec![VecDeque::new(); config.num_warps];
     }
-    c.trace_memory_queue = vec![VecDeque::new(); NUM_CLUSTERS * CORES_PER_CLUSTER];
+    c.trace_memory_queue_dmem = vec![VecDeque::new(); NUM_CLUSTERS * CORES_PER_CLUSTER];
+    c.trace_memory_queue_smem = vec![VecDeque::new(); NUM_CLUSTERS * CORES_PER_CLUSTER];
 
     let mut context = CELL.write().unwrap();
     if context.as_ref().is_some() {
@@ -778,7 +781,7 @@ pub unsafe extern "C" fn cyclotron_trace_rs(
         // record dmem
         record_mem_bundle(
             conn_opt.as_ref().expect("trace connection not initialized"),
-            &mut context.trace_memory_queue[global_core_id],
+            &mut context.trace_memory_queue_dmem[global_core_id],
             cluster_id,
             core_id,
             dmem_req_valid,
@@ -796,7 +799,7 @@ pub unsafe extern "C" fn cyclotron_trace_rs(
         // record smem
         record_mem_bundle(
             conn_opt.as_ref().expect("trace connection not initialized"),
-            &mut context.trace_memory_queue[global_core_id],
+            &mut context.trace_memory_queue_smem[global_core_id],
             cluster_id,
             core_id,
             smem_req_valid,
