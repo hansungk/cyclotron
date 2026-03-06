@@ -765,15 +765,37 @@ pub unsafe extern "C" fn cyclotron_trace_rs(
             *conn_opt = Some(create_new_db_overwrite(&context.trace_db_path));
         }
 
-        // record inst
+        let rs1_string = _inst_rs1_data
+            .iter()
+            .map(u32::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        let rs2_string = _inst_rs2_data
+            .iter()
+            .map(u32::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        // record inst 
         if inst_valid != 0 {
             conn_opt
                 .as_ref()
                 .expect("trace connection not initialized")
                 .execute(
-                    "INSERT INTO inst (cluster_id, core_id, warp, pc)
-                                      VALUES (?1, ?2, ?3, ?4)",
-                    (cluster_id, core_id, inst_warp_id, inst_pc),
+                    "INSERT INTO inst (cluster_id, core_id, warp, pc, lane_mask, has_rs1, rs1_id, rs1_data, has_rs2, rs2_id, rs2_data)
+                                    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                    (
+                        cluster_id,
+                        core_id,
+                        inst_warp_id,
+                        inst_pc,
+                        _inst_tmask,
+                        _inst_rs1_enable,
+                        _inst_rs1_address,
+                        &rs1_string,
+                        _inst_rs2_enable,
+                        _inst_rs2_address,
+                        &rs2_string,
+                    ),
                 )
                 .expect("failed to insert to inst");
         }
@@ -995,7 +1017,14 @@ fn create_new_db_overwrite(db_path: &PathBuf) -> Connection {
                     cluster_id INTEGER NOT NULL,
                     core_id    INTEGER NOT NULL,
                     warp       INTEGER NOT NULL,
-                    pc         INTEGER NOT NULL
+                    pc         INTEGER NOT NULL,
+                    lane_id    INTEGER NOT NULL,
+                    has_rs1    INTEGER NOT NULL,
+                    rs1_id     INTEGER NOT NULL,
+                    rs1_data   TEXT NOT NULL,
+                    has_rs2    INTEGER NOT NULL,
+                    rs2_id     INTEGER NOT NULL,
+                    rs2_data   TEXT NOT NULL
                 )",
         (),
     )
