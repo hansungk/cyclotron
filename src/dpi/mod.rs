@@ -1018,7 +1018,7 @@ fn create_new_db_overwrite(db_path: &PathBuf) -> Connection {
                     core_id    INTEGER NOT NULL,
                     warp       INTEGER NOT NULL,
                     pc         INTEGER NOT NULL,
-                    lane_id    INTEGER NOT NULL,
+                    lane_mask  INTEGER NOT NULL,
                     has_rs1    INTEGER NOT NULL,
                     rs1_id     INTEGER NOT NULL,
                     rs1_data   TEXT NOT NULL,
