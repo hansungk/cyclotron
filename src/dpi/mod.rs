@@ -41,6 +41,7 @@ struct Context {
     pipeline_context: PipelineContext,
     cycles_after_cyclotron_finished: usize,
     prev_rtl_finished: Vec<bool>,
+    executed_insts: Vec<usize>,
     difftested_insts: usize,
 }
 
@@ -116,9 +117,7 @@ pub extern "C" fn cyclotron_init_rs(c_elfname: *const c_char) {
     Builder::new().filter_level(log_level).init();
 
     let toml_path = PathBuf::from("config.toml");
-    let toml_string = toml_path
-        .exists()
-        .then(|| crate::ui::read_toml(&toml_path));
+    let toml_string = toml_path.exists().then(|| crate::ui::read_toml(&toml_path));
 
     let elfname = unsafe {
         if c_elfname.is_null() {
@@ -167,6 +166,7 @@ pub extern "C" fn cyclotron_init_rs(c_elfname: *const c_char) {
         pipeline_context: PipelineContext::new(config.num_lanes),
         cycles_after_cyclotron_finished: 0,
         prev_rtl_finished: vec![false; NUM_CLUSTERS * CORES_PER_CLUSTER],
+        executed_insts: vec![0; NUM_CLUSTERS * CORES_PER_CLUSTER],
         difftested_insts: 0,
     };
     c.sim_isa.top.reset();
@@ -759,6 +759,17 @@ pub unsafe extern "C" fn cyclotron_trace_rs(
     let smem_resp_bits_tag = unsafe { from_raw_parts(smem_resp_bits_tag_vec, num_lanes) };
     let smem_resp_bits_data = unsafe { from_raw_parts(smem_resp_bits_data_vec, num_lanes) };
 
+    // print instruction progress
+    if inst_valid != 0 {
+        context.executed_insts[global_core_id] += 1;
+        if context.executed_insts[global_core_id] % 1000 == 0 {
+            println!(
+                "Muon [cluster {} core {}] executed {} instructions",
+                cluster_id, core_id, context.executed_insts[global_core_id],
+            );
+        }
+    }
+
     TRACE_CONN.with(|t| {
         let mut conn_opt = t.borrow_mut();
         if conn_opt.is_none() {
@@ -840,11 +851,7 @@ pub unsafe extern "C" fn cyclotron_trace_rs(
     // TODO: create sql indices
 }
 
-fn shift_data_to_lsb(
-    data: u32,
-    address: u32,
-    size: u8,
-) -> u32 {
+fn shift_data_to_lsb(data: u32, address: u32, size: u8) -> u32 {
     let beat_width_bytes = 4;
     let offset_in_beat = address % beat_width_bytes;
     assert!(offset_in_beat % size as u32 == 0, "misaligned data");
@@ -1316,7 +1323,6 @@ pub unsafe extern "C" fn profile_perf_counters_rs(
     let frac = |cycle: u64| cycle as f32 / cycles as f32;
     let percent = |cycle| frac(cycle) * 100.;
 
-    println!("");
     println!("Muon [cluster {} core {}] finished execution.", cluster_id, core_id);
     // filter out bogus finishes, e.g. right after reset drop but before softreset goes up.
     if inst_retired == 0 {
@@ -1340,6 +1346,7 @@ pub unsafe extern "C" fn profile_perf_counters_rs(
     println!("└─ avg. stalls due to busy FUs: {:.2}", avg_warp_stalls_busy);
     println!("IPC: {:.3}", ipc);
     println!("+-----------------------+");
+    println!("");
 }
 
 mod mem_model;
