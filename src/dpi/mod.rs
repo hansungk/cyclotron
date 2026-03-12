@@ -761,10 +761,16 @@ pub unsafe extern "C" fn cyclotron_trace_rs(
 
     // print instruction progress
     if inst_valid != 0 {
+        if context.executed_insts[global_core_id] == 0 {
+            println!(
+                "Muon [cluster {} core {}] started execution.",
+                cluster_id, core_id,
+            );
+        }
         context.executed_insts[global_core_id] += 1;
         if context.executed_insts[global_core_id] % 1000 == 0 {
             println!(
-                "Muon [cluster {} core {}] executed {} instructions",
+                "Muon [cluster {} core {}] executed {} instructions.",
                 cluster_id, core_id, context.executed_insts[global_core_id],
             );
         }
