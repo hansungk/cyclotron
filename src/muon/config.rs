@@ -6,7 +6,7 @@ use serde::Deserialize;
 pub struct MuonConfig {
     pub num_lanes: usize,
     pub num_warps: usize,
-    pub num_cores: usize,
+    pub num_cores: usize, // per-cluster
     pub num_regs: usize,
     pub start_pc: u32,
     pub smem_size: usize,

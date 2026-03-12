@@ -35,11 +35,13 @@ struct Context {
     /// cyclotron instance for the backend model
     sim_be: Sim,
     trace_db_path: PathBuf,
-    /// load/store queue used to match req-resp for memory tracing.  Per-core.
-    trace_memory_queue: Vec<MemQueue>,
+    /// load/store queue used to match req-resp for memory tracing.  Vector is for all cores.
+    trace_memory_queue_dmem: Vec<MemQueue>,
+    trace_memory_queue_smem: Vec<MemQueue>,
     pipeline_context: PipelineContext,
     cycles_after_cyclotron_finished: usize,
     prev_rtl_finished: Vec<bool>,
+    executed_insts: Vec<usize>,
     difftested_insts: usize,
 }
 
@@ -159,10 +161,12 @@ pub extern "C" fn cyclotron_init_rs(c_elfname: *const c_char) {
         issue_queue: Vec::new(),
         sim_be,
         trace_db_path,
-        trace_memory_queue: Vec::new(),
+        trace_memory_queue_dmem: Vec::new(),
+        trace_memory_queue_smem: Vec::new(),
         pipeline_context: PipelineContext::new(config.num_lanes),
         cycles_after_cyclotron_finished: 0,
         prev_rtl_finished: vec![false; NUM_CLUSTERS * CORES_PER_CLUSTER],
+        executed_insts: vec![0; NUM_CLUSTERS * CORES_PER_CLUSTER],
         difftested_insts: 0,
     };
     c.sim_isa.top.reset();
@@ -172,7 +176,8 @@ pub extern "C" fn cyclotron_init_rs(c_elfname: *const c_char) {
     for issue_queue_per_core in &mut c.issue_queue {
         *issue_queue_per_core = vec![VecDeque::new(); config.num_warps];
     }
-    c.trace_memory_queue = vec![VecDeque::new(); NUM_CLUSTERS * CORES_PER_CLUSTER];
+    c.trace_memory_queue_dmem = vec![VecDeque::new(); NUM_CLUSTERS * CORES_PER_CLUSTER];
+    c.trace_memory_queue_smem = vec![VecDeque::new(); NUM_CLUSTERS * CORES_PER_CLUSTER];
 
     let mut context = CELL.write().unwrap();
     if context.as_ref().is_some() {
@@ -338,9 +343,9 @@ pub unsafe extern "C" fn cyclotron_gmem_rs(
             let size = req_bits_size[lane];
             let data = req_bits_data[lane];
             // this relies on `address` not being beat-aligned, but `data` always aligned
-            let word_offset = address % beat_width_bytes;
-            let data_unaligned = data >> (word_offset * 8);
-            top.gmem_store(address, data_unaligned, size as u32);
+            let offset_in_beat = address % beat_width_bytes;
+            let data_shifted = data >> (offset_in_beat * 8);
+            top.gmem_store(address, data_shifted, size as u32);
             // 1-cycle latency
             resp_valid[lane] = 1;
             resp_bits_tag[lane] = req_bits_tag[lane];
@@ -754,21 +759,54 @@ pub unsafe extern "C" fn cyclotron_trace_rs(
     let smem_resp_bits_tag = unsafe { from_raw_parts(smem_resp_bits_tag_vec, num_lanes) };
     let smem_resp_bits_data = unsafe { from_raw_parts(smem_resp_bits_data_vec, num_lanes) };
 
+    // print instruction progress
+    if inst_valid != 0 {
+        context.executed_insts[global_core_id] += 1;
+        if context.executed_insts[global_core_id] % 1000 == 0 {
+            println!(
+                "Muon [cluster {} core {}] executed {} instructions",
+                cluster_id, core_id, context.executed_insts[global_core_id],
+            );
+        }
+    }
+
     TRACE_CONN.with(|t| {
         let mut conn_opt = t.borrow_mut();
         if conn_opt.is_none() {
             *conn_opt = Some(create_new_db_overwrite(&context.trace_db_path));
         }
 
-        // record inst
+        let rs1_string = _inst_rs1_data
+            .iter()
+            .map(u32::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        let rs2_string = _inst_rs2_data
+            .iter()
+            .map(u32::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        // record inst 
         if inst_valid != 0 {
             conn_opt
                 .as_ref()
                 .expect("trace connection not initialized")
                 .execute(
-                    "INSERT INTO inst (cluster_id, core_id, warp, pc)
-                                      VALUES (?1, ?2, ?3, ?4)",
-                    (cluster_id, core_id, inst_warp_id, inst_pc),
+                    "INSERT INTO inst (cluster_id, core_id, warp, pc, lane_mask, has_rs1, rs1_id, rs1_data, has_rs2, rs2_id, rs2_data)
+                                    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                    (
+                        cluster_id,
+                        core_id,
+                        inst_warp_id,
+                        inst_pc,
+                        _inst_tmask,
+                        _inst_rs1_enable,
+                        _inst_rs1_address,
+                        &rs1_string,
+                        _inst_rs2_enable,
+                        _inst_rs2_address,
+                        &rs2_string,
+                    ),
                 )
                 .expect("failed to insert to inst");
         }
@@ -776,7 +814,7 @@ pub unsafe extern "C" fn cyclotron_trace_rs(
         // record dmem
         record_mem_bundle(
             conn_opt.as_ref().expect("trace connection not initialized"),
-            &mut context.trace_memory_queue[global_core_id],
+            &mut context.trace_memory_queue_dmem[global_core_id],
             cluster_id,
             core_id,
             dmem_req_valid,
@@ -794,7 +832,7 @@ pub unsafe extern "C" fn cyclotron_trace_rs(
         // record smem
         record_mem_bundle(
             conn_opt.as_ref().expect("trace connection not initialized"),
-            &mut context.trace_memory_queue[global_core_id],
+            &mut context.trace_memory_queue_smem[global_core_id],
             cluster_id,
             core_id,
             smem_req_valid,
@@ -811,6 +849,20 @@ pub unsafe extern "C" fn cyclotron_trace_rs(
     });
 
     // TODO: create sql indices
+}
+
+fn shift_data_to_lsb(data: u32, address: u32, size: u8) -> u32 {
+    let beat_width_bytes = 4;
+    let offset_in_beat = address % beat_width_bytes;
+    assert!(offset_in_beat % size as u32 == 0, "misaligned data");
+    let data_shifted = data >> (offset_in_beat * 8);
+    // rust panics on overflow when shifting
+    let mask = if size >= 4 {
+        u32::MAX
+    } else {
+        (1u32 << (size * 8)) - 1
+    };
+    data_shifted & mask
 }
 
 fn record_mem_bundle(
@@ -838,7 +890,8 @@ fn record_mem_bundle(
         let address = req_address[i];
         let size = 1 << req_size[i];
         let tag = req_tag[i];
-        let data = store.then_some(req_data[i]);
+        let req_data_shifted = shift_data_to_lsb(req_data[i], address, size);
+        let data = store.then_some(req_data_shifted);
         push_memory_queue(
             queue,
             MemQueueLine {
@@ -898,7 +951,8 @@ fn match_response_in_mem_queue(
 
         if !line.store {
             assert!(line.data.is_none(), "load req already has data?");
-            line.data = Some(resp_data);
+            let data_shifted = shift_data_to_lsb(resp_data, line.address, line.size);
+            line.data = Some(data_shifted);
         }
 
         line.checked = true;
@@ -970,7 +1024,14 @@ fn create_new_db_overwrite(db_path: &PathBuf) -> Connection {
                     cluster_id INTEGER NOT NULL,
                     core_id    INTEGER NOT NULL,
                     warp       INTEGER NOT NULL,
-                    pc         INTEGER NOT NULL
+                    pc         INTEGER NOT NULL,
+                    lane_mask  INTEGER NOT NULL,
+                    has_rs1    INTEGER NOT NULL,
+                    rs1_id     INTEGER NOT NULL,
+                    rs1_data   TEXT NOT NULL,
+                    has_rs2    INTEGER NOT NULL,
+                    rs2_id     INTEGER NOT NULL,
+                    rs2_data   TEXT NOT NULL
                 )",
         (),
     )
@@ -1262,7 +1323,6 @@ pub unsafe extern "C" fn profile_perf_counters_rs(
     let frac = |cycle: u64| cycle as f32 / cycles as f32;
     let percent = |cycle| frac(cycle) * 100.;
 
-    println!("");
     println!("Muon [cluster {} core {}] finished execution.", cluster_id, core_id);
     // filter out bogus finishes, e.g. right after reset drop but before softreset goes up.
     if inst_retired == 0 {
@@ -1286,6 +1346,7 @@ pub unsafe extern "C" fn profile_perf_counters_rs(
     println!("└─ avg. stalls due to busy FUs: {:.2}", avg_warp_stalls_busy);
     println!("IPC: {:.3}", ipc);
     println!("+-----------------------+");
+    println!("");
 }
 
 mod mem_model;

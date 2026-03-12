@@ -118,7 +118,7 @@ impl CSRFile {
             0xcd0, self.conf().lane_config.cluster_id as u32; // cluster_id
             0xfc0, self.conf().num_lanes as u32; // num_threads
             0xfc1, self.conf().num_warps as u32; // num_warps
-            0xfc2, self.conf().num_cores as u32; // num_cores
+            0xfc2, self.conf().num_cores as u32; // num_cores per cluster
             0xfc3, self.block_idx.0; // block_idx.x
             0xfc4, self.block_idx.1; // block_idx.y
             0xfc5, self.block_idx.2; // block_idx.z
