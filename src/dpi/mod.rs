@@ -1323,7 +1323,7 @@ pub unsafe extern "C" fn profile_perf_counters_rs(
     let avg_warp_stalls_waw = all_warp_stalls_waw as f32 / all_warp_cycles_issued as f32;
     let avg_warp_stalls_war = all_warp_stalls_war as f32 / all_warp_cycles_issued as f32;
     let avg_warp_stalls_busy = all_warp_stalls_busy as f32 / all_warp_cycles_issued as f32;
-    let avg_active_warps = all_warp_cycles_decoded as f32 / cycles_decoded as f32;
+    let avg_decoded_warps = all_warp_cycles_decoded as f32 / cycles as f32;
 
     let ipc = inst_retired as f32 / cycles as f32;
     let frac = |cycle: u64| cycle as f32 / cycles as f32;
@@ -1344,9 +1344,9 @@ pub unsafe extern "C" fn profile_perf_counters_rs(
     println!("├─ with decoded insts: {} ({:.2}%)", cycles_decoded, percent(cycles_decoded));
     println!("├─ with eligible insts: {} ({:.2}%)", cycles_eligible, percent(cycles_eligible));
     println!("└─ with issued insts: {} ({:.2}%)", cycles_issued, percent(cycles_issued));
+    println!("Warp occupancy with decoded insts: {:.2}", avg_decoded_warps);
     println!("Per-warp cycles:");
     println!("├─ with decoded insts [warp 0]: {}", per_warp_cycles_decoded[0]);
-    println!("├─ avg. active warps: {:.2}", avg_active_warps);
     println!("├─ avg. stalls due to write-after-write: {:.2}", avg_warp_stalls_waw);
     println!("├─ avg. stalls due to write-after-read:  {:.2}", avg_warp_stalls_war);
     println!("└─ avg. stalls due to busy FUs: {:.2}", avg_warp_stalls_busy);
