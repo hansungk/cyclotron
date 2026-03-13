@@ -1294,6 +1294,7 @@ pub unsafe extern "C" fn profile_perf_counters_rs(
     per_warp_stalls_waw_ptr: *const u64,
     per_warp_stalls_war_ptr: *const u64,
     per_warp_stalls_busy_ptr: *const u64,
+    per_warp_stalls_busy_lsu_ptr: *const u64,
     finished: u8,
 ) {
     let mut context_guard = CELL.write().unwrap();
@@ -1315,14 +1316,17 @@ pub unsafe extern "C" fn profile_perf_counters_rs(
     let per_warp_stalls_waw = unsafe { std::slice::from_raw_parts(per_warp_stalls_waw_ptr, config.num_warps) };
     let per_warp_stalls_war = unsafe { std::slice::from_raw_parts(per_warp_stalls_war_ptr, config.num_warps) };
     let per_warp_stalls_busy = unsafe { std::slice::from_raw_parts(per_warp_stalls_busy_ptr, config.num_warps) };
+    let per_warp_stalls_busy_lsu = unsafe { std::slice::from_raw_parts(per_warp_stalls_busy_lsu_ptr, config.num_warps) };
     let all_warp_cycles_decoded: u64 = per_warp_cycles_decoded.iter().sum();
     let all_warp_cycles_issued: u64 = per_warp_cycles_issued.iter().sum();
     let all_warp_stalls_waw: u64 = per_warp_stalls_waw.iter().sum();
     let all_warp_stalls_war: u64 = per_warp_stalls_war.iter().sum();
     let all_warp_stalls_busy: u64 = per_warp_stalls_busy.iter().sum();
+    let all_warp_stalls_busy_lsu: u64 = per_warp_stalls_busy_lsu.iter().sum();
     let avg_warp_stalls_waw = all_warp_stalls_waw as f32 / all_warp_cycles_issued as f32;
     let avg_warp_stalls_war = all_warp_stalls_war as f32 / all_warp_cycles_issued as f32;
     let avg_warp_stalls_busy = all_warp_stalls_busy as f32 / all_warp_cycles_issued as f32;
+    let avg_warp_stalls_busy_lsu = all_warp_stalls_busy_lsu as f32 / all_warp_cycles_issued as f32;
     let avg_decoded_warps = all_warp_cycles_decoded as f32 / cycles as f32;
 
     let ipc = inst_retired as f32 / cycles as f32;
@@ -1350,6 +1354,7 @@ pub unsafe extern "C" fn profile_perf_counters_rs(
     println!("├─ avg. stalls due to write-after-write: {:.2}", avg_warp_stalls_waw);
     println!("├─ avg. stalls due to write-after-read:  {:.2}", avg_warp_stalls_war);
     println!("└─ avg. stalls due to busy FUs: {:.2}", avg_warp_stalls_busy);
+    println!("   └─ LSU busy: {:.2}", avg_warp_stalls_busy_lsu);
     println!("IPC: {:.3}", ipc);
     println!("+-----------------------+");
     println!("");
