@@ -1354,7 +1354,7 @@ pub unsafe extern "C" fn profile_perf_counters_rs(
     println!("├─ avg. stalls due to write-after-write: {:.2}", avg_warp_stalls_waw);
     println!("├─ avg. stalls due to write-after-read:  {:.2}", avg_warp_stalls_war);
     println!("└─ avg. stalls due to busy FUs: {:.2}", avg_warp_stalls_busy);
-    println!("   └─ LSU busy: {:.2}", avg_warp_stalls_busy_lsu);
+    println!("   └─ busy LSU: {:.2}", avg_warp_stalls_busy_lsu);
     println!("IPC: {:.3}", ipc);
     println!("+-----------------------+");
     println!("");
