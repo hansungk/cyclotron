@@ -1340,23 +1340,23 @@ pub unsafe extern "C" fn profile_perf_counters_rs(
         return;
     }
     println!("");
-    println!("+-----------------------+");
-    println!(" Muon Performance Report");
-    println!("+-----------------------+");
-    println!("Instructions: {}", inst_retired);
-    println!("Cycles: {}", cycles);
-    println!("├─ with decoded insts: {} ({:.2}%)", cycles_decoded, percent(cycles_decoded));
-    println!("├─ with eligible insts: {} ({:.2}%)", cycles_eligible, percent(cycles_eligible));
-    println!("└─ with issued insts: {} ({:.2}%)", cycles_issued, percent(cycles_issued));
-    println!("Warp occupancy with decoded insts: {:.2}", avg_decoded_warps);
-    println!("Per-warp cycles:");
-    println!("├─ with decoded insts [warp 0]: {}", per_warp_cycles_decoded[0]);
-    println!("├─ avg. stalls due to write-after-write: {:.2}", avg_warp_stalls_waw);
-    println!("├─ avg. stalls due to write-after-read:  {:.2}", avg_warp_stalls_war);
-    println!("└─ avg. stalls due to busy FUs: {:.2}", avg_warp_stalls_busy);
-    println!("   └─ busy LSU: {:.2}", avg_warp_stalls_busy_lsu);
-    println!("IPC: {:.3}", ipc);
-    println!("+-----------------------+");
+    println!("╒═════════════════════════╕");
+    println!("│ Muon Performance Report │");
+    println!("├─────────────────────────┤");
+    println!(" Instructions: {}", inst_retired);
+    println!(" Cycles: {}", cycles);
+    println!(" ├─ with decoded insts: {} ({:.2}%)", cycles_decoded, percent(cycles_decoded));
+    println!(" ├─ with eligible insts: {} ({:.2}%)", cycles_eligible, percent(cycles_eligible));
+    println!(" └─ with issued insts: {} ({:.2}%)", cycles_issued, percent(cycles_issued));
+    println!(" Warp occupancy with decoded insts: {:.2}", avg_decoded_warps);
+    println!(" Per-warp cycles:");
+    println!(" ├─ with decoded insts [warp 0]: {}", per_warp_cycles_decoded[0]);
+    println!(" ├─ avg. stalls due to write-after-write: {:.2}", avg_warp_stalls_waw);
+    println!(" ├─ avg. stalls due to write-after-read:  {:.2}", avg_warp_stalls_war);
+    println!(" └─ avg. stalls due to busy FUs: {:.2}", avg_warp_stalls_busy);
+    println!("    └─ busy LSU: {:.2}", avg_warp_stalls_busy_lsu);
+    println!(" IPC: {:.3}", ipc);
+    println!("╘═════════════════════════╛");
     println!("");
 }
 
