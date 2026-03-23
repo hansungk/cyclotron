@@ -1344,9 +1344,9 @@ pub unsafe extern "C" fn profile_perf_counters_rs(
         return;
     }
     println!("");
-    println!("╒═════════════════════════╕");
-    println!("│ Muon Performance Report │");
-    println!("├─────────────────────────┤");
+    println!("╒═══════════════════════════╕");
+    println!("│  Muon Performance Report  │");
+    println!("├───────────────────────────┤");
     println!(" Instructions: {}", inst_retired);
     println!(" Cycles: {}", cycles);
     println!(" ├─ with decoded insts: {} ({:.2}%)", cycles_decoded, percent(cycles_decoded));
@@ -1361,7 +1361,7 @@ pub unsafe extern "C" fn profile_perf_counters_rs(
     println!(" └─ avg. stalls due to busy FUs: {:.2}", avg_warp_stalls_busy);
     println!("    └─ busy LSU: {:.2}", avg_warp_stalls_busy_lsu);
     println!(" IPC: {:.3}", ipc);
-    println!("╘═════════════════════════╛");
+    println!("╘═══════════════════════════╛");
     println!("");
 }
 
