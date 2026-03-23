@@ -133,11 +133,12 @@ pub extern "C" fn cyclotron_init_rs(c_elfname: *const c_char) {
     let trace_db_path = if elfname.is_empty() {
         PathBuf::from("cyclotron_trace.sqlite")
     } else {
-        PathBuf::from(&elfname)
+        let trace_db_name = PathBuf::from(&elfname)
             .file_name()
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("cyclotron_trace.sqlite"))
-            .with_extension("sqlite")
+            .and_then(|name| name.to_str())
+            .map(|name| name.strip_suffix(".elf").unwrap_or(name).to_owned())
+            .unwrap_or_else(|| "cyclotron_trace".to_owned());
+        PathBuf::from(format!("{trace_db_name}.sqlite"))
     };
 
     // make separate sim instances for the golden ISA model and the backend model to prevent
