@@ -107,7 +107,7 @@ pub fn assert_single_core(sim: &Sim) {
 #[no_mangle]
 /// Entry point to the DPI interface.  This must be called from Verilog at the start in an initial
 /// block.  This function can be called multiple times in different .v shims.
-pub extern "C" fn cyclotron_init_rs(c_elfname: *const c_char) {
+pub extern "C" fn cyclotron_init_rs(c_elfname: *const c_char, c_trace_db_path: *const c_char) {
     if CELL.read().unwrap().is_some() {
         // DPI context is already initialized by some other call; exit
         return;
@@ -126,11 +126,20 @@ pub extern "C" fn cyclotron_init_rs(c_elfname: *const c_char) {
             CStr::from_ptr(c_elfname).to_string_lossy().into_owned()
         }
     };
+    let trace_db_path_arg = unsafe {
+        if c_trace_db_path.is_null() {
+            String::new()
+        } else {
+            CStr::from_ptr(c_trace_db_path).to_string_lossy().into_owned()
+        }
+    };
     let mut cyclotron_args = CyclotronArgs::default();
     if !elfname.is_empty() {
         cyclotron_args.binary_path = Some(PathBuf::from(&elfname));
     }
-    let trace_db_path = if elfname.is_empty() {
+    let trace_db_path = if !trace_db_path_arg.is_empty() {
+        PathBuf::from(trace_db_path_arg)
+    } else if elfname.is_empty() {
         PathBuf::from("cyclotron_trace.sqlite")
     } else {
         let trace_db_name = PathBuf::from(&elfname)
