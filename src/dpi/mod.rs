@@ -1297,13 +1297,16 @@ pub unsafe extern "C" fn profile_perf_counters_rs(
     inst_retired: u64,
     cycles: u64,
     cycles_decoded: u64,
+    cycles_dispatched: u64,
     cycles_eligible: u64,
     cycles_issued: u64,
     per_warp_cycles_decoded_ptr: *const u64,
+    per_warp_cycles_dispatched_ptr: *const u64,
     per_warp_cycles_issued_ptr: *const u64,
     per_warp_stalls_waw_ptr: *const u64,
     per_warp_stalls_war_ptr: *const u64,
     per_warp_stalls_scoreboard_ptr: *const u64,
+    per_warp_stalls_rs_full_ptr: *const u64,
     per_warp_stalls_busy_ptr: *const u64,
     per_warp_stalls_busy_lsu_ptr: *const u64,
     finished: u8,
@@ -1323,10 +1326,12 @@ pub unsafe extern "C" fn profile_perf_counters_rs(
     }
 
     let per_warp_cycles_decoded = unsafe { std::slice::from_raw_parts(per_warp_cycles_decoded_ptr, config.num_warps) };
+    let per_warp_cycles_dispatched = unsafe { std::slice::from_raw_parts(per_warp_cycles_dispatched_ptr, config.num_warps) };
     let per_warp_cycles_issued = unsafe { std::slice::from_raw_parts(per_warp_cycles_issued_ptr, config.num_warps) };
     let per_warp_stalls_waw = unsafe { std::slice::from_raw_parts(per_warp_stalls_waw_ptr, config.num_warps) };
     let per_warp_stalls_war = unsafe { std::slice::from_raw_parts(per_warp_stalls_war_ptr, config.num_warps) };
     let per_warp_stalls_scoreboard = unsafe { std::slice::from_raw_parts(per_warp_stalls_scoreboard_ptr, config.num_warps) };
+    let per_warp_stalls_rs_full = unsafe { std::slice::from_raw_parts(per_warp_stalls_rs_full_ptr, config.num_warps) };
     let per_warp_stalls_busy = unsafe { std::slice::from_raw_parts(per_warp_stalls_busy_ptr, config.num_warps) };
     let per_warp_stalls_busy_lsu = unsafe { std::slice::from_raw_parts(per_warp_stalls_busy_lsu_ptr, config.num_warps) };
     let all_warp_cycles_decoded: u64 = per_warp_cycles_decoded.iter().sum();
@@ -1334,11 +1339,13 @@ pub unsafe extern "C" fn profile_perf_counters_rs(
     let all_warp_stalls_waw: u64 = per_warp_stalls_waw.iter().sum();
     let all_warp_stalls_war: u64 = per_warp_stalls_war.iter().sum();
     let all_warp_stalls_scoreboard: u64 = per_warp_stalls_scoreboard.iter().sum();
+    let all_warp_stalls_rs_full: u64 = per_warp_stalls_rs_full.iter().sum();
     let all_warp_stalls_busy: u64 = per_warp_stalls_busy.iter().sum();
     let all_warp_stalls_busy_lsu: u64 = per_warp_stalls_busy_lsu.iter().sum();
     let avg_warp_stalls_waw = all_warp_stalls_waw as f32 / all_warp_cycles_issued as f32;
     let avg_warp_stalls_war = all_warp_stalls_war as f32 / all_warp_cycles_issued as f32;
     let avg_warp_stalls_scoreboard = all_warp_stalls_scoreboard as f32 / all_warp_cycles_issued as f32;
+    let avg_warp_stalls_rs_full = all_warp_stalls_rs_full as f32 / all_warp_cycles_issued as f32;
     let avg_warp_stalls_busy = all_warp_stalls_busy as f32 / all_warp_cycles_issued as f32;
     let avg_warp_stalls_busy_lsu = all_warp_stalls_busy_lsu as f32 / all_warp_cycles_issued as f32;
     let avg_decoded_warps = all_warp_cycles_decoded as f32 / cycles as f32;
@@ -1360,14 +1367,17 @@ pub unsafe extern "C" fn profile_perf_counters_rs(
     println!(" Instructions: {}", inst_retired);
     println!(" Cycles: {}", cycles);
     println!(" ├─ with decoded insts: {} ({:.2}%)", cycles_decoded, percent(cycles_decoded));
+    println!(" ├─ with dispatched insts: {} ({:.2}%)", cycles_dispatched, percent(cycles_dispatched));
     println!(" ├─ with eligible insts: {} ({:.2}%)", cycles_eligible, percent(cycles_eligible));
     println!(" └─ with issued insts: {} ({:.2}%)", cycles_issued, percent(cycles_issued));
     println!(" Warp occupancy with decoded insts: {:.2}", avg_decoded_warps);
     println!(" Per-warp cycles:");
     println!(" ├─ with decoded insts [warp 0]: {}", per_warp_cycles_decoded[0]);
+    println!(" ├─ with dispatched insts [warp 0]: {}", per_warp_cycles_dispatched[0]);
     println!(" ├─ avg. stalls due to write-after-write: {:.2}", avg_warp_stalls_waw);
     println!(" ├─ avg. stalls due to write-after-read:  {:.2}", avg_warp_stalls_war);
     println!(" ├─ avg. stalls due to scoreboard full: {:.2}", avg_warp_stalls_scoreboard);
+    println!(" ├─ avg. stalls due to RS full: {:.2}", avg_warp_stalls_rs_full);
     println!(" └─ avg. stalls due to busy FUs: {:.2}", avg_warp_stalls_busy);
     println!("    └─ busy LSU: {:.2}", avg_warp_stalls_busy_lsu);
     println!(" IPC: {:.3}", ipc);
