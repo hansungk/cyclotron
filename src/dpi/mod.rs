@@ -1302,6 +1302,7 @@ pub unsafe extern "C" fn profile_perf_counters_rs(
     cycles_issued: u64,
     per_warp_cycles_decoded_ptr: *const u64,
     per_warp_cycles_dispatched_ptr: *const u64,
+    per_warp_cycles_eligible_ptr: *const u64,
     per_warp_cycles_issued_ptr: *const u64,
     per_warp_stalls_waw_ptr: *const u64,
     per_warp_stalls_war_ptr: *const u64,
@@ -1327,6 +1328,7 @@ pub unsafe extern "C" fn profile_perf_counters_rs(
 
     let per_warp_cycles_decoded = unsafe { std::slice::from_raw_parts(per_warp_cycles_decoded_ptr, config.num_warps) };
     let per_warp_cycles_dispatched = unsafe { std::slice::from_raw_parts(per_warp_cycles_dispatched_ptr, config.num_warps) };
+    let per_warp_cycles_eligible = unsafe { std::slice::from_raw_parts(per_warp_cycles_eligible_ptr, config.num_warps) };
     let per_warp_cycles_issued = unsafe { std::slice::from_raw_parts(per_warp_cycles_issued_ptr, config.num_warps) };
     let per_warp_stalls_waw = unsafe { std::slice::from_raw_parts(per_warp_stalls_waw_ptr, config.num_warps) };
     let per_warp_stalls_war = unsafe { std::slice::from_raw_parts(per_warp_stalls_war_ptr, config.num_warps) };
@@ -1335,6 +1337,8 @@ pub unsafe extern "C" fn profile_perf_counters_rs(
     let per_warp_stalls_busy = unsafe { std::slice::from_raw_parts(per_warp_stalls_busy_ptr, config.num_warps) };
     let per_warp_stalls_busy_lsu = unsafe { std::slice::from_raw_parts(per_warp_stalls_busy_lsu_ptr, config.num_warps) };
     let all_warp_cycles_decoded: u64 = per_warp_cycles_decoded.iter().sum();
+    let all_warp_cycles_dispatched: u64 = per_warp_cycles_dispatched.iter().sum();
+    let all_warp_cycles_eligible: u64 = per_warp_cycles_eligible.iter().sum();
     let all_warp_cycles_issued: u64 = per_warp_cycles_issued.iter().sum();
     let all_warp_stalls_waw: u64 = per_warp_stalls_waw.iter().sum();
     let all_warp_stalls_war: u64 = per_warp_stalls_war.iter().sum();
@@ -1349,6 +1353,8 @@ pub unsafe extern "C" fn profile_perf_counters_rs(
     let avg_warp_stalls_busy = all_warp_stalls_busy as f32 / all_warp_cycles_issued as f32;
     let avg_warp_stalls_busy_lsu = all_warp_stalls_busy_lsu as f32 / all_warp_cycles_issued as f32;
     let avg_decoded_warps = all_warp_cycles_decoded as f32 / cycles as f32;
+    let avg_dispatched_warps = all_warp_cycles_dispatched as f32 / cycles as f32;
+    let avg_eligible_warps = all_warp_cycles_eligible as f32 / cycles as f32;
 
     let ipc = inst_retired as f32 / cycles as f32;
     let frac = |cycle: u64| cycle as f32 / cycles as f32;
@@ -1371,9 +1377,12 @@ pub unsafe extern "C" fn profile_perf_counters_rs(
     println!(" ├─ with eligible insts: {} ({:.2}%)", cycles_eligible, percent(cycles_eligible));
     println!(" └─ with issued insts: {} ({:.2}%)", cycles_issued, percent(cycles_issued));
     println!(" Warp occupancy with decoded insts: {:.2}", avg_decoded_warps);
+    println!(" Warp occupancy with dispatched insts: {:.2}", avg_dispatched_warps);
+    println!(" Warp occupancy with eligible insts: {:.2}", avg_eligible_warps);
     println!(" Per-warp cycles:");
     println!(" ├─ with decoded insts [warp 0]: {}", per_warp_cycles_decoded[0]);
     println!(" ├─ with dispatched insts [warp 0]: {}", per_warp_cycles_dispatched[0]);
+    println!(" ├─ with eligible insts [warp 0]: {}", per_warp_cycles_eligible[0]);
     println!(" ├─ avg. stalls due to write-after-write: {:.2}", avg_warp_stalls_waw);
     println!(" ├─ avg. stalls due to write-after-read:  {:.2}", avg_warp_stalls_war);
     println!(" ├─ avg. stalls due to scoreboard full: {:.2}", avg_warp_stalls_scoreboard);
