@@ -107,7 +107,7 @@ pub fn assert_single_core(sim: &Sim) {
 #[no_mangle]
 /// Entry point to the DPI interface.  This must be called from Verilog at the start in an initial
 /// block.  This function can be called multiple times in different .v shims.
-pub extern "C" fn cyclotron_init_rs(c_elfname: *const c_char) {
+pub extern "C" fn cyclotron_init_rs(c_elfname: *const c_char, c_trace_db_path: *const c_char) {
     if CELL.read().unwrap().is_some() {
         // DPI context is already initialized by some other call; exit
         return;
@@ -126,18 +126,28 @@ pub extern "C" fn cyclotron_init_rs(c_elfname: *const c_char) {
             CStr::from_ptr(c_elfname).to_string_lossy().into_owned()
         }
     };
+    let trace_db_path_arg = unsafe {
+        if c_trace_db_path.is_null() {
+            String::new()
+        } else {
+            CStr::from_ptr(c_trace_db_path).to_string_lossy().into_owned()
+        }
+    };
     let mut cyclotron_args = CyclotronArgs::default();
     if !elfname.is_empty() {
         cyclotron_args.binary_path = Some(PathBuf::from(&elfname));
     }
-    let trace_db_path = if elfname.is_empty() {
+    let trace_db_path = if !trace_db_path_arg.is_empty() {
+        PathBuf::from(trace_db_path_arg)
+    } else if elfname.is_empty() {
         PathBuf::from("cyclotron_trace.sqlite")
     } else {
-        PathBuf::from(&elfname)
+        let trace_db_name = PathBuf::from(&elfname)
             .file_name()
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("cyclotron_trace.sqlite"))
-            .with_extension("sqlite")
+            .and_then(|name| name.to_str())
+            .map(|name| name.strip_suffix(".elf").unwrap_or(name).to_owned())
+            .unwrap_or_else(|| "cyclotron_trace".to_owned());
+        PathBuf::from(format!("{trace_db_name}.sqlite"))
     };
 
     // make separate sim instances for the golden ISA model and the backend model to prevent
@@ -761,10 +771,16 @@ pub unsafe extern "C" fn cyclotron_trace_rs(
 
     // print instruction progress
     if inst_valid != 0 {
+        if context.executed_insts[global_core_id] == 0 {
+            println!(
+                "Muon [cluster {} core {}] started execution.",
+                cluster_id, core_id,
+            );
+        }
         context.executed_insts[global_core_id] += 1;
         if context.executed_insts[global_core_id] % 1000 == 0 {
             println!(
-                "Muon [cluster {} core {}] executed {} instructions",
+                "Muon [cluster {} core {}] executed {} instructions.",
                 cluster_id, core_id, context.executed_insts[global_core_id],
             );
         }
@@ -1281,13 +1297,19 @@ pub unsafe extern "C" fn profile_perf_counters_rs(
     inst_retired: u64,
     cycles: u64,
     cycles_decoded: u64,
+    cycles_dispatched: u64,
     cycles_eligible: u64,
     cycles_issued: u64,
     per_warp_cycles_decoded_ptr: *const u64,
+    per_warp_cycles_dispatched_ptr: *const u64,
+    per_warp_cycles_eligible_ptr: *const u64,
     per_warp_cycles_issued_ptr: *const u64,
     per_warp_stalls_waw_ptr: *const u64,
     per_warp_stalls_war_ptr: *const u64,
+    per_warp_stalls_scoreboard_ptr: *const u64,
+    per_warp_stalls_rs_full_ptr: *const u64,
     per_warp_stalls_busy_ptr: *const u64,
+    per_warp_stalls_busy_lsu_ptr: *const u64,
     finished: u8,
 ) {
     let mut context_guard = CELL.write().unwrap();
@@ -1305,19 +1327,35 @@ pub unsafe extern "C" fn profile_perf_counters_rs(
     }
 
     let per_warp_cycles_decoded = unsafe { std::slice::from_raw_parts(per_warp_cycles_decoded_ptr, config.num_warps) };
+    let per_warp_cycles_dispatched = unsafe { std::slice::from_raw_parts(per_warp_cycles_dispatched_ptr, config.num_warps) };
+    let per_warp_cycles_eligible = unsafe { std::slice::from_raw_parts(per_warp_cycles_eligible_ptr, config.num_warps) };
     let per_warp_cycles_issued = unsafe { std::slice::from_raw_parts(per_warp_cycles_issued_ptr, config.num_warps) };
     let per_warp_stalls_waw = unsafe { std::slice::from_raw_parts(per_warp_stalls_waw_ptr, config.num_warps) };
     let per_warp_stalls_war = unsafe { std::slice::from_raw_parts(per_warp_stalls_war_ptr, config.num_warps) };
+    let per_warp_stalls_scoreboard = unsafe { std::slice::from_raw_parts(per_warp_stalls_scoreboard_ptr, config.num_warps) };
+    let per_warp_stalls_rs_full = unsafe { std::slice::from_raw_parts(per_warp_stalls_rs_full_ptr, config.num_warps) };
     let per_warp_stalls_busy = unsafe { std::slice::from_raw_parts(per_warp_stalls_busy_ptr, config.num_warps) };
+    let per_warp_stalls_busy_lsu = unsafe { std::slice::from_raw_parts(per_warp_stalls_busy_lsu_ptr, config.num_warps) };
     let all_warp_cycles_decoded: u64 = per_warp_cycles_decoded.iter().sum();
+    let all_warp_cycles_dispatched: u64 = per_warp_cycles_dispatched.iter().sum();
+    let all_warp_cycles_eligible: u64 = per_warp_cycles_eligible.iter().sum();
     let all_warp_cycles_issued: u64 = per_warp_cycles_issued.iter().sum();
     let all_warp_stalls_waw: u64 = per_warp_stalls_waw.iter().sum();
     let all_warp_stalls_war: u64 = per_warp_stalls_war.iter().sum();
+    let all_warp_stalls_scoreboard: u64 = per_warp_stalls_scoreboard.iter().sum();
+    let all_warp_stalls_rs_full: u64 = per_warp_stalls_rs_full.iter().sum();
     let all_warp_stalls_busy: u64 = per_warp_stalls_busy.iter().sum();
+    let all_warp_stalls_busy_lsu: u64 = per_warp_stalls_busy_lsu.iter().sum();
     let avg_warp_stalls_waw = all_warp_stalls_waw as f32 / all_warp_cycles_issued as f32;
     let avg_warp_stalls_war = all_warp_stalls_war as f32 / all_warp_cycles_issued as f32;
+    let avg_warp_stalls_scoreboard = all_warp_stalls_scoreboard as f32 / all_warp_cycles_issued as f32;
+    let avg_warp_stalls_rs_full = all_warp_stalls_rs_full as f32 / all_warp_cycles_issued as f32;
     let avg_warp_stalls_busy = all_warp_stalls_busy as f32 / all_warp_cycles_issued as f32;
-    let avg_active_warps = all_warp_cycles_decoded as f32 / cycles_decoded as f32;
+    let avg_warp_stalls_busy_lsu = all_warp_stalls_busy_lsu as f32 / all_warp_cycles_issued as f32;
+    let avg_warp_stalls_busy_other = avg_warp_stalls_busy - avg_warp_stalls_busy_lsu;
+    let avg_decoded_warps = all_warp_cycles_decoded as f32 / cycles as f32;
+    let avg_dispatched_warps = all_warp_cycles_dispatched as f32 / cycles as f32;
+    let avg_eligible_warps = all_warp_cycles_eligible as f32 / cycles as f32;
 
     let ipc = inst_retired as f32 / cycles as f32;
     let frac = |cycle: u64| cycle as f32 / cycles as f32;
@@ -1330,22 +1368,30 @@ pub unsafe extern "C" fn profile_perf_counters_rs(
         return;
     }
     println!("");
-    println!("+-----------------------+");
-    println!(" Muon Performance Report");
-    println!("+-----------------------+");
-    println!("Instructions: {}", inst_retired);
-    println!("Cycles: {}", cycles);
-    println!("├─ with decoded insts: {} ({:.2}%)", cycles_decoded, percent(cycles_decoded));
-    println!("├─ with eligible insts: {} ({:.2}%)", cycles_eligible, percent(cycles_eligible));
-    println!("└─ with issued insts: {} ({:.2}%)", cycles_issued, percent(cycles_issued));
-    println!("Per-warp cycles:");
-    println!("├─ with decoded insts [warp 0]: {}", per_warp_cycles_decoded[0]);
-    println!("├─ avg. active warps: {:.2}", avg_active_warps);
-    println!("├─ avg. stalls due to write-after-write: {:.2}", avg_warp_stalls_waw);
-    println!("├─ avg. stalls due to write-after-read:  {:.2}", avg_warp_stalls_war);
-    println!("└─ avg. stalls due to busy FUs: {:.2}", avg_warp_stalls_busy);
-    println!("IPC: {:.3}", ipc);
-    println!("+-----------------------+");
+    println!("╒═══════════════════════════╕");
+    println!("│  Muon Performance Report  │");
+    println!("├───────────────────────────┤");
+    println!(" Instructions: {}", inst_retired);
+    println!(" Cycles: {}", cycles);
+    println!(" ├─ with decoded insts: {} ({:.2}%)", cycles_decoded, percent(cycles_decoded));
+    println!(" ├─ with dispatched insts: {} ({:.2}%)", cycles_dispatched, percent(cycles_dispatched));
+    println!(" ├─ with eligible insts: {} ({:.2}%)", cycles_eligible, percent(cycles_eligible));
+    println!(" └─ with issued insts: {} ({:.2}%)", cycles_issued, percent(cycles_issued));
+    println!(" Warp occupancy with decoded insts: {:.2}", avg_decoded_warps);
+    println!(" Warp occupancy with dispatched insts: {:.2}", avg_dispatched_warps);
+    println!(" Warp occupancy with eligible insts: {:.2}", avg_eligible_warps);
+    println!(" Per-warp cycles:");
+    println!(" ├─ with decoded insts [warp 0]: {}", per_warp_cycles_decoded[0]);
+    println!(" ├─ with dispatched insts [warp 0]: {}", per_warp_cycles_dispatched[0]);
+    println!(" ├─ with eligible insts [warp 0]: {}", per_warp_cycles_eligible[0]);
+    println!(" ├─ dispatch stalls due to write-after-write: {:.2}", avg_warp_stalls_waw);
+    println!(" ├─ dispatch stalls due to write-after-read:  {:.2}", avg_warp_stalls_war);
+    println!(" ├─ dispatch stalls due to scoreboard full: {:.2}", avg_warp_stalls_scoreboard);
+    println!(" ├─ dispatch stalls due to RS full: {:.2}", avg_warp_stalls_rs_full);
+    println!(" ├─ dispatch stalls due to busy LSU: {:.2}", avg_warp_stalls_busy_lsu);
+    println!(" └─ issue stalls due to other busy FUs: {:.2}", avg_warp_stalls_busy_other);
+    println!(" IPC: {:.3}", ipc);
+    println!("╘═══════════════════════════╛");
     println!("");
 }
 
