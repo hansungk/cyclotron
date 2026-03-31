@@ -1352,6 +1352,7 @@ pub unsafe extern "C" fn profile_perf_counters_rs(
     let avg_warp_stalls_rs_full = all_warp_stalls_rs_full as f32 / all_warp_cycles_issued as f32;
     let avg_warp_stalls_busy = all_warp_stalls_busy as f32 / all_warp_cycles_issued as f32;
     let avg_warp_stalls_busy_lsu = all_warp_stalls_busy_lsu as f32 / all_warp_cycles_issued as f32;
+    let avg_warp_stalls_busy_other = avg_warp_stalls_busy - avg_warp_stalls_busy_lsu;
     let avg_decoded_warps = all_warp_cycles_decoded as f32 / cycles as f32;
     let avg_dispatched_warps = all_warp_cycles_dispatched as f32 / cycles as f32;
     let avg_eligible_warps = all_warp_cycles_eligible as f32 / cycles as f32;
@@ -1383,12 +1384,12 @@ pub unsafe extern "C" fn profile_perf_counters_rs(
     println!(" ├─ with decoded insts [warp 0]: {}", per_warp_cycles_decoded[0]);
     println!(" ├─ with dispatched insts [warp 0]: {}", per_warp_cycles_dispatched[0]);
     println!(" ├─ with eligible insts [warp 0]: {}", per_warp_cycles_eligible[0]);
-    println!(" ├─ avg. stalls due to write-after-write: {:.2}", avg_warp_stalls_waw);
-    println!(" ├─ avg. stalls due to write-after-read:  {:.2}", avg_warp_stalls_war);
-    println!(" ├─ avg. stalls due to scoreboard full: {:.2}", avg_warp_stalls_scoreboard);
-    println!(" ├─ avg. stalls due to RS full: {:.2}", avg_warp_stalls_rs_full);
-    println!(" └─ avg. stalls due to busy FUs: {:.2}", avg_warp_stalls_busy);
-    println!("    └─ busy LSU: {:.2}", avg_warp_stalls_busy_lsu);
+    println!(" ├─ dispatch stalls due to write-after-write: {:.2}", avg_warp_stalls_waw);
+    println!(" ├─ dispatch stalls due to write-after-read:  {:.2}", avg_warp_stalls_war);
+    println!(" ├─ dispatch stalls due to scoreboard full: {:.2}", avg_warp_stalls_scoreboard);
+    println!(" ├─ dispatch stalls due to RS full: {:.2}", avg_warp_stalls_rs_full);
+    println!(" ├─ dispatch stalls due to busy LSU: {:.2}", avg_warp_stalls_busy_lsu);
+    println!(" └─ issue stalls due to other busy FUs: {:.2}", avg_warp_stalls_busy_other);
     println!(" IPC: {:.3}", ipc);
     println!("╘═══════════════════════════╛");
     println!("");
