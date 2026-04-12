@@ -12,6 +12,7 @@ pub enum FrontendMode {
     #[default]
     Elf,
     TrafficSmem,
+    TrafficGmem,
 }
 
 impl FromStr for FrontendMode {
@@ -21,8 +22,9 @@ impl FromStr for FrontendMode {
         match value {
             "elf" => Ok(Self::Elf),
             "traffic_smem" => Ok(Self::TrafficSmem),
+            "traffic_gmem" => Ok(Self::TrafficGmem),
             _ => Err(format!(
-                "unsupported frontend mode '{}', expected one of: elf, traffic_smem",
+                "unsupported frontend mode '{}', expected one of: elf, traffic_smem, traffic_gmem",
                 value
             )),
         }

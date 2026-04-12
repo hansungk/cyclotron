@@ -1,7 +1,9 @@
 use std::sync::Arc;
 
 use crate::timeflow::graph::TimedNode;
-use crate::timeq::{Backpressure, Cycle, ServiceRequest, ServiceResult, Ticket, TimedServer};
+use crate::timeq::{
+    AcceptStatus, Backpressure, Cycle, ServiceRequest, ServiceResult, Ticket, TimedServer,
+};
 
 pub struct ServerNode<T> {
     name: Arc<str>,
@@ -20,6 +22,14 @@ impl<T> ServerNode<T> {
 impl<T: Send + Sync + 'static> TimedNode<T> for ServerNode<T> {
     fn name(&self) -> &str {
         &self.name
+    }
+
+    fn accept_status(&self, now: Cycle, _size_bytes: u32) -> AcceptStatus {
+        self.server.accept_status(now)
+    }
+
+    fn available_slots(&self) -> usize {
+        self.server.available_slots()
     }
 
     fn try_put(

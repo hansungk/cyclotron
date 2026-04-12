@@ -2,11 +2,25 @@ use serde::Deserialize;
 
 use crate::sim::config::Config;
 
+#[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum GmemEntryMode {
+    HierarchyOnly,
+    FullPath,
+}
+
+impl Default for GmemEntryMode {
+    fn default() -> Self {
+        Self::HierarchyOnly
+    }
+}
+
 #[derive(Debug, Deserialize, Clone)]
 #[serde(default)]
 pub struct TrafficConfig {
     pub enabled: bool,
     pub file: Option<String>,
+    pub gmem_entry_mode: GmemEntryMode,
     pub lockstep_patterns: bool,
     pub reqs_per_pattern: u32,
     pub num_lanes: usize,
@@ -23,6 +37,7 @@ impl Default for TrafficConfig {
         Self {
             enabled: false,
             file: None,
+            gmem_entry_mode: GmemEntryMode::HierarchyOnly,
             lockstep_patterns: true,
             reqs_per_pattern: 4096,
             num_lanes: 16,
@@ -40,6 +55,8 @@ pub struct TrafficAddressConfig {
     pub cluster_id: usize,
     pub smem_base: u64,
     pub smem_size_bytes: u64,
+    pub gmem_base: u64,
+    pub gmem_size_bytes: u64,
 }
 
 impl Default for TrafficAddressConfig {
@@ -48,6 +65,8 @@ impl Default for TrafficAddressConfig {
             cluster_id: 0,
             smem_base: 0x4000_0000,
             smem_size_bytes: 128 << 10,
+            gmem_base: 0x0100_0000,
+            gmem_size_bytes: 1 << 20,
         }
     }
 }

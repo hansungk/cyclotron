@@ -30,8 +30,8 @@ pub struct CyclotronArgs {
     pub timing: bool,
     #[arg(
         long,
-        help = "Override frontend mode (elf|traffic_smem)",
-        value_parser = ["elf", "traffic_smem"]
+        help = "Override frontend mode (elf|traffic_smem|traffic_gmem)",
+        value_parser = ["elf", "traffic_smem", "traffic_gmem"]
     )]
     pub frontend_mode: Option<String>,
     #[arg(long, help = "Path to traffic frontend config TOML")]

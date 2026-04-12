@@ -176,8 +176,7 @@ impl CyclotronTop {
         // TODO: current implementation means imem is writable, but this is true
         // in hardware too?
         let mut gmem = FlatMemory::new(Some(config.mem_config));
-        let load_elf =
-            matches!(config.frontend_mode, FrontendMode::Elf) || !config.elf.as_os_str().is_empty();
+        let load_elf = matches!(config.frontend_mode, FrontendMode::Elf);
         if load_elf {
             let elf_path = Path::new(&config.elf);
             let imem = ElfBackedMem::new(&elf_path);

@@ -133,6 +133,36 @@ impl CoreTimingModel {
         );
     }
 
+    pub(super) fn handle_gmem_completion_frontend(
+        &mut self,
+        now: Cycle,
+        completion: crate::timeflow::GmemCompletion,
+    ) {
+        let warp = completion.request.warp;
+        let completed_id = completion.request.id;
+        if let Some(slot) = self.pending_gmem.get_mut(warp) {
+            if let Some(pos) = slot.iter().position(|(id, _)| *id == completed_id) {
+                slot.remove(pos);
+            } else {
+                return;
+            }
+        } else {
+            return;
+        }
+        self.record_gmem_completion(now, &completion);
+        self.maybe_clear_gmem_issue_cycle(completed_id);
+        self.graph
+            .lsu_release_load_data(&LsuPayload::Gmem(completion.request.clone()));
+        self.trace_event(
+            now,
+            "gmem_complete_frontend",
+            warp,
+            Some(completed_id),
+            completion.request.bytes,
+            None,
+        );
+    }
+
     pub(super) fn handle_smem_completion(
         &mut self,
         now: Cycle,

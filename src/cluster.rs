@@ -7,6 +7,7 @@ use crate::sim::log::Logger;
 use crate::sim::perf_log::PerfLogSession;
 use crate::sim::top::ClusterConfig;
 use crate::traffic::config::TrafficConfig;
+use crate::traffic::gmem_driver::GmemTrafficDriver;
 use crate::traffic::smem_driver::SmemTrafficDriver;
 use log::{info, warn};
 use std::sync::{Arc, RwLock};
@@ -22,6 +23,7 @@ pub struct Cluster {
 enum ClusterFrontend {
     Elf,
     TrafficSmem(SmemTrafficDriver),
+    TrafficGmem(GmemTrafficDriver),
 }
 
 impl Cluster {
@@ -52,6 +54,14 @@ impl Cluster {
                     );
                 }
                 ClusterFrontend::TrafficSmem(SmemTrafficDriver::new(&traffic_config))
+            }
+            FrontendMode::TrafficGmem => {
+                if !traffic_config.enabled {
+                    warn!(
+                        "frontend_mode=traffic_gmem set, but [traffic].enabled=false: running STF skeleton anyway"
+                    );
+                }
+                ClusterFrontend::TrafficGmem(GmemTrafficDriver::new(&traffic_config))
             }
         };
         Cluster {
@@ -99,6 +109,14 @@ impl Cluster {
                 }
                 ClusterFrontend::TrafficSmem(SmemTrafficDriver::new(&traffic_config))
             }
+            FrontendMode::TrafficGmem => {
+                if !traffic_config.enabled {
+                    warn!(
+                        "frontend_mode=traffic_gmem set, but [traffic].enabled=false: running STF skeleton anyway"
+                    );
+                }
+                ClusterFrontend::TrafficGmem(GmemTrafficDriver::new(&traffic_config))
+            }
         };
         Cluster {
             id,
@@ -138,6 +156,9 @@ impl Cluster {
             ClusterFrontend::TrafficSmem(driver) => {
                 driver.is_done() && self.cores.iter().all(|core| !core.has_timing_inflight())
             }
+            ClusterFrontend::TrafficGmem(driver) => {
+                driver.is_done() && self.cores.iter().all(|core| !core.has_timing_inflight())
+            }
         }
     }
 
@@ -159,6 +180,12 @@ impl ModuleBehaviors for Cluster {
                     .update(&mut self.cores.iter_mut().map(|c| &mut c.scheduler).collect());
             }
             ClusterFrontend::TrafficSmem(driver) => {
+                for (core_id, core) in self.cores.iter_mut().enumerate() {
+                    core.tick_one();
+                    driver.tick_core(core_id, core);
+                }
+            }
+            ClusterFrontend::TrafficGmem(driver) => {
                 for (core_id, core) in self.cores.iter_mut().enumerate() {
                     core.tick_one();
                     driver.tick_core(core_id, core);

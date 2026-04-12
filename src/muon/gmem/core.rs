@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 use std::env;
 use std::sync::Arc;
 
@@ -254,6 +254,30 @@ impl CoreTimingModel {
         self.collect_smem_completions_direct(now);
     }
 
+    pub fn tick_gmem_traffic(&mut self, now: Cycle) {
+        self.graph.tick_front(now);
+        self.drive_lsu_issues(now);
+        self.issue_pending_cluster_gmem(now);
+
+        let gmem_completions = self.graph.collect_cluster_gmem_completions(self.core_id);
+        self.graph.tick_graph(now);
+
+        self.drain_pending_writeback(now);
+        for completion in gmem_completions {
+            self.enqueue_writeback(now, crate::timeflow::WritebackPayload::Gmem(completion));
+        }
+
+        self.graph.tick_back(now);
+        while let Some(payload) = self.graph.writeback_pop_ready() {
+            match payload {
+                crate::timeflow::WritebackPayload::Gmem(completion) => {
+                    self.handle_gmem_completion_frontend(now, completion);
+                }
+                crate::timeflow::WritebackPayload::Smem(_) => {}
+            }
+        }
+    }
+
     pub fn has_pending_gmem(&self, warp: usize) -> bool {
         self.pending_gmem
             .get(warp)
@@ -282,6 +306,138 @@ impl CoreTimingModel {
 
     pub fn simulate_smem_pattern(&self, addrs: &[Vec<u64>], is_read: bool) -> u64 {
         self.graph.simulate_smem_pattern(addrs, is_read)
+    }
+
+    pub fn simulate_gmem_pattern_hierarchy(
+        &mut self,
+        addrs: &[Vec<u64>],
+        req_bytes: u32,
+        is_load: bool,
+        cluster_id: usize,
+        max_inflight: usize,
+    ) -> u64 {
+        let l1_line_bytes = self.gmem_policy.l1_line_bytes.max(1) as u64;
+        let mut pending: VecDeque<crate::timeflow::GmemRequest> = VecDeque::new();
+
+        for wave in addrs {
+            let unique_lines: BTreeSet<u64> = wave
+                .iter()
+                .map(|addr| (addr / l1_line_bytes) * l1_line_bytes)
+                .collect();
+            for line in unique_lines {
+                let mut request = crate::timeflow::GmemRequest::new(0, req_bytes.max(1), 1, is_load);
+                request.addr = line;
+                request.cluster_id = cluster_id;
+                request.stall_on_completion = false;
+                request.bypass_l0 = true;
+                pending.push_back(request);
+            }
+        }
+
+        if pending.is_empty() {
+            return 0;
+        }
+
+        let total_requests = pending.len();
+        let mut inflight = 0usize;
+        let mut completed = 0usize;
+        let mut now: Cycle = 0;
+        let mut last_completion = 0;
+        let inflight_limit = max_inflight.max(1);
+        let max_cycles = (total_requests as u64).saturating_mul(1024).max(1024);
+
+        while completed < total_requests && now < max_cycles {
+            while inflight < inflight_limit {
+                let Some(mut request) = pending.pop_front() else {
+                    break;
+                };
+                request.core_id = self.core_id;
+                match self.graph.cluster_gmem_issue(self.core_id, now, request.clone()) {
+                    Ok(_) => inflight += 1,
+                    Err(reject) => {
+                        request = reject.payload;
+                        pending.push_back(request);
+                        break;
+                    }
+                }
+            }
+
+            self.graph.tick_front(now);
+            let completions = self.graph.collect_cluster_gmem_completions(self.core_id);
+            for _completion in completions {
+                completed += 1;
+                inflight = inflight.saturating_sub(1);
+                last_completion = now;
+            }
+
+            now = now.saturating_add(1);
+        }
+
+        last_completion.saturating_add(1)
+    }
+
+    pub fn simulate_gmem_pattern_full_path(
+        &mut self,
+        addrs: &[Vec<u64>],
+        req_bytes: u32,
+        is_load: bool,
+        cluster_id: usize,
+        max_inflight_groups: usize,
+    ) -> u64 {
+        if addrs.is_empty() {
+            return 0;
+        }
+
+        let inflight_limit = max_inflight_groups.max(1);
+        let mut next_wave = 0usize;
+        let mut inflight_ids: VecDeque<u64> = VecDeque::new();
+        let mut now: Cycle = 0;
+        let mut last_completion = 0;
+        let max_cycles = (addrs.len() as u64).saturating_mul(4096).max(4096);
+
+        while (next_wave < addrs.len() || !inflight_ids.is_empty()) && now < max_cycles {
+            while next_wave < addrs.len() && inflight_ids.len() < inflight_limit {
+                let wave = &addrs[next_wave];
+                let active_lanes = wave.len().max(1) as u32;
+                let total_bytes = req_bytes.saturating_mul(active_lanes).max(1);
+                let request_id = if self.next_gmem_id == 0 {
+                    1
+                } else {
+                    self.next_gmem_id
+                };
+
+                let mut request = crate::timeflow::GmemRequest::new(0, total_bytes, active_lanes, is_load);
+                request.id = request_id;
+                request.addr = wave.iter().copied().min().unwrap_or(0);
+                request.cluster_id = cluster_id;
+                request.lane_addrs = Some(wave.clone());
+                request.stall_on_completion = false;
+
+                match self.issue_gmem_request_frontend(now, request) {
+                    Ok(_) => {
+                        inflight_ids.push_back(request_id);
+                        next_wave += 1;
+                    }
+                    Err(_) => break,
+                }
+            }
+
+            self.tick_gmem_traffic(now);
+            inflight_ids.retain(|request_id| {
+                let pending = self
+                    .pending_gmem
+                    .iter()
+                    .any(|queue| queue.iter().any(|(id, _)| id == request_id));
+                if !pending {
+                    last_completion = now;
+                }
+                pending
+            });
+
+            now = now.saturating_add(1);
+        }
+
+        last_completion.saturating_add(1)
     }
 
     pub fn stats(&self) -> CoreStats {

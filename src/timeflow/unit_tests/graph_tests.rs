@@ -474,6 +474,14 @@ fn busy_nodes_propagate_backpressure() {
         fn name(&self) -> &str {
             "busy"
         }
+        fn accept_status(&self, now: Cycle, _size_bytes: u32) -> crate::timeq::AcceptStatus {
+            crate::timeq::AcceptStatus::Busy {
+                available_at: now + 5,
+            }
+        }
+        fn available_slots(&self) -> usize {
+            0
+        }
         fn try_put(
             &mut self,
             now: Cycle,

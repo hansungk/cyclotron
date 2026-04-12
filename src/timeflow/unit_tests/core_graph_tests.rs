@@ -89,8 +89,8 @@ fn core_graph_ticks_icache_lsu_and_collects_completions() {
 fn core_graph_ticks_cluster_gmem_from_front_phase() {
     let mut graph = core_graph_with_cfg(1, true, |cfg| {
         cfg.memory.gmem.policy.l0_enabled = false;
-        cfg.memory.gmem.nodes.dram.queue_capacity = 4;
-        cfg.memory.gmem.nodes.dram.base_latency = 1;
+        cfg.memory.gmem.nodes.outer_service.queue_capacity = 4;
+        cfg.memory.gmem.nodes.outer_service.base_latency = 1;
     });
 
     let request = GmemRequest::new(0, 16, 0xF, true);
@@ -201,8 +201,8 @@ fn core_graph_ticks_execute_pipeline_in_front_phase() {
 fn core_graph_collects_cluster_and_smem_completions_same_cycle() {
     let mut graph = core_graph_with_cfg(1, true, |cfg| {
         zero_smem_latency(cfg);
-        cfg.memory.gmem.nodes.dram.queue_capacity = 4;
-        cfg.memory.gmem.nodes.dram.base_latency = 1;
+        cfg.memory.gmem.nodes.outer_service.queue_capacity = 4;
+        cfg.memory.gmem.nodes.outer_service.base_latency = 1;
         cfg.memory.gmem.policy.l0_enabled = false;
     });
 

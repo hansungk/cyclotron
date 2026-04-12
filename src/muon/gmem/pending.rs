@@ -239,6 +239,21 @@ impl CoreTimingModel {
         self.update_scheduler_state(warp, scheduler);
     }
 
+    pub(super) fn add_gmem_pending_frontend(
+        &mut self,
+        warp: usize,
+        request_id: u64,
+        ready_at: Cycle,
+        count: usize,
+    ) {
+        if let Some(slot) = self.pending_gmem.get_mut(warp) {
+            let repeats = count.max(1);
+            for _ in 0..repeats {
+                slot.push_back((request_id, ready_at));
+            }
+        }
+    }
+
     pub(super) fn register_fence(
         &mut self,
         warp: usize,

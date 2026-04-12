@@ -19,7 +19,7 @@ fn make_model_with_lsu(num_warps: usize, lsu_depth: usize) -> CoreTimingModel {
     let mut gmem = GmemFlowConfig::default();
     gmem.nodes.coalescer.queue_capacity = 1;
     gmem.levels[0].tag.queue_capacity = 1;
-    gmem.nodes.dram.queue_capacity = 1;
+    gmem.nodes.outer_service.queue_capacity = 1;
     gmem.links.default.entries = 1;
     let smem = SmemFlowConfig {
         num_banks: 1,

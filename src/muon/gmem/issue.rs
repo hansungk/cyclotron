@@ -241,6 +241,102 @@ impl CoreTimingModel {
         }
     }
 
+    pub fn issue_gmem_request_frontend(
+        &mut self,
+        now: Cycle,
+        mut request: GmemRequest,
+    ) -> Result<Ticket, Cycle> {
+        let warp = request.warp;
+        if warp >= self.pending_gmem.len() {
+            return Err(now.saturating_add(1));
+        }
+
+        request.core_id = self.core_id;
+        request.cluster_id = self.cluster_id;
+        if request.id == 0 {
+            request.id = if self.next_gmem_id == 0 {
+                1
+            } else {
+                self.next_gmem_id
+            };
+        } else if request.id >= self.next_gmem_id {
+            self.next_gmem_id = request.id.saturating_add(1);
+        }
+        self.maybe_convert_mmio_flush(&mut request);
+        if request.kind.is_mem() {
+            if let Some(lane_addrs) = request.lane_addrs.as_ref() {
+                let line_bytes = if self.gmem_policy.l0_enabled {
+                    self.gmem_policy.l0_line_bytes.max(1)
+                } else {
+                    self.gmem_policy.l1_line_bytes.max(1)
+                } as u64;
+                let mut lines: Vec<u64> = lane_addrs
+                    .iter()
+                    .map(|addr| (addr / line_bytes) * line_bytes)
+                    .collect();
+                lines.sort_unstable();
+                lines.dedup();
+                if !lines.is_empty() {
+                    request.coalesced_lines = Some(lines);
+                }
+            }
+        }
+        request.lane_addrs = None;
+
+        let request_id = request.id;
+        let split_count = request
+            .coalesced_lines
+            .as_ref()
+            .map(|lines| lines.len().max(1))
+            .unwrap_or(1);
+        let issue_bytes = request.bytes;
+        if let Err(reject) = self.graph.operand_fetch_try_issue(now, request.bytes) {
+            let wait_until = reject.retry_at.max(now.saturating_add(1));
+            return Err(wait_until);
+        }
+
+        match self.graph.lsu_issue_gmem(now, request) {
+            Ok(LsuIssue { ticket }) => {
+                let ready_at = ticket.ready_at();
+                self.gmem_issue_cycle.entry(request_id).or_insert(now);
+                self.add_gmem_pending_frontend(warp, request_id, ready_at, split_count);
+                self.trace_event(
+                    now,
+                    "gmem_issue_frontend",
+                    warp,
+                    Some(request_id),
+                    issue_bytes,
+                    None,
+                );
+                Ok(ticket)
+            }
+            Err(LsuReject {
+                payload: request,
+                retry_at,
+                reason,
+            }) => {
+                let wait_until = retry_at.max(now.saturating_add(1));
+                let reason_str = match reason {
+                    LsuRejectReason::Busy => "busy",
+                    LsuRejectReason::QueueFull => "queue_full",
+                };
+                let (request_id, request_bytes) = match request {
+                    LsuPayload::Gmem(req) => (req.id, req.bytes),
+                    LsuPayload::Smem(req) => (req.id, req.bytes),
+                };
+                self.trace_event(
+                    now,
+                    "gmem_reject_frontend",
+                    warp,
+                    Some(request_id),
+                    request_bytes,
+                    Some(reason_str),
+                );
+                Err(wait_until)
+            }
+        }
+    }
+
     pub fn issue_smem_request_frontend(
         &mut self,
         now: Cycle,

@@ -186,14 +186,14 @@ pub struct PatternEngine {
     patterns: Vec<CompiledPattern>,
     lanes: usize,
     reqs_per_pattern: usize,
-    smem_base: u64,
+    default_base: u64,
     random_tables: Vec<Option<Vec<u64>>>, // flattened [lane * reqs_per_pattern + t]
 }
 
 impl PatternEngine {
     pub fn new(config: &TrafficConfig) -> Self {
         let lanes = config.num_lanes.max(1);
-        let smem_base = config.address.smem_base;
+        let default_base = config.address.smem_base;
         let reqs_per_pattern = config.reqs_per_pattern.max(1) as usize;
         let patterns: Vec<CompiledPattern> = config
             .patterns
@@ -206,7 +206,7 @@ impl PatternEngine {
             patterns,
             lanes,
             reqs_per_pattern,
-            smem_base,
+            default_base,
             random_tables,
         }
     }
@@ -228,12 +228,22 @@ impl PatternEngine {
     }
 
     pub fn lane_addr(&self, pattern_idx: usize, req_idx: u32, lane_idx: usize) -> Option<u64> {
+        self.lane_addr_with_base(pattern_idx, req_idx, lane_idx, self.default_base)
+    }
+
+    pub fn lane_addr_with_base(
+        &self,
+        pattern_idx: usize,
+        req_idx: u32,
+        lane_idx: usize,
+        base: u64,
+    ) -> Option<u64> {
         let pattern = self.patterns.get(pattern_idx)?;
         let offset = self
             .random_offset(pattern_idx, req_idx, lane_idx)
             .unwrap_or_else(|| pattern.offset_bytes(req_idx, lane_idx, self.lanes));
         let within = pattern.within_bytes.max(pattern.req_bytes.max(1) as u64);
-        Some(self.smem_base.saturating_add(offset % within))
+        Some(base.saturating_add(offset % within))
     }
 
     fn random_offset(&self, pattern_idx: usize, req_idx: u32, lane_idx: usize) -> Option<u64> {
@@ -405,6 +415,7 @@ mod tests {
         TrafficConfig {
             enabled: true,
             file: None,
+            gmem_entry_mode: crate::traffic::config::GmemEntryMode::HierarchyOnly,
             lockstep_patterns: true,
             reqs_per_pattern: reqs,
             num_lanes: lanes,
@@ -412,6 +423,8 @@ mod tests {
                 cluster_id: 0,
                 smem_base: 0x4000_0000,
                 smem_size_bytes: 128 << 10,
+                gmem_base: 0x0100_0000,
+                gmem_size_bytes: 1 << 20,
             },
             issue: TrafficIssueConfig::default(),
             logging: TrafficLoggingConfig::default(),

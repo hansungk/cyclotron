@@ -3,7 +3,9 @@ use std::sync::Arc;
 
 use crate::sim::perf_log;
 use crate::timeflow::types::{LinkId, NodeId};
-use crate::timeq::{normalize_retry, Backpressure, Cycle, ServiceRequest, ServiceResult, Ticket};
+use crate::timeq::{
+    normalize_retry, AcceptStatus, Backpressure, Cycle, ServiceRequest, ServiceResult, Ticket,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LinkBackpressure {
@@ -161,6 +163,8 @@ impl<T> Edge<T> {
 
 pub trait TimedNode<T>: Send + Sync {
     fn name(&self) -> &str;
+    fn accept_status(&self, now: Cycle, size_bytes: u32) -> AcceptStatus;
+    fn available_slots(&self) -> usize;
     fn try_put(
         &mut self,
         now: Cycle,
@@ -283,6 +287,14 @@ impl<T: Send + Sync + 'static> FlowGraph<T> {
         request: ServiceRequest<T>,
     ) -> Result<Ticket, Backpressure<T>> {
         self.nodes[node_id].node.try_put(now, request)
+    }
+
+    pub fn node_accept_status(&self, node_id: NodeId, now: Cycle, size_bytes: u32) -> AcceptStatus {
+        self.nodes[node_id].node.accept_status(now, size_bytes)
+    }
+
+    pub fn node_available_slots(&self, node_id: NodeId) -> usize {
+        self.nodes[node_id].node.available_slots()
     }
 
     pub fn tick(&mut self, now: Cycle) {

@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 
 use crate::timeflow::{
     graph::FlowGraph,
@@ -55,6 +55,23 @@ struct RollbackSpec {
     l0_new: bool,
     l1_new: bool,
     l2_new: bool,
+}
+
+#[derive(Debug, Clone)]
+struct FragmentGatherState {
+    parent: GmemRequest,
+    expected_children: usize,
+    completed_children: usize,
+    ticket_ready_at: Cycle,
+}
+
+#[derive(Debug, Clone)]
+struct PendingFragmentIssue {
+    core_id: usize,
+    parent_id: u64,
+    l0_line: u64,
+    retry_at: Cycle,
+    request: GmemRequest,
 }
 
 pub struct Bank {
@@ -200,6 +217,9 @@ pub struct ClusterGmemGraph {
     hierarchy: GmemHierarchy,
     last_tick: Cycle,
     stats_range: Option<super::graph_build::GmemStatsRange>,
+    next_fragment_parent_id: u64,
+    fragment_gathers: HashMap<u64, FragmentGatherState>,
+    pending_fragment_issues: VecDeque<PendingFragmentIssue>,
 }
 
 const L1_BANK_SEED: u64 = 0x1111_2222_3333_4444;
@@ -282,6 +302,9 @@ impl ClusterGmemGraph {
             hierarchy,
             last_tick: u64::MAX,
             stats_range: config.stats_range,
+            next_fragment_parent_id: 1,
+            fragment_gathers: HashMap::new(),
+            pending_fragment_issues: VecDeque::new(),
         }
     }
 
@@ -290,6 +313,29 @@ impl ClusterGmemGraph {
             Some(range) => addr >= range.start && addr < range.end,
             None => true,
         }
+    }
+
+    fn make_fragment_children(&self, parent_id: u64, request: &GmemRequest) -> Vec<GmemRequest> {
+        let parent_bytes = self.policy.l0_line_bytes.max(1) as u64;
+        let child_bytes = self.policy.l1_line_bytes.max(1) as u64;
+        let child_count = (parent_bytes / child_bytes).max(1) as usize;
+        let parent_base = (request.addr / parent_bytes) * parent_bytes;
+
+        (0..child_count)
+            .map(|idx| {
+                let mut child = request.clone();
+                child.addr = parent_base + (idx as u64) * child_bytes;
+                child.bytes = child_bytes as u32;
+                child.bypass_l0 = true;
+                child.fill_l0_only = false;
+                child.fragment_parent_id = Some(parent_id);
+                child.fragment_index = idx as u8;
+                child.fragment_count = child_count as u8;
+                child.coalesced_lines = None;
+                child.lane_addrs = None;
+                child
+            })
+            .collect()
     }
 
     pub fn issue(
@@ -338,6 +384,77 @@ impl ClusterGmemGraph {
 
         let lines = self.compute_cache_lines(&mut request);
         let track_stats = self.stats_enabled_for(request.addr);
+        if self.policy.l0_enabled
+            && !request.bypass_l0
+            && request.is_load
+            && request.bytes >= self.policy.l0_line_bytes
+        {
+            let l0_hit = self.hierarchy.l0[core_id].probe(lines.l0_line);
+            request.l0_hit = l0_hit;
+            request.l1_hit = false;
+            request.l2_hit = false;
+            request.l1_writeback = false;
+            request.l2_writeback = false;
+            if track_stats && self.hierarchy.l0[core_id].bank_count() > 0 {
+                self.hierarchy.l0[core_id].banks[0]
+                    .stats
+                    .record_access(request.bytes);
+                if l0_hit {
+                    self.hierarchy.l0[core_id].banks[0]
+                        .stats
+                        .record_hit(request.bytes);
+                }
+            }
+
+            if l0_hit {
+                return self.issue_to_graph(core_id, now, request);
+            }
+
+            if self.hierarchy.l0[core_id].has_entry(0, lines.l0_line) {
+                let ready_at = self.hierarchy.l0[core_id]
+                    .merge_request(0, lines.l0_line, request.clone())
+                    .unwrap_or(now.saturating_add(1));
+                return Ok(self.issue_merge(
+                    core_id,
+                    assigned_id,
+                    now,
+                    ready_at,
+                    request.bytes,
+                    request.addr,
+                ));
+            }
+
+            if !self.hierarchy.l0[core_id].can_allocate(0, lines.l0_line) {
+                return self.rollback_and_reject_queue_full(
+                    now,
+                    request,
+                    core_id,
+                    Some(QueueFullBankTarget::L0 { core_id, bank: 0 }),
+                    None,
+                )
+                .map(|_| unreachable!());
+            }
+
+            let l0_new = match self.hierarchy.l0[core_id]
+                .ensure_entry(0, lines.l0_line, MissMetadata::from_request(&request))
+            {
+                Ok(new_entry) => new_entry,
+                Err(_) => {
+                    return self.rollback_and_reject_queue_full(now, request, core_id, None, None)
+                        .map(|_| unreachable!());
+                }
+            };
+
+            return self.issue_fragmented_parent(
+                core_id,
+                now,
+                request,
+                &lines,
+                l0_new,
+                false,
+                false,
+            );
+        }
         let miss_level =
             self.record_cache_accesses(core_id, cluster_id, &mut request, &lines, track_stats);
         let meta = MissMetadata::from_request(&request);
@@ -357,6 +474,12 @@ impl ClusterGmemGraph {
 
         let (l0_new, l1_new, l2_new) = match allocation {
             AllocationResult::Merge { ready_at, bytes } => {
+                if request.fragment_parent_id.is_some() {
+                    return Ok(GmemIssue {
+                        request_id: assigned_id,
+                        ticket: Ticket::new(now, ready_at, bytes),
+                    });
+                }
                 return Ok(self.issue_merge(
                     core_id,
                     assigned_id,
@@ -373,6 +496,7 @@ impl ClusterGmemGraph {
             } => (l0_new, l1_new, l2_new),
         };
 
+        let bypass_l0 = request.bypass_l0;
         let issue = match self.issue_to_graph(core_id, now, request) {
             Ok(issue) => issue,
             Err(err) => {
@@ -396,18 +520,18 @@ impl ClusterGmemGraph {
         match miss_level {
             MissLevel::None => {}
             MissLevel::L0 => {
-                if self.policy.l0_enabled {
+                if self.policy.l0_enabled && !bypass_l0 {
                     self.hierarchy.l0[core_id].set_ready_at(0, lines.l0_line, ready_at);
                 }
             }
             MissLevel::L1 => {
-                if self.policy.l0_enabled {
+                if self.policy.l0_enabled && !bypass_l0 {
                     self.hierarchy.l0[core_id].set_ready_at(0, lines.l0_line, ready_at);
                 }
                 self.hierarchy.l1[cluster_id].set_ready_at(lines.l1_bank, lines.l1_line, ready_at);
             }
             MissLevel::L2 => {
-                if self.policy.l0_enabled {
+                if self.policy.l0_enabled && !bypass_l0 {
                     self.hierarchy.l0[core_id].set_ready_at(0, lines.l0_line, ready_at);
                 }
                 self.hierarchy.l1[cluster_id].set_ready_at(lines.l1_bank, lines.l1_line, ready_at);
@@ -426,6 +550,7 @@ impl ClusterGmemGraph {
         }
         self.last_tick = now;
 
+        self.drain_pending_fragment_issues(now);
         self.graph.tick(now);
 
         for core_id in 0..self.cores.len() {
@@ -441,7 +566,9 @@ impl ClusterGmemGraph {
 
             // Apply completion effects for all ready requests
             for (request, _ticket) in &drained {
-                self.apply_completion_effects(request);
+                if request.fragment_parent_id.is_none() {
+                    self.apply_completion_effects(request);
+                }
             }
 
             // Collect merged completions (they will inherit the same ticket_ready_at as parent request)
@@ -455,21 +582,192 @@ impl ClusterGmemGraph {
 
             // Apply completion effects for merged completions so their fills are visible before any completions are recorded
             for (merged_req, _ticket) in &merged_all {
-                self.apply_completion_effects(merged_req);
+                if merged_req.fragment_parent_id.is_none() {
+                    self.apply_completion_effects(merged_req);
+                }
             }
 
             // Push/record original completions
             for (request, ticket) in drained.iter() {
                 let ticket_ready_at = ticket.ready_at();
-                self.push_completion(request.clone(), ticket_ready_at, now);
+                self.handle_ready_completion(request.clone(), ticket_ready_at, now);
             }
 
             // Push/record merged completions
             for (merged_req, ticket) in merged_all.into_iter() {
                 let ticket_ready_at = ticket.ready_at();
-                self.push_completion(merged_req.clone(), ticket_ready_at, now);
+                self.handle_ready_completion(merged_req.clone(), ticket_ready_at, now);
             }
         }
+    }
+
+    fn handle_ready_completion(&mut self, request: GmemRequest, ticket_ready_at: Cycle, now: Cycle) {
+        if request.fragment_parent_id.is_some() {
+            self.apply_completion_effects(&request);
+            self.record_fragment_child_completion(request, ticket_ready_at, now);
+            return;
+        }
+
+        self.push_completion(request, ticket_ready_at, now);
+    }
+
+    fn record_fragment_child_completion(
+        &mut self,
+        request: GmemRequest,
+        ticket_ready_at: Cycle,
+        now: Cycle,
+    ) {
+        let Some(parent_id) = request.fragment_parent_id else {
+            return;
+        };
+        let Some(mut state) = self.fragment_gathers.remove(&parent_id) else {
+            return;
+        };
+
+        state.completed_children = state.completed_children.saturating_add(1);
+        state.ticket_ready_at = state.ticket_ready_at.max(ticket_ready_at);
+        if state.completed_children < state.expected_children {
+            self.fragment_gathers.insert(parent_id, state);
+            return;
+        }
+
+        let mut parent = state.parent;
+        parent.fill_l0_only = true;
+        let parent_ticket_ready_at = state.ticket_ready_at;
+        let merged = if self.policy.l0_enabled && parent.core_id < self.hierarchy.l0.len() {
+            let l0_line = line_addr(parent.addr, self.policy.l0_line_bytes);
+            self.hierarchy.l0[parent.core_id].remove_entry_merged(0, l0_line)
+        } else {
+            Vec::new()
+        };
+        self.apply_completion_effects(&parent);
+        self.push_completion(parent.clone(), parent_ticket_ready_at, now);
+        for merged_req in merged {
+            self.push_completion(merged_req, parent_ticket_ready_at, now);
+        }
+    }
+
+    fn queue_fragment_child(
+        &mut self,
+        parent_id: u64,
+        core_id: usize,
+        l0_line: u64,
+        retry_at: Cycle,
+        request: GmemRequest,
+    ) {
+        self.pending_fragment_issues.push_back(PendingFragmentIssue {
+            core_id,
+            parent_id,
+            l0_line,
+            retry_at,
+            request,
+        });
+    }
+
+    fn update_fragment_ready_at(&mut self, parent_id: u64, core_id: usize, l0_line: u64, ready_at: Cycle) {
+        if let Some(state) = self.fragment_gathers.get_mut(&parent_id) {
+            state.ticket_ready_at = state.ticket_ready_at.max(ready_at);
+            if self.policy.l0_enabled && core_id < self.hierarchy.l0.len() {
+                self.hierarchy.l0[core_id].set_ready_at(0, l0_line, state.ticket_ready_at);
+            }
+        }
+    }
+
+    fn drain_pending_fragment_issues(&mut self, now: Cycle) {
+        if self.pending_fragment_issues.is_empty() {
+            return;
+        }
+
+        let mut pending = VecDeque::with_capacity(self.pending_fragment_issues.len());
+        while let Some(entry) = self.pending_fragment_issues.pop_front() {
+            if entry.retry_at > now {
+                pending.push_back(entry);
+                continue;
+            }
+
+            match self.issue(entry.core_id, now, entry.request.clone()) {
+                Ok(issue) => {
+                    self.update_fragment_ready_at(
+                        entry.parent_id,
+                        entry.core_id,
+                        entry.l0_line,
+                        issue.ticket.ready_at(),
+                    );
+                }
+                Err(err) => {
+                    pending.push_back(PendingFragmentIssue {
+                        core_id: entry.core_id,
+                        parent_id: entry.parent_id,
+                        l0_line: entry.l0_line,
+                        retry_at: err.retry_at,
+                        request: err.payload,
+                    });
+                }
+            }
+        }
+
+        self.pending_fragment_issues = pending;
+    }
+
+    fn issue_fragmented_parent(
+        &mut self,
+        core_id: usize,
+        now: Cycle,
+        mut request: GmemRequest,
+        lines: &CacheLines,
+        _l0_new: bool,
+        _l1_new: bool,
+        _l2_new: bool,
+    ) -> GmemResult<GmemIssue> {
+        let parent_id = self.next_fragment_parent_id;
+        self.next_fragment_parent_id = self.next_fragment_parent_id.saturating_add(1);
+
+        let child_count = (self.policy.l0_line_bytes.max(self.policy.l1_line_bytes)
+            / self.policy.l1_line_bytes.max(1))
+            .max(1) as usize;
+
+        request.fill_l0_only = true;
+        self.fragment_gathers.insert(
+            parent_id,
+            FragmentGatherState {
+                parent: request.clone(),
+                expected_children: child_count,
+                completed_children: 0,
+                ticket_ready_at: now.saturating_add(1),
+            },
+        );
+        if self.policy.l0_enabled && core_id < self.hierarchy.l0.len() {
+            self.hierarchy.l0[core_id].set_ready_at(0, lines.l0_line, now.saturating_add(1));
+        }
+
+        let children = self.make_fragment_children(parent_id, &request);
+        for child in children {
+            match self.issue(core_id, now, child) {
+                Ok(issue) => {
+                    self.update_fragment_ready_at(parent_id, core_id, lines.l0_line, issue.ticket.ready_at());
+                }
+                Err(err) => {
+                    self.queue_fragment_child(
+                        parent_id,
+                        core_id,
+                        lines.l0_line,
+                        err.retry_at,
+                        err.payload,
+                    );
+                }
+            }
+        }
+
+        let max_ready_at = self
+            .fragment_gathers
+            .get(&parent_id)
+            .map(|state| state.ticket_ready_at)
+            .unwrap_or_else(|| now.saturating_add(1));
+        self.record_issue_stats(core_id, request.id, request.bytes, request.addr);
+        Ok(GmemIssue {
+            request_id: request.id,
+            ticket: Ticket::new(now, max_ready_at, request.bytes),
+        })
     }
 
     fn issue_to_graph(
@@ -481,6 +779,7 @@ impl ClusterGmemGraph {
         let request_id = request.id;
         let bytes = request.bytes;
         let addr = request.addr;
+        let is_fragment_child = request.fragment_parent_id.is_some();
         let payload = CoreFlowPayload::Gmem(request);
         let service_req = ServiceRequest::new(payload, bytes);
 
@@ -489,7 +788,9 @@ impl ClusterGmemGraph {
             .try_put(self.cores[core_id].ingress_node, now, service_req)
         {
             Ok(ticket) => {
-                self.record_issue_stats(core_id, request_id, bytes, addr);
+                if request_id != 0 && !is_fragment_child {
+                    self.record_issue_stats(core_id, request_id, bytes, addr);
+                }
                 Ok(GmemIssue { request_id, ticket })
             }
             Err(bp) => match bp {
@@ -531,7 +832,7 @@ impl ClusterGmemGraph {
 
     fn compute_cache_lines(&self, request: &mut GmemRequest) -> CacheLines {
         let policy = self.policy;
-        let l0_enabled = policy.l0_enabled;
+        let l0_enabled = policy.l0_enabled && !request.bypass_l0;
         let l0_line = if l0_enabled {
             line_addr(request.addr, policy.l0_line_bytes)
         } else {
@@ -562,7 +863,7 @@ impl ClusterGmemGraph {
         track_stats: bool,
     ) -> MissLevel {
         let policy = self.policy;
-        let l0_enabled = policy.l0_enabled;
+        let l0_enabled = policy.l0_enabled && !request.bypass_l0;
         let mut l0_hit = false;
         if l0_enabled && core_id < self.hierarchy.l0.len() {
             l0_hit = self.hierarchy.l0[core_id].probe(lines.l0_line);
@@ -641,8 +942,16 @@ impl ClusterGmemGraph {
         }
 
         if l0_enabled {
-            if request.l0_hit {
-                MissLevel::None
+            if request.is_load {
+                if request.l0_hit {
+                    MissLevel::None
+                } else if request.l1_hit {
+                    MissLevel::L0
+                } else if request.l2_hit {
+                    MissLevel::L1
+                } else {
+                    MissLevel::L2
+                }
             } else if request.l1_hit {
                 MissLevel::L0
             } else if request.l2_hit {
@@ -680,6 +989,13 @@ impl ClusterGmemGraph {
                 l2_new: false,
             }),
             MissLevel::L0 => {
+                if request.bypass_l0 {
+                    return Ok(AllocationResult::Continue {
+                        l0_new: false,
+                        l1_new: false,
+                        l2_new: false,
+                    });
+                }
                 if self.hierarchy.l0[core_id].has_entry(0, l0_line) {
                     let bytes = request.bytes;
                     let ready_at = self.hierarchy.l0[core_id]
@@ -713,7 +1029,7 @@ impl ClusterGmemGraph {
             }
             MissLevel::L1 => {
                 let mut l0_new = false;
-                if self.policy.l0_enabled {
+                if self.policy.l0_enabled && !request.bypass_l0 {
                     if !self.hierarchy.l0[core_id].has_entry(0, l0_line) {
                         l0_new = match self.hierarchy.l0[core_id].ensure_entry(0, l0_line, meta) {
                             Ok(new_entry) => new_entry,
@@ -728,10 +1044,11 @@ impl ClusterGmemGraph {
 
                 if self.hierarchy.l1[cluster_id].has_entry(l1_bank, l1_line) {
                     let bytes = request.bytes;
+                    let bypass_l0 = request.bypass_l0;
                     let ready_at = self.hierarchy.l1[cluster_id]
                         .merge_request(l1_bank, l1_line, request)
                         .unwrap_or(now.saturating_add(1));
-                    if self.policy.l0_enabled {
+                    if self.policy.l0_enabled && !bypass_l0 {
                         self.hierarchy.l0[core_id].set_ready_at(0, l0_line, ready_at);
                     }
                     return Ok(AllocationResult::Merge { ready_at, bytes });
@@ -795,7 +1112,7 @@ impl ClusterGmemGraph {
             MissLevel::L2 => {
                 let mut l0_new = false;
                 let mut l1_new = false;
-                if self.policy.l0_enabled {
+                if self.policy.l0_enabled && !request.bypass_l0 {
                     if !self.hierarchy.l0[core_id].has_entry(0, l0_line) {
                         l0_new = match self.hierarchy.l0[core_id].ensure_entry(0, l0_line, meta) {
                             Ok(new_entry) => new_entry,
@@ -837,13 +1154,14 @@ impl ClusterGmemGraph {
 
                 if self.hierarchy.l2.has_entry(l2_bank, l2_line) {
                     let bytes = request.bytes;
+                    let bypass_l0 = request.bypass_l0;
                     let ready_at = self
                         .hierarchy
                         .l2
                         .merge_request(l2_bank, l2_line, request)
                         .unwrap_or(now.saturating_add(1));
                     self.hierarchy.l1[cluster_id].set_ready_at(l1_bank, l1_line, ready_at);
-                    if self.policy.l0_enabled {
+                    if self.policy.l0_enabled && !bypass_l0 {
                         self.hierarchy.l0[core_id].set_ready_at(0, l0_line, ready_at);
                     }
                     return Ok(AllocationResult::Merge { ready_at, bytes });
@@ -1051,7 +1369,7 @@ impl ClusterGmemGraph {
         }
 
         let policy = self.policy;
-        let l0_enabled = policy.l0_enabled;
+        let l0_enabled = policy.l0_enabled && !request.bypass_l0;
         let l0_line = if l0_enabled {
             line_addr(request.addr, policy.l0_line_bytes)
         } else {
@@ -1059,6 +1377,14 @@ impl ClusterGmemGraph {
         };
         let l1_line = line_addr(request.addr, policy.l1_line_bytes);
         let l2_line = line_addr(request.addr, policy.l2_line_bytes);
+
+        if request.fill_l0_only {
+            if policy.l0_enabled && request.core_id < self.hierarchy.l0.len() {
+                let l0_line = line_addr(request.addr, policy.l0_line_bytes);
+                self.hierarchy.l0[request.core_id].tags.fill(l0_line);
+            }
+            return;
+        }
 
         if l0_enabled && !request.l0_hit && request.core_id < self.hierarchy.l0.len() {
             self.hierarchy.l0[request.core_id].tags.fill(l0_line);
@@ -1135,7 +1461,7 @@ impl ClusterGmemGraph {
 
                     if l0_enabled {
                         for req in std::iter::once(request.clone()).chain(merged.iter().cloned()) {
-                            if req.core_id < self.hierarchy.l0.len() {
+                            if !req.bypass_l0 && req.core_id < self.hierarchy.l0.len() {
                                 let l0_line_req = line_addr(req.addr, policy.l0_line_bytes);
                                 let _ = self.hierarchy.l0[req.core_id]
                                     .remove_entry_merged(0, l0_line_req);
@@ -1161,7 +1487,7 @@ impl ClusterGmemGraph {
                     }
 
                     for req in std::iter::once(request.clone()).chain(merged.iter().cloned()) {
-                        if l0_enabled && req.core_id < self.hierarchy.l0.len() {
+                        if l0_enabled && !req.bypass_l0 && req.core_id < self.hierarchy.l0.len() {
                             let l0_line_req = line_addr(req.addr, policy.l0_line_bytes);
                             let _ =
                                 self.hierarchy.l0[req.core_id].remove_entry_merged(0, l0_line_req);

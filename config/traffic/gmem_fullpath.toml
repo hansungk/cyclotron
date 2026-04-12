@@ -1,0 +1,66 @@
+[traffic]
+enabled = true
+gmem_entry_mode = "full_path"
+lockstep_patterns = true
+reqs_per_pattern = 4096
+num_lanes = 16
+
+[traffic.address]
+cluster_id = 0
+gmem_base = 0x01000000
+gmem_size_bytes = 1048576
+
+[traffic.issue]
+max_inflight_per_lane = 8
+retry_backoff_min = 1
+
+[traffic.logging]
+print_traffic_lines = true
+results_json = "logs/traffic/gmem_fullpath_results.json"
+results_csv = "logs/traffic/gmem_fullpath_results.csv"
+
+[[traffic.patterns]]
+name = "coalesced_r"
+kind = "strided"
+req_bytes = 4
+op = "read"
+warp_stride = 0
+lane_stride = 1
+within_bytes = 64
+
+[[traffic.patterns]]
+name = "noncoalesced_r"
+kind = "strided"
+req_bytes = 4
+op = "read"
+warp_stride = 1
+lane_stride = 8
+within_bytes = 1048576
+
+[[traffic.patterns]]
+name = "partial_coalescing_w"
+kind = "strided"
+req_bytes = 4
+op = "write"
+warp_stride = 0
+lane_stride = 4
+within_bytes = 128
+
+[[traffic.patterns]]
+name = "alignment_cross_32_r"
+kind = "strided"
+req_bytes = 4
+op = "read"
+warp_stride = 1
+lane_stride = 7
+within_bytes = 96
+
+[[traffic.patterns]]
+name = "random_holdout_r"
+kind = "random"
+req_bytes = 4
+op = "read"
+random_min = 0
+random_max = 262144
+seed = 1
+within_bytes = 1048576

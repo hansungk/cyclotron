@@ -45,6 +45,11 @@ pub struct GmemRequest {
     pub l2_writeback: bool,
     pub l1_bank: usize,
     pub l2_bank: usize,
+    pub bypass_l0: bool,
+    pub fill_l0_only: bool,
+    pub fragment_parent_id: Option<u64>,
+    pub fragment_index: u8,
+    pub fragment_count: u8,
 }
 
 impl GmemRequest {
@@ -75,6 +80,11 @@ impl GmemRequest {
             l2_writeback: false,
             l1_bank: 0,
             l2_bank: 0,
+            bypass_l0: false,
+            fill_l0_only: false,
+            fragment_parent_id: None,
+            fragment_index: 0,
+            fragment_count: 0,
         }
     }
 
@@ -100,6 +110,11 @@ impl GmemRequest {
             l2_writeback: false,
             l1_bank: 0,
             l2_bank: 0,
+            bypass_l0: false,
+            fill_l0_only: false,
+            fragment_parent_id: None,
+            fragment_index: 0,
+            fragment_count: 0,
         }
     }
 
@@ -125,6 +140,11 @@ impl GmemRequest {
             l2_writeback: false,
             l1_bank: 0,
             l2_bank: 0,
+            bypass_l0: false,
+            fill_l0_only: false,
+            fragment_parent_id: None,
+            fragment_index: 0,
+            fragment_count: 0,
         }
     }
 }

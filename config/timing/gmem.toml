@@ -2,6 +2,7 @@
 
 [[gmem.levels]]
 banks = 1
+mshr_capacity = 4
 
 [gmem.levels.tag]
 base_latency = 1
@@ -20,6 +21,7 @@ queue_capacity = 8
 
 [[gmem.levels]]
 banks = 2
+mshr_capacity = 8
 
 [gmem.levels.tag]
 base_latency = 2
@@ -89,8 +91,13 @@ base_latency = 0
 bytes_per_cycle = 64
 queue_capacity = 4
 
-[gmem.nodes.dram]
-base_latency = 200
+[gmem.nodes.outer_fixed]
+base_latency = 40
+bytes_per_cycle = 32
+queue_capacity = 64
+
+[gmem.nodes.outer_service]
+base_latency = 160
 bytes_per_cycle = 32
 queue_capacity = 64
 
@@ -162,13 +169,16 @@ entries = 8
 [gmem.links.l2_mshr_to_l2_writeback]
 entries = 4
 
-[gmem.links.l2_mshr_to_dram]
+[gmem.links.l2_mshr_to_outer_fixed]
 entries = 8
 
-[gmem.links.l2_writeback_to_dram]
+[gmem.links.l2_writeback_to_outer_fixed]
 entries = 4
 
-[gmem.links.dram_to_l2_refill]
+[gmem.links.outer_fixed_to_outer_service]
+entries = 8
+
+[gmem.links.outer_service_to_l2_refill]
 entries = 8
 
 [gmem.links.l2_refill_to_l1_refill]
@@ -190,7 +200,7 @@ l1_line_bytes = 32
 l2_line_bytes = 32
 
 # cache sets/ways
-l0_sets = 512
+l0_sets = 64
 l0_ways = 1
 l1_sets = 512
 l1_ways = 4

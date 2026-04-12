@@ -40,7 +40,8 @@ pub struct GmemNodeConfig {
     pub coalescer: ServerConfig,
     pub l0_flush_gate: ServerConfig,
     pub l1_flush_gate: ServerConfig,
-    pub dram: ServerConfig,
+    pub outer_fixed: ServerConfig,
+    pub outer_service: ServerConfig,
     pub return_path: ServerConfig,
 }
 
@@ -118,8 +119,14 @@ impl Default for GmemNodeConfig {
                 queue_capacity: 8,
                 ..ServerConfig::default()
             },
-            dram: ServerConfig {
-                base_latency: 200,
+            outer_fixed: ServerConfig {
+                base_latency: 40,
+                bytes_per_cycle: 32,
+                queue_capacity: 64,
+                ..ServerConfig::default()
+            },
+            outer_service: ServerConfig {
+                base_latency: 160,
                 bytes_per_cycle: 32,
                 queue_capacity: 64,
                 ..ServerConfig::default()
@@ -158,9 +165,10 @@ pub struct GmemLinkConfig {
     pub l2_tag_to_l2_mshr: Option<LinkConfig>,
     pub l2_hit_to_l1_refill: Option<LinkConfig>,
     pub l2_mshr_to_l2_writeback: Option<LinkConfig>,
-    pub l2_mshr_to_dram: Option<LinkConfig>,
-    pub l2_writeback_to_dram: Option<LinkConfig>,
-    pub dram_to_l2_refill: Option<LinkConfig>,
+    pub l2_mshr_to_outer_fixed: Option<LinkConfig>,
+    pub l2_writeback_to_outer_fixed: Option<LinkConfig>,
+    pub outer_fixed_to_outer_service: Option<LinkConfig>,
+    pub outer_service_to_l2_refill: Option<LinkConfig>,
     pub l2_refill_to_l1_refill: Option<LinkConfig>,
     pub l1_refill_to_return: Option<LinkConfig>,
 }
@@ -189,9 +197,10 @@ impl Default for GmemLinkConfig {
             l2_tag_to_l2_mshr: None,
             l2_hit_to_l1_refill: None,
             l2_mshr_to_l2_writeback: None,
-            l2_mshr_to_dram: None,
-            l2_writeback_to_dram: None,
-            dram_to_l2_refill: None,
+            l2_mshr_to_outer_fixed: None,
+            l2_writeback_to_outer_fixed: None,
+            outer_fixed_to_outer_service: None,
+            outer_service_to_l2_refill: None,
             l2_refill_to_l1_refill: None,
             l1_refill_to_return: None,
         }
@@ -337,7 +346,8 @@ impl GmemFlowConfig {
             &mut cfg.nodes.coalescer,
             &mut cfg.nodes.l0_flush_gate,
             &mut cfg.nodes.l1_flush_gate,
-            &mut cfg.nodes.dram,
+            &mut cfg.nodes.outer_fixed,
+            &mut cfg.nodes.outer_service,
             &mut cfg.nodes.return_path,
         ] {
             node.base_latency = 0;
@@ -435,11 +445,19 @@ fn build_cluster_l2(
     Vec<NodeId>,
     Vec<NodeId>,
     NodeId,
+    NodeId,
 ) {
     let l2_nodes = build_cache_level_nodes(graph, "l2", level);
     let l2_banks = level.banks.max(1);
 
-    let dram_node = graph.add_node(ServerNode::new("dram", TimedServer::new(nodes.dram)));
+    let outer_fixed_node = graph.add_node(ServerNode::new(
+        "outer_fixed",
+        TimedServer::new(nodes.outer_fixed),
+    ));
+    let outer_service_node = graph.add_node(ServerNode::new(
+        "outer_service",
+        TimedServer::new(nodes.outer_service),
+    ));
     let link = |cfg: Option<LinkConfig>| cfg.unwrap_or(links.default).build();
 
     for bank in 0..l2_banks {
@@ -474,9 +492,9 @@ fn build_cluster_l2(
         );
         graph.connect(
             mshr_node,
-            dram_node,
-            format!("l2_mshr_{bank}->dram"),
-            link(links.l2_mshr_to_dram),
+            outer_fixed_node,
+            format!("l2_mshr_{bank}->outer_fixed"),
+            link(links.l2_mshr_to_outer_fixed),
         );
         graph.set_route_fn(mshr_node, |payload| match payload {
             CoreFlowPayload::Gmem(req) if req.l2_writeback => 0,
@@ -484,19 +502,24 @@ fn build_cluster_l2(
         });
         graph.connect(
             wb_node,
-            dram_node,
-            format!("l2_wb_{bank}->dram"),
-            link(links.l2_writeback_to_dram),
+            outer_fixed_node,
+            format!("l2_wb_{bank}->outer_fixed"),
+            link(links.l2_writeback_to_outer_fixed),
         );
-
         graph.connect(
-            dram_node,
+            outer_service_node,
             refill_node,
-            format!("dram->l2_refill_{bank}"),
-            link(links.dram_to_l2_refill),
+            format!("outer_service->l2_refill_{bank}"),
+            link(links.outer_service_to_l2_refill),
         );
     }
-    graph.set_route_fn(dram_node, |payload| match payload {
+    graph.connect(
+        outer_fixed_node,
+        outer_service_node,
+        "outer_fixed->outer_service",
+        link(links.outer_fixed_to_outer_service),
+    );
+    graph.set_route_fn(outer_service_node, |payload| match payload {
         CoreFlowPayload::Gmem(req) => req.l2_bank,
         _ => 0,
     });
@@ -507,7 +530,8 @@ fn build_cluster_l2(
         l2_nodes.mshr_nodes,
         l2_nodes.refill_nodes,
         l2_nodes.wb_nodes,
-        dram_node,
+        outer_fixed_node,
+        outer_service_node,
     )
 }
 
@@ -757,7 +781,7 @@ fn build_cluster_core_nodes(
                 );
                 graph.set_route_fn(l0_flush_gate, |payload| match payload {
                     CoreFlowPayload::Gmem(req) if req.kind.is_flush_l0() => 0,
-                    CoreFlowPayload::Gmem(req) if req.kind.is_flush_l1() => 1,
+                    CoreFlowPayload::Gmem(req) if req.kind.is_flush_l1() || req.bypass_l0 => 1,
                     _ => 2,
                 });
 
@@ -774,7 +798,7 @@ fn build_cluster_core_nodes(
                     link(links.l0_tag_to_l0_mshr),
                 );
                 graph.set_route_fn(l0_tag, |payload| match payload {
-                    CoreFlowPayload::Gmem(req) if req.l0_hit => 0,
+                    CoreFlowPayload::Gmem(req) if req.is_load && req.l0_hit => 0,
                     _ => 1,
                 });
 
@@ -892,8 +916,15 @@ pub(crate) fn build_cluster_graph(
     let l2_level = &levels[2];
     let l1_banks = l1_level.banks.max(1);
     let l2_banks = l2_level.banks.max(1);
-    let (l2_tag_nodes, l2_data_nodes, _l2_mshr_nodes, l2_refill_nodes, _l2_wb_nodes, _dram) =
-        build_cluster_l2(&mut graph, nodes, links, l2_level);
+    let (
+        l2_tag_nodes,
+        l2_data_nodes,
+        _l2_mshr_nodes,
+        l2_refill_nodes,
+        _l2_wb_nodes,
+        _outer_fixed,
+        _outer_service,
+    ) = build_cluster_l2(&mut graph, nodes, links, l2_level);
 
     let mut cluster_l1 = Vec::with_capacity(num_clusters);
     for cluster_id in 0..num_clusters {

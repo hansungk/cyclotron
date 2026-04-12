@@ -93,6 +93,13 @@ pub enum Backpressure<T> {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AcceptStatus {
+    Ready,
+    QueueFull { capacity: usize },
+    Busy { available_at: Cycle },
+}
+
 impl<T> Backpressure<T> {
     // Recover the underlying request so it can be retried later
     pub fn into_request(self) -> ServiceRequest<T> {
@@ -188,20 +195,19 @@ impl<T> TimedServer<T> {
         now: Cycle,
         request: ServiceRequest<T>,
     ) -> Result<Ticket, Backpressure<T>> {
-        if self.outstanding_len() >= self.config.queue_capacity {
-            self.stats.queue_full_rejects = self.stats.queue_full_rejects.saturating_add(1);
-            return Err(Backpressure::QueueFull {
-                request,
-                capacity: self.config.queue_capacity,
-            });
-        }
-
-        if self.outstanding_len() == 0 && now < self.warmup_until {
-            self.stats.busy_rejects = self.stats.busy_rejects.saturating_add(1);
-            return Err(Backpressure::Busy {
-                request,
-                available_at: self.warmup_until,
-            });
+        match self.accept_status(now) {
+            AcceptStatus::Ready => {}
+            AcceptStatus::QueueFull { capacity } => {
+                self.stats.queue_full_rejects = self.stats.queue_full_rejects.saturating_add(1);
+                return Err(Backpressure::QueueFull { request, capacity });
+            }
+            AcceptStatus::Busy { available_at } => {
+                self.stats.busy_rejects = self.stats.busy_rejects.saturating_add(1);
+                return Err(Backpressure::Busy {
+                    request,
+                    available_at,
+                });
+            }
         }
 
         let start = self.next_issue_at.max(now);
@@ -228,6 +234,26 @@ impl<T> TimedServer<T> {
         self.stats.max_outstanding = self.stats.max_outstanding.max(outstanding);
 
         Ok(ticket)
+    }
+
+    pub fn accept_status(&self, now: Cycle) -> AcceptStatus {
+        if self.outstanding_len() >= self.config.queue_capacity {
+            return AcceptStatus::QueueFull {
+                capacity: self.config.queue_capacity,
+            };
+        }
+
+        if self.outstanding_len() == 0 && now < self.warmup_until {
+            return AcceptStatus::Busy {
+                available_at: self.warmup_until,
+            };
+        }
+
+        AcceptStatus::Ready
+    }
+
+    pub fn available_slots(&self) -> usize {
+        self.config.queue_capacity.saturating_sub(self.outstanding_len())
     }
 
     // Drain any requests that have completed and invoke the callback with the results

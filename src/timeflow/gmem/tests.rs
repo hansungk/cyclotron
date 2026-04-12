@@ -10,6 +10,13 @@ fn make_load(addr: u64, cluster_id: usize) -> GmemRequest {
     req
 }
 
+fn make_line_load(addr: u64, cluster_id: usize, bytes: u32) -> GmemRequest {
+    let mut req = GmemRequest::new(0, bytes, 0xF, true);
+    req.addr = addr;
+    req.cluster_id = cluster_id;
+    req
+}
+
 fn issue_flush_l0(cluster: &mut ClusterGmemGraph, core_id: usize, cycle: Cycle, cluster_id: usize) {
     let mut flush = GmemRequest::new_flush_l0(core_id, 1);
     flush.cluster_id = cluster_id;
@@ -241,4 +248,42 @@ fn unaligned_address_handling_completes() {
     req.cluster_id = 0;
     cluster.issue(0, 0, req).unwrap();
     let _ = assert_completes!(&mut cluster, 0, 0, MAX_CYCLES);
+}
+
+#[test]
+fn l0_miss_fragments_into_two_l1_children() {
+    let cfg = GmemFlowConfig::zeroed();
+    let mut cluster = ClusterGmemGraph::new(cfg, 1, 1);
+    let cycle = 0;
+
+    let req = make_line_load(0x8000, 0, 64);
+    let issue = cluster.issue(0, cycle, req).expect("fragmented request accepts");
+    let comp = assert_completes!(&mut cluster, 0, cycle, MAX_CYCLES);
+
+    assert_eq!(comp.request.bytes, 64);
+    assert!(comp.ticket_ready_at >= issue.ticket.ready_at());
+
+    let (l0_stats, l1_stats, _l2_stats) = cluster.hierarchy_stats_per_level();
+    assert_eq!(l0_stats.accesses(), 1, "one L0 access for the parent line");
+    assert_eq!(l1_stats.accesses(), 2, "two 32B child accesses should hit L1");
+}
+
+#[test]
+fn fragmented_l0_miss_merges_at_parent_line() {
+    let cfg = GmemFlowConfig::zeroed();
+    let mut cluster = ClusterGmemGraph::new(cfg, 1, 1);
+    let cycle = 0;
+
+    let req0 = make_line_load(0x9000, 0, 64);
+    let req1 = make_line_load(0x9000, 0, 64);
+    let issue0 = cluster.issue(0, cycle, req0).expect("first fragmented request");
+    let issue1 = cluster.issue(0, cycle, req1).expect("second request should merge at L0");
+    assert_eq!(issue0.ticket.ready_at(), issue1.ticket.ready_at());
+
+    let comp0 = assert_completes!(&mut cluster, 0, cycle, MAX_CYCLES);
+    let comp1 = assert_completes!(&mut cluster, 0, cycle, MAX_CYCLES);
+    assert_eq!(comp0.completed_at, comp1.completed_at);
+
+    let (_l0_stats, l1_stats, _l2_stats) = cluster.hierarchy_stats_per_level();
+    assert_eq!(l1_stats.accesses(), 2, "parent-line merge should avoid duplicate child traffic");
 }
