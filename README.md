@@ -109,3 +109,10 @@ Run STF (synthetic traffic frontend) mode and compare against the same reference
 ./scripts/validate_smem_parity.py \
   --reference-out ../radiance/none.smem_test.out
 ```
+
+## Traffic Frontend Commands
+
+SMEM simulation:
+```
+cargo run --release -- config.toml --timing --frontend-mode traffic_smem --traffic-config config/traffic/smem_radiance.toml
+```
