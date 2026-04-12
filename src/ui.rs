@@ -34,6 +34,8 @@ pub struct CyclotronArgs {
         value_parser = ["elf", "traffic_smem"]
     )]
     pub frontend_mode: Option<String>,
+    #[arg(long, help = "Path to traffic frontend config TOML")]
+    pub traffic_config: Option<PathBuf>,
 }
 
 pub fn read_toml(filepath: &Path) -> String {
@@ -110,7 +112,11 @@ fn load_timing_config(config_path: Option<&Path>, config_table: Option<&Table>) 
     merged.try_into().unwrap_or_default()
 }
 
-fn load_traffic_config(config_path: Option<&Path>, config_table: Option<&Table>) -> TrafficConfig {
+fn load_traffic_config(
+    config_path: Option<&Path>,
+    config_table: Option<&Table>,
+    cli_traffic_config: Option<&Path>,
+) -> TrafficConfig {
     let base_dir = config_path
         .and_then(|path| path.parent())
         .unwrap_or_else(|| Path::new("."));
@@ -121,11 +127,13 @@ fn load_traffic_config(config_path: Option<&Path>, config_table: Option<&Table>)
         .unwrap_or_else(|| Value::Table(Table::new()));
     let mut merged = inline.clone();
 
-    let include_path = inline
-        .as_table()
-        .and_then(|table| table.get("file"))
-        .and_then(Value::as_str)
-        .map(|path| base_dir.join(path));
+    let include_path = cli_traffic_config.map(PathBuf::from).or_else(|| {
+        inline
+            .as_table()
+            .and_then(|table| table.get("file"))
+            .and_then(Value::as_str)
+            .map(|path| base_dir.join(path))
+    });
 
     if let Some(path) = include_path {
         let traffic_toml = read_toml(&path);
@@ -167,8 +175,12 @@ pub fn make_sim(toml_string: Option<&str>, cli_args: &Option<CyclotronArgs>) -> 
             Some(args.config_path.as_path())
         }
     });
+    let cli_traffic_config = cli_args
+        .as_ref()
+        .and_then(|args| args.traffic_config.as_deref());
     let timing_config = load_timing_config(config_path, config_table.as_ref());
-    let traffic_config = load_traffic_config(config_path, config_table.as_ref());
+    let traffic_config =
+        load_traffic_config(config_path, config_table.as_ref(), cli_traffic_config);
 
     if let Some(args) = cli_args {
         sim_config.elf = args.binary_path.as_ref().cloned().unwrap_or(sim_config.elf);

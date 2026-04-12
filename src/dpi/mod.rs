@@ -130,7 +130,9 @@ pub extern "C" fn cyclotron_init_rs(c_elfname: *const c_char, c_trace_db_path: *
         if c_trace_db_path.is_null() {
             String::new()
         } else {
-            CStr::from_ptr(c_trace_db_path).to_string_lossy().into_owned()
+            CStr::from_ptr(c_trace_db_path)
+                .to_string_lossy()
+                .into_owned()
         }
     };
     let mut cyclotron_args = CyclotronArgs::default();

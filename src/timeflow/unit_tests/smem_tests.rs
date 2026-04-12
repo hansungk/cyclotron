@@ -2,7 +2,6 @@ use crate::timeflow::smem::{SmemFlowConfig, SmemRejectReason, SmemRequest, SmemS
 use crate::timeflow::{CoreFlowPayload, FlowGraph};
 use crate::timeq::Cycle;
 
-
 fn issue_with_retry(
     graph: &mut FlowGraph<CoreFlowPayload>,
     subgraph: &mut SmemSubgraph,
@@ -20,7 +19,10 @@ fn issue_with_retry(
             }
         }
     }
-    panic!("issue_with_retry: request not accepted by cycle {}", deadline);
+    panic!(
+        "issue_with_retry: request not accepted by cycle {}",
+        deadline
+    );
 }
 
 fn drive_until_ready(
@@ -256,7 +258,8 @@ fn smem_read_write_different_subbanks() {
     assert!(
         max - min <= 2,
         "parallel read/write to different subbanks should have close completions, got {} and {}",
-        min, max
+        min,
+        max
     );
 }
 
@@ -312,7 +315,9 @@ fn smem_multiple_requests_same_subbank() {
         if issued < 16 {
             let req = SmemRequest::new(issued, 16, 0x1, false, 0);
             match subgraph.issue(&mut graph, cycle, req) {
-                Ok(_) => { issued += 1; }
+                Ok(_) => {
+                    issued += 1;
+                }
                 Err(_) => {}
             }
         }
@@ -356,7 +361,9 @@ fn smem_different_subbanks_no_conflict() {
             let mut req = SmemRequest::new(issued, 16, 0x1, false, issued);
             req.lane_addrs = Some(vec![(issued as u64) * 4]); // different subbanks
             match subgraph.issue(&mut graph, cycle, req) {
-                Ok(_) => { issued += 1; }
+                Ok(_) => {
+                    issued += 1;
+                }
                 Err(_) => {}
             }
         }
@@ -391,14 +398,16 @@ fn simulate_pattern_all_coalesced() {
 
     // All lanes same address for all waves -> fully coalesced
     let n_waves = 100;
-    let addrs: Vec<Vec<u64>> = (0..n_waves)
-        .map(|_| vec![0u64; cfg.num_lanes])
-        .collect();
+    let addrs: Vec<Vec<u64>> = (0..n_waves).map(|_| vec![0u64; cfg.num_lanes]).collect();
 
     let duration = subgraph.simulate_pattern(&addrs, false);
     // Coalesced: 1 cycle per wave + base_overhead - 1
     let expected = n_waves as u64 + cfg.base_overhead - 1;
-    assert_eq!(duration, expected, "all-coalesced should take {} cycles", expected);
+    assert_eq!(
+        duration, expected,
+        "all-coalesced should take {} cycles",
+        expected
+    );
 }
 
 #[test]
@@ -414,7 +423,11 @@ fn simulate_pattern_no_conflict() {
 
     let duration = subgraph.simulate_pattern(&addrs, false);
     let expected = n_waves as u64 + cfg.base_overhead - 1;
-    assert_eq!(duration, expected, "no-conflict should take {} cycles", expected);
+    assert_eq!(
+        duration, expected,
+        "no-conflict should take {} cycles",
+        expected
+    );
 }
 
 #[test]
@@ -433,14 +446,19 @@ fn simulate_pattern_full_conflict() {
 
     // Now with different addresses but same subbank
     let addrs_conflict: Vec<Vec<u64>> = (0..n_waves)
-        .map(|w| (0..cfg.num_lanes).map(|l| ((w * cfg.num_lanes + l) as u64) * 4).collect())
+        .map(|w| {
+            (0..cfg.num_lanes)
+                .map(|l| ((w * cfg.num_lanes + l) as u64) * 4)
+                .collect()
+        })
         .collect();
 
     let duration_conflict = subgraph.simulate_pattern(&addrs_conflict, false);
     assert!(
         duration_conflict > duration_coalesced,
         "conflicts should take longer than coalesced: {} vs {}",
-        duration_conflict, duration_coalesced
+        duration_conflict,
+        duration_coalesced
     );
 }
 

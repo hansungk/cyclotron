@@ -1,11 +1,11 @@
 use serde_json::json;
 
 use crate::base::behavior::ModuleBehaviors;
+use crate::muon::core::MuonCore;
+use crate::timeq::Cycle;
 use crate::traffic::config::TrafficConfig;
 use crate::traffic::logging::{PatternCheckpoint, TrafficLogger};
 use crate::traffic::patterns::PatternEngine;
-use crate::muon::core::MuonCore;
-use crate::timeq::Cycle;
 
 #[derive(Debug, Clone)]
 struct CoreState {

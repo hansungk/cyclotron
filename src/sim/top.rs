@@ -170,15 +170,19 @@ impl CyclotronTop {
         logger: &Arc<Logger>,
         perf_log_session: Option<Arc<PerfLogSession>>,
     ) -> CyclotronTop {
-        let elf_path = Path::new(&config.elf);
-        let imem = ElfBackedMem::new(&elf_path);
         let mut clusters = Vec::new();
         let cluster_config = Arc::new(config.cluster_config.clone());
 
         // TODO: current implementation means imem is writable, but this is true
         // in hardware too?
         let mut gmem = FlatMemory::new(Some(config.mem_config));
-        gmem.copy_elf(&imem);
+        let load_elf =
+            matches!(config.frontend_mode, FrontendMode::Elf) || !config.elf.as_os_str().is_empty();
+        if load_elf {
+            let elf_path = Path::new(&config.elf);
+            let imem = ElfBackedMem::new(&elf_path);
+            gmem.copy_elf(&imem);
+        }
 
         let gmem = Arc::new(RwLock::new(gmem));
 

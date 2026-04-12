@@ -217,12 +217,10 @@ impl Default for SmemFlowConfig {
     }
 }
 
-
 fn chisel_rr_winner(valid_bits: u32, mask: u32, n_inputs: usize) -> (usize, u32) {
     let all_bits = (1u64 << n_inputs) as u32 - 1;
     let valid = valid_bits & all_bits;
-    let filter_val =
-        (((valid & !mask & all_bits) as u64) << n_inputs) as u64 | valid as u64;
+    let filter_val = (((valid & !mask & all_bits) as u64) << n_inputs) as u64 | valid as u64;
     // rightOR
     let mut ro = filter_val;
     let mut shift = 1u64;
@@ -349,9 +347,7 @@ impl SmemSubgraph {
 
         loop {
             // Collect active lanes
-            let active: Vec<usize> = (0..n_lanes)
-                .filter(|&ln| req_idx[ln] < n_waves)
-                .collect();
+            let active: Vec<usize> = (0..n_lanes).filter(|&ln| req_idx[ln] < n_waves).collect();
             if active.is_empty() {
                 break;
             }
@@ -557,9 +553,7 @@ impl SmemSubgraph {
         let mut cycles: u64 = 0;
 
         loop {
-            let remaining: Vec<usize> = (0..n_lanes)
-                .filter(|&ln| !served[ln])
-                .collect();
+            let remaining: Vec<usize> = (0..n_lanes).filter(|&ln| !served[ln]).collect();
             if remaining.is_empty() {
                 break;
             }
@@ -602,9 +596,7 @@ impl SmemSubgraph {
     }
 }
 
-pub fn extract_smem_request(
-    request: crate::timeq::ServiceRequest<CoreFlowPayload>,
-) -> SmemRequest {
+pub fn extract_smem_request(request: crate::timeq::ServiceRequest<CoreFlowPayload>) -> SmemRequest {
     match request.payload {
         CoreFlowPayload::Smem(req) => req,
         _ => panic!("expected smem request"),

@@ -45,8 +45,15 @@ CYCLOTRON_GRAPH_LOG=1 cargo run --release -- config.toml --timing --binary-path 
 | `--num-lanes <N>` | Override lanes per warp (default: 16) |
 | `--num-warps <N>` | Override warps per core (default: 4) |
 | `--num-cores <N>` | Override cores per cluster (default: 1) |
+| `--traffic-config <path>` | Override traffic frontend config file |
 | `--log <level>` | Log level: 0=none, 1=info, 2=debug |
 | `--gen-trace <bool>` | Generate instruction trace |
+
+### SMEM traffic frontend (no ELF required)
+
+```bash
+cargo run --release -- config.toml --timing --frontend-mode traffic_smem --traffic-config config/traffic/smem_radiance.toml
+```
 
 ### Example: Run ISA tests
 
