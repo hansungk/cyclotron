@@ -116,3 +116,15 @@ SMEM simulation:
 ```
 cargo run --release -- config.toml --timing --frontend-mode traffic_smem --traffic-config config/traffic/smem_radiance.toml
 ```
+
+## Tuning Commands
+
+SMEM:
+
+```
+python3 /Users/yash/Projects/GPU_Repos/cyclotron/tuning_scripts/compare_smem_run.py /Users/yash/Projects/GPU_Repos/tuning_files/smem_rtl_output1.out
+```
+
+```
+python3 tuning_scripts/tune_smem_timing.py /Users/yash/Projects/GPU_Repos/tuning_files/smem_rtl_output1.out
+```
