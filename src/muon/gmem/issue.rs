@@ -317,6 +317,45 @@ impl CoreTimingModel {
         }
     }
 
+    pub fn issue_smem_direct(
+        &mut self,
+        now: Cycle,
+        mut request: SmemRequest,
+    ) -> Result<u64, Cycle> {
+        // Assign request ID
+        if request.id == 0 {
+            request.id = if self.next_smem_id == 0 {
+                1
+            } else {
+                self.next_smem_id
+            };
+        }
+        if request.id >= self.next_smem_id {
+            self.next_smem_id = request.id.saturating_add(1);
+        }
+        let request_id = request.id;
+
+        match self.graph.issue_smem(now, request) {
+            Ok(crate::timeflow::SmemIssue { .. }) => Ok(request_id),
+            Err(reject) => Err(reject.retry_at.max(now.saturating_add(1))),
+        }
+    }
+
+    pub fn collect_smem_completions_direct(&mut self, now: Cycle) {
+        while let Some(completion) = self.graph.pop_smem_completion() {
+            self.smem_completion_events
+                .push_back(super::SmemCompletionEvent {
+                    request_id: completion.request.id,
+                    warp: completion.request.warp,
+                    addr: completion.request.addr,
+                    bytes: completion.request.bytes,
+                    is_store: completion.request.is_store,
+                    ticket_ready_at: completion.ticket_ready_at,
+                    completed_at: now,
+                });
+        }
+    }
+
     pub fn issue_dma(&mut self, now: Cycle, bytes: u32) -> Result<Ticket, Cycle> {
         match self.graph.dma_try_issue(now, bytes) {
             Ok(ticket) => Ok(ticket),

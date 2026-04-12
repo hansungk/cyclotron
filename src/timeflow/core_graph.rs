@@ -229,6 +229,10 @@ impl CoreGraph {
         self.subgraphs[self.smem_index].clear_stats();
     }
 
+    pub fn simulate_smem_pattern(&self, addrs: &[Vec<u64>], is_read: bool) -> u64 {
+        self.smem_ref().simulate_pattern(addrs, is_read)
+    }
+
     pub fn operand_fetch_try_issue(
         &mut self,
         now: Cycle,

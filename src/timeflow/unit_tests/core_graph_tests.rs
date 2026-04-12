@@ -5,10 +5,8 @@ use crate::timeflow::{
 };
 
 fn zero_smem_latency(cfg: &mut CoreGraphConfig) {
-    cfg.memory.smem.lane.base_latency = 0;
-    cfg.memory.smem.crossbar.base_latency = 0;
-    cfg.memory.smem.subbank.base_latency = 0;
-    cfg.memory.smem.bank.base_latency = 0;
+    cfg.memory.smem.base_overhead = 0;
+    cfg.memory.smem.read_extra = 0;
 }
 
 fn core_graph_with_cfg<F>(num_warps: usize, use_cluster: bool, mut f: F) -> CoreGraph

@@ -249,6 +249,11 @@ impl CoreTimingModel {
         }
     }
 
+    pub fn tick_smem_traffic(&mut self, now: Cycle, _scheduler: &mut Scheduler) {
+        self.graph.tick_graph(now);
+        self.collect_smem_completions_direct(now);
+    }
+
     pub fn has_pending_gmem(&self, warp: usize) -> bool {
         self.pending_gmem
             .get(warp)
@@ -273,6 +278,10 @@ impl CoreTimingModel {
 
     pub fn drain_smem_completion_events(&mut self) -> Vec<super::SmemCompletionEvent> {
         self.smem_completion_events.drain(..).collect()
+    }
+
+    pub fn simulate_smem_pattern(&self, addrs: &[Vec<u64>], is_read: bool) -> u64 {
+        self.graph.simulate_smem_pattern(addrs, is_read)
     }
 
     pub fn stats(&self) -> CoreStats {
@@ -401,7 +410,7 @@ impl CoreTimingModel {
 
         self.graph.record_smem_sample();
 
-        let period = self.smem_config.smem_log_period.max(1);
+        let period = 1000u64; // SMEM log period (cycles)
         if self.log_stats && now % period == 0 {
             let cycles = self.smem_util.cycles.max(1) as f64;
             let lane_total = self.smem_util.lane_total.max(1) as f64;

@@ -1,13 +1,36 @@
 use std::collections::VecDeque;
 use std::ops::AddAssign;
 
-use crate::timeflow::{
-    graph::{FlowGraph, Link},
-    server_node::ServerNode,
-    types::{CoreFlowPayload, NodeId},
-};
-use crate::timeq::{Backpressure, Cycle, ServerConfig, ServiceRequest, Ticket, TimedServer};
+use crate::timeflow::{graph::FlowGraph, types::CoreFlowPayload};
+use crate::timeq::{Cycle, Ticket};
 use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MemType {
+    TwoPort,
+    TwoReadOneWrite,
+}
+
+impl Default for MemType {
+    fn default() -> Self {
+        MemType::TwoPort
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SmemSerialization {
+    CoreSerialized,
+    FullySerialized,
+    NotSerialized,
+}
+
+impl Default for SmemSerialization {
+    fn default() -> Self {
+        SmemSerialization::CoreSerialized
+    }
+}
 
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct SmemStats {
@@ -25,7 +48,6 @@ pub struct SmemStats {
     pub max_inflight: u64,
     pub max_completion_queue: u64,
     pub last_completion_cycle: Option<Cycle>,
-    // Sampling and conflict counters (per-bank)
     pub sample_cycles: u64,
     pub bank_busy_samples: Vec<u64>,
     pub bank_read_busy_samples: Vec<u64>,
@@ -132,227 +154,121 @@ pub struct SmemIssue {
 }
 
 pub type SmemReject = crate::timeflow::types::RejectWith<SmemRequest>;
-
-// Centralize the reject reason alias for SMEM.
 pub use crate::timeflow::types::RejectReason as SmemRejectReason;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct SmemFlowConfig {
-    pub lane: ServerConfig,
-    pub serial: ServerConfig,
-    pub crossbar: ServerConfig,
-    pub subbank: ServerConfig,
-    pub bank: ServerConfig,
-    pub dual_port: bool,
+    pub smem_size: u64,
     pub num_banks: usize,
-    pub num_lanes: usize,
     pub num_subbanks: usize,
     pub word_bytes: u32,
-    pub serialize_cores: bool,
-    pub link_capacity: usize,
-    // How often (in cycles) to emit SMEM aggregated logs
-    pub smem_log_period: Cycle,
+    pub prealign_buf_depth: usize,
+    pub mem_type: MemType,
+    pub stride_by_word: bool,
+    pub serialization: SmemSerialization,
+    pub num_lanes: usize,
+    pub base_overhead: u64,
+    pub read_extra: u64,
+    pub max_outstanding: usize,
+}
+
+impl SmemFlowConfig {
+    pub fn bank_size_bytes(&self) -> u64 {
+        self.smem_size / self.num_banks.max(1) as u64
+    }
+
+    pub fn num_ports(&self) -> usize {
+        if self.stride_by_word {
+            self.num_subbanks
+        } else {
+            self.num_banks.max(1)
+        }
+    }
+
+    pub fn read_ports_per_subbank(&self) -> usize {
+        match self.mem_type {
+            MemType::TwoPort => 1,
+            MemType::TwoReadOneWrite => 2,
+        }
+    }
+
+    pub fn write_ports_per_subbank(&self) -> usize {
+        1
+    }
 }
 
 impl Default for SmemFlowConfig {
     fn default() -> Self {
         Self {
-            lane: ServerConfig {
-                base_latency: 0,
-                bytes_per_cycle: 64,
-                queue_capacity: 8,
-                ..ServerConfig::default()
-            },
-            serial: ServerConfig {
-                base_latency: 0,
-                bytes_per_cycle: 64,
-                queue_capacity: 1,
-                ..ServerConfig::default()
-            },
-            crossbar: ServerConfig {
-                base_latency: 1,
-                bytes_per_cycle: 32,
-                queue_capacity: 32,
-                ..ServerConfig::default()
-            },
-            subbank: ServerConfig {
-                base_latency: 1,
-                bytes_per_cycle: 32,
-                queue_capacity: 16,
-                ..ServerConfig::default()
-            },
-            bank: ServerConfig {
-                base_latency: 2,
-                bytes_per_cycle: 64,
-                queue_capacity: 32,
-                ..ServerConfig::default()
-            },
-            dual_port: false,
-            num_banks: 1,
-            num_lanes: 1,
-            num_subbanks: 1,
+            smem_size: 128 << 10,
+            num_banks: 4,
+            num_subbanks: 16,
             word_bytes: 4,
-            serialize_cores: false,
-            link_capacity: 32,
-            smem_log_period: 1000,
+            prealign_buf_depth: 2,
+            mem_type: MemType::default(),
+            stride_by_word: true,
+            serialization: SmemSerialization::default(),
+            num_lanes: 16,
+            base_overhead: 5,
+            read_extra: 1,
+            max_outstanding: 16,
         }
     }
 }
 
+
+fn chisel_rr_winner(valid_bits: u32, mask: u32, n_inputs: usize) -> (usize, u32) {
+    let all_bits = (1u64 << n_inputs) as u32 - 1;
+    let valid = valid_bits & all_bits;
+    let filter_val =
+        (((valid & !mask & all_bits) as u64) << n_inputs) as u64 | valid as u64;
+    // rightOR
+    let mut ro = filter_val;
+    let mut shift = 1u64;
+    while shift < (2 * n_inputs) as u64 {
+        ro |= ro >> shift;
+        shift <<= 1;
+    }
+    let double_mask = (1u64 << (2 * n_inputs)) - 1;
+    ro &= double_mask;
+    let unready = (ro >> 1) | ((mask as u64) << n_inputs);
+    let upper = ((unready >> n_inputs) & (all_bits as u64)) as u32;
+    let lower = (unready & (all_bits as u64)) as u32;
+    let readys = !(upper & lower) & all_bits;
+    let grant = readys & valid;
+    if grant == 0 {
+        return (0, mask);
+    }
+    let winner = grant.trailing_zeros() as usize;
+    // leftOR of grant to produce new mask
+    let mut lm = grant as u64;
+    let mut s = 1u64;
+    while s < n_inputs as u64 {
+        lm |= lm << s;
+        s <<= 1;
+    }
+    (winner, (lm as u32) & all_bits)
+}
+
 pub(crate) struct SmemSubgraph {
-    serial_node: Option<NodeId>,
-    lane_nodes: Vec<NodeId>,
-    bank_nodes: Vec<NodeId>,
-    bank_read_nodes: Vec<NodeId>,
-    bank_write_nodes: Vec<NodeId>,
-    dual_port: bool,
+    config: SmemFlowConfig,
     pub(crate) completions: VecDeque<SmemCompletion>,
+    total_inflight: u64,
     next_id: u64,
     pub(crate) stats: SmemStats,
+    pending: VecDeque<(Cycle, SmemCompletion)>,
+    issue_rr_masks: Vec<u32>,
 }
 
 impl SmemSubgraph {
-    pub fn attach(graph: &mut FlowGraph<CoreFlowPayload>, config: &SmemFlowConfig) -> Self {
-        assert!(config.num_banks > 0, "SMEM must have at least one bank");
-        assert!(config.num_lanes > 0, "SMEM must have at least one lane");
-        let num_lanes = config.num_lanes;
-        let num_banks = config.num_banks;
-        let num_subbanks = config.num_subbanks.max(1);
-
-        let mut lane_nodes = Vec::with_capacity(num_lanes);
-        for lane_idx in 0..num_lanes {
-            let node = graph.add_node(ServerNode::new(
-                format!("smem_lane_{lane_idx}"),
-                TimedServer::new(config.lane),
-            ));
-            lane_nodes.push(node);
-        }
-
-        let serial_node = if config.serialize_cores {
-            Some(graph.add_node(ServerNode::new(
-                "smem_serial",
-                TimedServer::new(config.serial),
-            )))
+    pub fn attach(_graph: &mut FlowGraph<CoreFlowPayload>, config: &SmemFlowConfig) -> Self {
+        let num_banks = config.num_banks.max(1);
+        let n_ports = if config.stride_by_word {
+            config.num_subbanks
         } else {
-            None
+            num_banks
         };
-        if let Some(serial) = serial_node {
-            for (lane_idx, &lane_node) in lane_nodes.iter().enumerate() {
-                let lane_mod = lane_idx;
-                graph.connect_filtered(
-                    serial,
-                    lane_node,
-                    format!("smem_serial->lane_{lane_idx}"),
-                    Link::new(config.link_capacity),
-                    move |payload| match payload {
-                        CoreFlowPayload::Smem(req) => (req.warp % num_lanes) == lane_mod,
-                        _ => false,
-                    },
-                );
-            }
-        }
-
-        let mut crossbar_nodes = Vec::with_capacity(num_banks);
-        for bank_idx in 0..num_banks {
-            let node = graph.add_node(ServerNode::new(
-                format!("smem_xbar_bank_{bank_idx}"),
-                TimedServer::new(config.crossbar),
-            ));
-            crossbar_nodes.push(node);
-        }
-
-        let mut bank_nodes = Vec::with_capacity(num_banks);
-        let mut bank_read_nodes = Vec::with_capacity(num_banks);
-        let mut bank_write_nodes = Vec::with_capacity(num_banks);
-        for bank_idx in 0..num_banks {
-            let bank_mod = bank_idx;
-            for &lane_node in &lane_nodes {
-                graph.connect_filtered(
-                    lane_node,
-                    crossbar_nodes[bank_idx],
-                    format!("lane->{bank_idx}"),
-                    Link::new(config.link_capacity),
-                    move |payload| match payload {
-                        CoreFlowPayload::Smem(req) => (req.bank % num_banks) == bank_mod,
-                        _ => false,
-                    },
-                );
-            }
-
-            let mut bank_subbanks = Vec::with_capacity(num_subbanks);
-            for subbank_idx in 0..num_subbanks {
-                let subbank_mod = subbank_idx;
-                let num_subbanks = num_subbanks;
-                let subbank_node = graph.add_node(ServerNode::new(
-                    format!("smem_subbank_{bank_idx}_{subbank_idx}"),
-                    TimedServer::new(config.subbank),
-                ));
-                graph.connect_filtered(
-                    crossbar_nodes[bank_idx],
-                    subbank_node,
-                    format!("smem_xbar_{bank_idx}->subbank_{subbank_idx}"),
-                    Link::new(config.link_capacity),
-                    move |payload| match payload {
-                        CoreFlowPayload::Smem(req) => (req.subbank % num_subbanks) == subbank_mod,
-                        _ => false,
-                    },
-                );
-                bank_subbanks.push(subbank_node);
-            }
-
-            if config.dual_port {
-                let read_node = graph.add_node(ServerNode::new(
-                    format!("smem_bank_r_{bank_idx}"),
-                    TimedServer::new(config.bank),
-                ));
-                let write_node = graph.add_node(ServerNode::new(
-                    format!("smem_bank_w_{bank_idx}"),
-                    TimedServer::new(config.bank),
-                ));
-                for &subbank_node in &bank_subbanks {
-                    graph.connect_filtered(
-                        subbank_node,
-                        read_node,
-                        format!("smem_subbank->bank_r_{bank_idx}"),
-                        Link::new(config.link_capacity),
-                        |payload| match payload {
-                            CoreFlowPayload::Smem(req) => !req.is_store,
-                            _ => false,
-                        },
-                    );
-                    graph.connect_filtered(
-                        subbank_node,
-                        write_node,
-                        format!("smem_subbank->bank_w_{bank_idx}"),
-                        Link::new(config.link_capacity),
-                        |payload| match payload {
-                            CoreFlowPayload::Smem(req) => req.is_store,
-                            _ => false,
-                        },
-                    );
-                }
-                bank_read_nodes.push(read_node);
-                bank_write_nodes.push(write_node);
-                bank_nodes.push(read_node);
-                bank_nodes.push(write_node);
-            } else {
-                let node = graph.add_node(ServerNode::new(
-                    format!("smem_bank_{bank_idx}"),
-                    TimedServer::new(config.bank),
-                ));
-                for &subbank_node in &bank_subbanks {
-                    graph.connect(
-                        subbank_node,
-                        node,
-                        format!("smem_subbank->bank_{bank_idx}"),
-                        Link::new(config.link_capacity),
-                    );
-                }
-                bank_nodes.push(node);
-            }
-        }
-
         let mut stats = SmemStats::default();
         stats.bank_busy_samples = vec![0; num_banks];
         stats.bank_read_busy_samples = vec![0; num_banks];
@@ -360,87 +276,150 @@ impl SmemSubgraph {
         stats.bank_attempts = vec![0; num_banks];
         stats.bank_conflicts = vec![0; num_banks];
 
+        let n_inputs = config.num_lanes + 1;
+        let initial_mask = (1u32 << n_inputs) - 1;
+
         Self {
-            serial_node,
-            lane_nodes,
-            bank_nodes,
-            bank_read_nodes,
-            bank_write_nodes,
-            dual_port: config.dual_port,
+            config: config.clone(),
             completions: VecDeque::new(),
+            total_inflight: 0,
             next_id: 0,
             stats,
+            pending: VecDeque::new(),
+            issue_rr_masks: vec![initial_mask; n_ports],
         }
     }
 
-    pub fn sample_and_accumulate(&mut self, graph: &mut FlowGraph<CoreFlowPayload>) {
+    pub fn sample_and_accumulate(&mut self, _graph: &mut FlowGraph<CoreFlowPayload>) {
         self.stats.sample_cycles = self.stats.sample_cycles.saturating_add(1);
-        let mut is_busy = |node_id| graph.with_node_mut(node_id, |nd| nd.outstanding() > 0);
-        let num_banks = self.stats.bank_busy_samples.len();
-        for bank in 0..num_banks {
-            let busy = if self.dual_port {
-                let r = self
-                    .bank_read_nodes
-                    .get(bank)
-                    .map(|&n| is_busy(n))
-                    .unwrap_or(false);
-                let w = self
-                    .bank_write_nodes
-                    .get(bank)
-                    .map(|&n| is_busy(n))
-                    .unwrap_or(false);
-                if r {
-                    self.stats.bank_read_busy_samples[bank] =
-                        self.stats.bank_read_busy_samples[bank].saturating_add(1);
-                }
-                if w {
-                    self.stats.bank_write_busy_samples[bank] =
-                        self.stats.bank_write_busy_samples[bank].saturating_add(1);
-                }
-                r || w
-            } else {
-                // bank_nodes stores one node per bank when not dual_port
-                let node = self.bank_nodes.get(bank).copied();
-                node.map(|n| is_busy(n)).unwrap_or(false)
-            };
-            if busy {
-                self.stats.bank_busy_samples[bank] =
-                    self.stats.bank_busy_samples[bank].saturating_add(1);
-            }
+    }
+
+    pub fn sample_utilization(&self, _graph: &mut FlowGraph<CoreFlowPayload>) -> SmemUtilSample {
+        SmemUtilSample {
+            lane_busy: 0,
+            lane_total: self.config.num_lanes,
+            bank_busy: 0,
+            bank_total: self.config.num_banks.max(1),
         }
     }
 
-    pub fn sample_utilization(&self, graph: &mut FlowGraph<CoreFlowPayload>) -> SmemUtilSample {
-        let mut lane_busy = 0usize;
-        for &node in &self.lane_nodes {
-            let busy = graph.with_node_mut(node, |n| n.outstanding() > 0);
-            if busy {
-                lane_busy += 1;
+    pub fn simulate_pattern(&self, addrs: &[Vec<u64>], is_read: bool) -> u64 {
+        let cfg = &self.config;
+        let n_lanes = cfg.num_lanes;
+        let n_waves = addrs.len();
+        if n_waves == 0 || n_lanes == 0 {
+            return 0;
+        }
+
+        let n_ports = if cfg.stride_by_word {
+            cfg.num_subbanks
+        } else {
+            cfg.num_banks.max(1)
+        };
+        let n_inputs = n_lanes + 1;
+        let initial_mask = (1u32 << n_inputs) - 1;
+        let mut rr_masks = vec![initial_mask; n_ports];
+
+        let ports: Vec<Vec<usize>> = addrs
+            .iter()
+            .map(|wave_addrs| {
+                wave_addrs
+                    .iter()
+                    .map(|&a| {
+                        if cfg.stride_by_word {
+                            ((a / cfg.word_bytes as u64) % cfg.num_subbanks as u64) as usize
+                        } else {
+                            ((a / cfg.bank_size_bytes()) % cfg.num_banks as u64) as usize
+                        }
+                    })
+                    .collect()
+            })
+            .collect();
+
+        let ports_this_cycle = if is_read {
+            cfg.read_ports_per_subbank()
+        } else {
+            cfg.write_ports_per_subbank()
+        };
+
+        let mut req_idx = vec![0usize; n_lanes];
+        let mut cycle: u64 = 0;
+        let mut max_accept_cycle: u64 = 0;
+        let max_cycles = n_waves as u64 * 20;
+
+        loop {
+            // Collect active lanes
+            let active: Vec<usize> = (0..n_lanes)
+                .filter(|&ln| req_idx[ln] < n_waves)
+                .collect();
+            if active.is_empty() {
+                break;
+            }
+
+            // Coalescing check: all active lanes same address?
+            let leader_addr = addrs[req_idx[active[0]]][active[0]];
+            let coalescible = active
+                .iter()
+                .all(|&ln| addrs[req_idx[ln]][ln] == leader_addr);
+
+            if coalescible {
+                // All same address → coalesce, advance all lanes
+                for &ln in &active {
+                    req_idx[ln] += 1;
+                }
+                max_accept_cycle = max_accept_cycle.max(cycle + 1);
+            } else {
+                // Per-port arbitration
+                let mut port_candidates: Vec<Vec<usize>> = vec![Vec::new(); n_ports];
+                for &ln in &active {
+                    let pid = ports[req_idx[ln]][ln];
+                    port_candidates[pid].push(ln);
+                }
+
+                for pid in 0..n_ports {
+                    let candidates = &port_candidates[pid];
+                    if candidates.is_empty() {
+                        continue;
+                    }
+                    let mut valid_bits: u32 = 0;
+                    for &ln in candidates {
+                        valid_bits |= 1 << ln;
+                    }
+                    // Allow up to ports_this_cycle winners per subbank
+                    for _ in 0..ports_this_cycle {
+                        if valid_bits == 0 {
+                            break;
+                        }
+                        let (winner, new_mask) =
+                            chisel_rr_winner(valid_bits, rr_masks[pid], n_inputs);
+                        rr_masks[pid] = new_mask;
+                        req_idx[winner] += 1;
+                        max_accept_cycle = max_accept_cycle.max(cycle + 1);
+                        valid_bits &= !(1 << winner);
+                    }
+                }
+            }
+
+            cycle += 1;
+            if cycle > max_cycles {
+                break;
             }
         }
 
-        let mut bank_busy = 0usize;
-        for &node in &self.bank_nodes {
-            let busy = graph.with_node_mut(node, |n| n.outstanding() > 0);
-            if busy {
-                bank_busy += 1;
-            }
+        let mut total = max_accept_cycle + cfg.base_overhead - 1;
+        if is_read {
+            total += cfg.read_extra;
         }
-
-        SmemUtilSample {
-            lane_busy,
-            lane_total: self.lane_nodes.len(),
-            bank_busy,
-            bank_total: self.bank_nodes.len(),
-        }
+        total
     }
 
     pub fn issue(
         &mut self,
-        graph: &mut FlowGraph<CoreFlowPayload>,
+        _graph: &mut FlowGraph<CoreFlowPayload>,
         now: Cycle,
         mut request: SmemRequest,
     ) -> Result<SmemIssue, SmemReject> {
+        // Assign request ID
         let assigned_id = if request.id == 0 {
             let id = self.next_id;
             self.next_id += 1;
@@ -451,92 +430,81 @@ impl SmemSubgraph {
         };
         request.id = assigned_id;
 
-        let lane_idx = request.warp % self.lane_nodes.len();
-        let bytes = request.bytes;
-        let is_store = request.is_store;
-        let payload = CoreFlowPayload::Smem(request);
-        let service_req = ServiceRequest::new(payload, bytes);
-        let ingress_node = if let Some(serial) = self.serial_node {
-            serial
-        } else {
-            self.lane_nodes[lane_idx]
-        };
-        match graph.try_put(ingress_node, now, service_req) {
-            Ok(ticket) => {
-                self.stats.issued = self.stats.issued.saturating_add(1);
-                if is_store {
-                    self.stats.write_issued = self.stats.write_issued.saturating_add(1);
-                } else {
-                    self.stats.read_issued = self.stats.read_issued.saturating_add(1);
-                }
-                self.stats.bytes_issued = self.stats.bytes_issued.saturating_add(bytes as u64);
-                self.stats.inflight = self.stats.inflight.saturating_add(1);
-                self.stats.max_inflight = self.stats.max_inflight.max(self.stats.inflight);
-                Ok(SmemIssue {
-                    request_id: assigned_id,
-                    ticket,
-                })
-            }
-            Err(bp) => match bp {
-                Backpressure::Busy {
-                    request,
-                    available_at,
-                } => {
-                    self.stats.busy_rejects += 1;
-                    let retry_at = crate::timeq::normalize_retry(now, available_at);
-                    let request = extract_smem_request(request);
-                    self.record_bank_attempt_and_conflict(request.bank);
-                    Err(SmemReject {
-                        payload: request,
-                        retry_at,
-                        reason: SmemRejectReason::Busy,
-                    })
-                }
-                Backpressure::QueueFull { request, .. } => {
-                    self.stats.queue_full_rejects += 1;
-                    let retry_at = now.saturating_add(1);
-                    let request = extract_smem_request(request);
-                    self.record_bank_attempt_and_conflict(request.bank);
-                    Err(SmemReject {
-                        payload: request,
-                        retry_at,
-                        reason: SmemRejectReason::QueueFull,
-                    })
-                }
-            },
+        // Check total outstanding limit
+        if self.total_inflight >= self.config.max_outstanding as u64 {
+            self.stats.queue_full_rejects += 1;
+            return Err(SmemReject {
+                payload: request,
+                retry_at: now.saturating_add(1),
+                reason: SmemRejectReason::QueueFull,
+            });
         }
+
+        // Compute wave cost via single-wave arbitration simulation
+        let wave_cost = self.simulate_single_wave(&request);
+
+        let is_store = request.is_store;
+        let bytes = request.bytes;
+
+        let mut ready_at = now + wave_cost + self.config.base_overhead;
+        if !is_store {
+            ready_at += self.config.read_extra;
+        }
+
+        // Update stats
+        self.total_inflight += 1;
+        self.stats.issued += 1;
+        if is_store {
+            self.stats.write_issued += 1;
+        } else {
+            self.stats.read_issued += 1;
+        }
+        self.stats.bytes_issued += bytes as u64;
+        self.stats.inflight = self.total_inflight;
+        self.stats.max_inflight = self.stats.max_inflight.max(self.total_inflight);
+
+        let ticket = Ticket::new(now, ready_at, bytes);
+
+        // Schedule completion
+        self.pending.push_back((
+            ready_at,
+            SmemCompletion {
+                request,
+                ticket_ready_at: ready_at,
+                completed_at: ready_at,
+            },
+        ));
+
+        Ok(SmemIssue {
+            request_id: assigned_id,
+            ticket,
+        })
     }
 
-    pub fn collect_completions(&mut self, graph: &mut FlowGraph<CoreFlowPayload>, now: Cycle) {
-        for &bank_node in &self.bank_nodes {
-            graph.with_node_mut(bank_node, |node| {
-                while let Some(result) = node.take_ready(now) {
-                    match result.payload {
-                        CoreFlowPayload::Smem(request) => {
-                            self.stats.completed = self.stats.completed.saturating_add(1);
-                            if request.is_store {
-                                self.stats.write_completed =
-                                    self.stats.write_completed.saturating_add(1);
-                            } else {
-                                self.stats.read_completed =
-                                    self.stats.read_completed.saturating_add(1);
-                            }
-                            self.stats.bytes_completed = self
-                                .stats
-                                .bytes_completed
-                                .saturating_add(request.bytes as u64);
-                            self.stats.inflight = self.stats.inflight.saturating_sub(1);
-                            self.stats.last_completion_cycle = Some(now);
-                            self.completions.push_back(SmemCompletion {
-                                ticket_ready_at: result.ticket.ready_at(),
-                                completed_at: now,
-                                request,
-                            });
-                        }
-                        _ => {}
-                    }
+    // Tick the model and collect completions.
+    pub fn collect_completions(&mut self, _graph: &mut FlowGraph<CoreFlowPayload>, now: Cycle) {
+        // Drain pending completions that are ready
+        while let Some(&(ready_at, _)) = self.pending.front() {
+            if now >= ready_at {
+                let (_, mut completion) = self.pending.pop_front().unwrap();
+                completion.completed_at = now;
+
+                let is_store = completion.request.is_store;
+                let bytes = completion.request.bytes;
+                self.stats.completed += 1;
+                if is_store {
+                    self.stats.write_completed += 1;
+                } else {
+                    self.stats.read_completed += 1;
                 }
-            });
+                self.stats.bytes_completed += bytes as u64;
+                self.total_inflight = self.total_inflight.saturating_sub(1);
+                self.stats.inflight = self.total_inflight;
+                self.stats.last_completion_cycle = Some(now);
+                self.completions.push_back(completion);
+            } else {
+                break;
+            }
         }
         self.stats.max_completion_queue = self
             .stats
@@ -544,17 +512,99 @@ impl SmemSubgraph {
             .max(self.completions.len() as u64);
     }
 
-    fn record_bank_attempt_and_conflict(&mut self, bank: usize) {
-        if self.stats.bank_attempts.is_empty() {
-            return;
+    fn simulate_single_wave(&mut self, request: &SmemRequest) -> u64 {
+        let cfg = &self.config;
+        let n_lanes = cfg.num_lanes;
+        let n_ports = if cfg.stride_by_word {
+            cfg.num_subbanks
+        } else {
+            cfg.num_banks.max(1)
+        };
+        let n_inputs = n_lanes + 1;
+
+        let lane_addrs = match &request.lane_addrs {
+            Some(addrs) => addrs.clone(),
+            None => vec![request.addr; n_lanes],
+        };
+
+        // Compute port for each lane
+        let lane_ports: Vec<usize> = lane_addrs
+            .iter()
+            .map(|&a| {
+                if cfg.stride_by_word {
+                    ((a / cfg.word_bytes as u64) % cfg.num_subbanks as u64) as usize
+                } else {
+                    ((a / cfg.bank_size_bytes()) % cfg.num_banks as u64) as usize
+                }
+            })
+            .collect();
+
+        // Check coalescing
+        let all_same = lane_addrs.iter().all(|&a| a == lane_addrs[0]);
+        if all_same {
+            return 1;
         }
-        let bank = bank.min(self.stats.bank_attempts.len().saturating_sub(1));
-        self.stats.bank_attempts[bank] = self.stats.bank_attempts[bank].saturating_add(1);
-        self.stats.bank_conflicts[bank] = self.stats.bank_conflicts[bank].saturating_add(1);
+
+        // Determine how many winners per subbank per cycle
+        let ports_this_cycle = if request.is_store {
+            cfg.write_ports_per_subbank()
+        } else {
+            cfg.read_ports_per_subbank()
+        };
+
+        // Simulate cycle-by-cycle arbitration
+        let mut served = vec![false; n_lanes];
+        let mut cycles: u64 = 0;
+
+        loop {
+            let remaining: Vec<usize> = (0..n_lanes)
+                .filter(|&ln| !served[ln])
+                .collect();
+            if remaining.is_empty() {
+                break;
+            }
+
+            // Per-port arbitration
+            let mut port_candidates: Vec<Vec<usize>> = vec![Vec::new(); n_ports];
+            for &ln in &remaining {
+                port_candidates[lane_ports[ln]].push(ln);
+            }
+
+            for pid in 0..n_ports {
+                let candidates = &port_candidates[pid];
+                if candidates.is_empty() {
+                    continue;
+                }
+                let mut valid_bits: u32 = 0;
+                for &ln in candidates {
+                    valid_bits |= 1 << ln;
+                }
+                // Allow up to ports_this_cycle winners per subbank
+                for _ in 0..ports_this_cycle {
+                    if valid_bits == 0 {
+                        break;
+                    }
+                    let (winner, new_mask) =
+                        chisel_rr_winner(valid_bits, self.issue_rr_masks[pid], n_inputs);
+                    self.issue_rr_masks[pid] = new_mask;
+                    served[winner] = true;
+                    valid_bits &= !(1 << winner);
+                }
+            }
+
+            cycles += 1;
+            if cycles > n_lanes as u64 * 4 {
+                break; // safety limit
+            }
+        }
+
+        cycles
     }
 }
 
-pub fn extract_smem_request(request: ServiceRequest<CoreFlowPayload>) -> SmemRequest {
+pub fn extract_smem_request(
+    request: crate::timeq::ServiceRequest<CoreFlowPayload>,
+) -> SmemRequest {
     match request.payload {
         CoreFlowPayload::Smem(req) => req,
         _ => panic!("expected smem request"),

@@ -22,34 +22,12 @@ fn make_model_with_lsu(num_warps: usize, lsu_depth: usize) -> CoreTimingModel {
     gmem.nodes.dram.queue_capacity = 1;
     gmem.links.default.entries = 1;
     let smem = SmemFlowConfig {
-        lane: ServerConfig {
-            queue_capacity: 1,
-            ..ServerConfig::default()
-        },
-        serial: ServerConfig {
-            queue_capacity: 1,
-            ..ServerConfig::default()
-        },
-        crossbar: ServerConfig {
-            queue_capacity: 1,
-            ..ServerConfig::default()
-        },
-        subbank: ServerConfig {
-            queue_capacity: 1,
-            ..ServerConfig::default()
-        },
-        bank: ServerConfig {
-            queue_capacity: 1,
-            ..ServerConfig::default()
-        },
-        dual_port: false,
         num_banks: 1,
         num_lanes: 1,
         num_subbanks: 1,
         word_bytes: 4,
-        serialize_cores: false,
-        link_capacity: 1,
-        smem_log_period: 1000,
+        max_outstanding: 16,
+        ..Default::default()
     };
     let mut cfg = CoreGraphConfig::default();
     cfg.memory.gmem = gmem;
@@ -345,34 +323,12 @@ fn smem_crossbar_capacity_backpressures_new_requests() {
 
     let gmem = GmemFlowConfig::default();
     let smem = SmemFlowConfig {
-        lane: ServerConfig {
-            queue_capacity: 1,
-            ..ServerConfig::default()
-        },
-        serial: ServerConfig {
-            queue_capacity: 1,
-            ..ServerConfig::default()
-        },
-        crossbar: ServerConfig {
-            queue_capacity: 1,
-            ..ServerConfig::default()
-        },
-        subbank: ServerConfig {
-            queue_capacity: 1,
-            ..ServerConfig::default()
-        },
-        bank: ServerConfig {
-            queue_capacity: 2,
-            ..ServerConfig::default()
-        },
-        dual_port: false,
         num_banks: 2,
         num_lanes: 1,
         num_subbanks: 1,
         word_bytes: 4,
-        serialize_cores: false,
-        link_capacity: 1,
-        smem_log_period: 1000,
+        max_outstanding: 1,
+        ..Default::default()
     };
     let mut cfg = CoreGraphConfig::default();
     cfg.memory.gmem = gmem;

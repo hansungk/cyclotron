@@ -1,32 +1,26 @@
 [smem]
+smem_size = 131072       # 128KB
 num_banks = 4
-num_lanes = 16
-num_subbanks = 4
+num_subbanks = 16        # contention domain (= numWords in strideByWord mode)
 word_bytes = 4
-serialize_cores = true
-link_capacity = 16
+stride_by_word = true
+prealign_buf_depth = 2
 
-[smem.lane]
-base_latency = 0
-bytes_per_cycle = 64
-queue_capacity = 8
+# mem_type: 
+#   - "two_port" = 1R+1W per subbank
+#   - "two_read_one_write" = 2R+1W per subbank
+mem_type = "two_port"
 
-[smem.serial]
-base_latency = 0
-bytes_per_cycle = 64
-queue_capacity = 1
+# "core_serialized" | "fully_serialized" | "not_serialized"
+serialization = "core_serialized"
 
-[smem.crossbar]
-base_latency = 1
-bytes_per_cycle = 32
-queue_capacity = 32
+num_lanes = 16
 
-[smem.subbank]
-base_latency = 1
-bytes_per_cycle = 32
-queue_capacity = 16
+# Tunable latency knobs
+# base_overhead is additive overhead cycles per pattern
+base_overhead = 5
+# read_extra is extra cycles for read vs write operations
+read_extra = 1
 
-[smem.bank]
-base_latency = 2
-bytes_per_cycle = 64
-queue_capacity = 32
+# ELF-mode issue/complete capacity
+max_outstanding = 16

@@ -1,7 +1,46 @@
 use crate::traffic::config::{TrafficConfig, TrafficPatternSpec};
-use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
 use std::collections::HashMap;
+
+#[derive(Debug, Clone)]
+struct JavaRandom {
+    seed: u64,
+}
+
+impl JavaRandom {
+    const MULT: u64 = 0x5DEECE66D;
+    const ADD: u64 = 0xB;
+    const MASK: u64 = (1u64 << 48) - 1;
+
+    fn new(seed: i64) -> Self {
+        Self {
+            seed: (seed as u64 ^ Self::MULT) & Self::MASK,
+        }
+    }
+
+    fn next(&mut self, bits: u32) -> i32 {
+        self.seed = (self.seed.wrapping_mul(Self::MULT).wrapping_add(Self::ADD)) & Self::MASK;
+        (self.seed >> (48 - bits)) as i32
+    }
+
+    fn next_int(&mut self, bound: i32) -> i32 {
+        assert!(bound > 0, "bound must be positive");
+        // Power-of-2 fast path
+        if bound & (bound - 1) == 0 {
+            return (((bound as i64) * (self.next(31) as i64)) >> 31) as i32;
+        }
+        loop {
+            let bits = self.next(31);
+            let val = bits % bound;
+            if bits - val + (bound - 1) >= 0 {
+                return val;
+            }
+        }
+    }
+
+    fn between(&mut self, low: i32, high: i32) -> i32 {
+        low + self.next_int(high - low)
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PatternOp {
@@ -219,11 +258,7 @@ fn precompute_random_tables(
         return tables;
     }
 
-    // Radiance parity mode:
-    // lane-major, then pattern-major, then t-major random draws.
-    // Streams are shared by random specs with the same (seed, min/max, req_size),
-    // matching the Scala object-level Random generator reuse.
-    let mut streams: HashMap<RandomStreamKey, StdRng> = HashMap::new();
+    let mut streams: HashMap<RandomStreamKey, JavaRandom> = HashMap::new();
     for lane in 0..lanes {
         for (pattern_idx, pattern) in patterns.iter().enumerate() {
             let Some(key) = pattern.random_stream_key() else {
@@ -231,7 +266,7 @@ fn precompute_random_tables(
             };
             let stream = streams
                 .entry(key)
-                .or_insert_with(|| StdRng::seed_from_u64(key.seed));
+                .or_insert_with(|| JavaRandom::new(key.seed as i64));
             let slot = tables[pattern_idx]
                 .get_or_insert_with(|| vec![0; lanes.saturating_mul(reqs_per_pattern)]);
             let row_base = lane.saturating_mul(reqs_per_pattern);
@@ -239,7 +274,7 @@ fn precompute_random_tables(
                 let sample = if key.max <= key.min {
                     key.min
                 } else {
-                    stream.gen_range(key.min..key.max)
+                    stream.between(key.min as i32, key.max as i32) as u64
                 };
                 slot[row_base + t] = sample.saturating_mul(pattern.req_bytes.max(1) as u64);
             }
