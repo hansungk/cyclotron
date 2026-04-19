@@ -65,31 +65,46 @@ impl Neutrino {
         };
         let cmd_type = print_and_unwrap!(imp);
         let cmd = match cmd_type {
-            NeutrinoCmdType::Invoke => NeutrinoCmd {
-                cmd_type,
-                job_id: None,
-                task: rf.read_gpr(issued.rs1_addr),
-                deps: [issued.rs2_addr, issued.rs3_addr, issued.rs4_addr]
-                    .iter()
-                    .filter_map(|&addr| (addr != 0).then(|| rf.read_gpr(addr)))
-                    .filter_map(|r| (r != 0).then(|| self.scoreboard.job_id_from_u32(r)))
-                    .collect::<Vec<_>>(),
-                ret_mode: match issued.raw.sel(19, 18) & 3 {
-                    0 => NeutrinoRetMode::Immediate,
-                    1 => NeutrinoRetMode::Hardware,
-                    2 => NeutrinoRetMode::Manual,
-                    _ => panic!("unimplemented"),
-                },
-                part_mode: match issued.raw.sel(53, 52) & 3 {
-                    0 => NeutrinoPartMode::Threads,
-                    1 => NeutrinoPartMode::Warps,
-                    2 => NeutrinoPartMode::ThreadBlocks,
-                    _ => panic!("unimplemented"),
-                },
-                num_elems: issued.raw.sel(59, 54) as u32 + 1,
-                sync: issued.raw.bit(17),
-                tmask,
-            },
+            NeutrinoCmdType::Invoke => {
+                let task = rf.read_gpr(issued.rs1_addr);
+                // `vx_bar` is lowered onto the Neutrino encoding, but its operands
+                // do not follow generic nu.invoke semantics. For barrier task IDs,
+                // rs1 is the barrier ID and rs2 is the participant count.
+                let (deps, num_elems) = if task < 8 {
+                    (Vec::new(), rf.read_gpr(issued.rs2_addr))
+                } else {
+                    (
+                        [issued.rs2_addr, issued.rs3_addr, issued.rs4_addr]
+                            .iter()
+                            .filter_map(|&addr| (addr != 0).then(|| rf.read_gpr(addr)))
+                            .filter_map(|r| (r != 0).then(|| self.scoreboard.job_id_from_u32(r)))
+                            .collect::<Vec<_>>(),
+                        issued.raw.sel(59, 54) as u32 + 1,
+                    )
+                };
+
+                NeutrinoCmd {
+                    cmd_type,
+                    job_id: None,
+                    task,
+                    deps,
+                    ret_mode: match issued.raw.sel(19, 18) & 3 {
+                        0 => NeutrinoRetMode::Immediate,
+                        1 => NeutrinoRetMode::Hardware,
+                        2 => NeutrinoRetMode::Manual,
+                        _ => panic!("unimplemented"),
+                    },
+                    part_mode: match issued.raw.sel(53, 52) & 3 {
+                        0 => NeutrinoPartMode::Threads,
+                        1 => NeutrinoPartMode::Warps,
+                        2 => NeutrinoPartMode::ThreadBlocks,
+                        _ => panic!("unimplemented"),
+                    },
+                    num_elems,
+                    sync: issued.raw.bit(17),
+                    tmask,
+                }
+            }
             NeutrinoCmdType::Payload => {
                 todo!()
             }
