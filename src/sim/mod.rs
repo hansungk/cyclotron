@@ -5,3 +5,4 @@ pub mod log;
 pub mod perf_log;
 pub mod top;
 pub mod trace;
+pub mod trace_db;

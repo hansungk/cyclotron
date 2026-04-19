@@ -6,6 +6,7 @@ use crate::muon::core::MuonCore;
 use crate::muon::decode::{DecodedInst, MicroOp};
 use crate::sim::top::Sim;
 use crate::sim::trace;
+use crate::sim::trace_db::{create_new_db_overwrite, default_trace_db_path};
 use crate::ui::CyclotronArgs;
 use log::debug;
 use rusqlite::Connection;
@@ -137,18 +138,11 @@ pub extern "C" fn cyclotron_init_rs(c_elfname: *const c_char, c_trace_db_path: *
     if !elfname.is_empty() {
         cyclotron_args.binary_path = Some(PathBuf::from(&elfname));
     }
-    let trace_db_path = if !trace_db_path_arg.is_empty() {
-        PathBuf::from(trace_db_path_arg)
-    } else if elfname.is_empty() {
-        PathBuf::from("cyclotron_trace.sqlite")
-    } else {
-        let trace_db_name = PathBuf::from(&elfname)
-            .file_name()
-            .and_then(|name| name.to_str())
-            .map(|name| name.strip_suffix(".elf").unwrap_or(name).to_owned())
-            .unwrap_or_else(|| "cyclotron_trace".to_owned());
-        PathBuf::from(format!("{trace_db_name}.sqlite"))
-    };
+    let trace_db_path = default_trace_db_path(
+        (!trace_db_path_arg.is_empty()).then(|| PathBuf::from(&trace_db_path_arg))
+            .as_deref(),
+        (!elfname.is_empty()).then(|| PathBuf::from(&elfname)).as_deref(),
+    );
 
     // make separate sim instances for the golden ISA model and the backend model to prevent
     // double-execution on the same GMEM
@@ -1021,69 +1015,6 @@ fn record_mem_req_to_db(conn: &Connection, line: &MemQueueLine, is_smem: bool) {
         ),
     )
     .expect("failed to insert to inst");
-}
-
-fn create_new_db_overwrite(db_path: &PathBuf) -> Connection {
-    for suffix in ["", "-wal", "-shm"] {
-        let path = format!("{}{}", db_path.display(), suffix);
-        match std::fs::remove_file(&path) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => panic!("failed to remove existing trace database file {path}: {e}"),
-        }
-    }
-    let conn = Connection::open(db_path).expect("failed to open sqlite trace database");
-
-    conn.execute(
-        "CREATE TABLE inst (
-                    id    INTEGER PRIMARY KEY AUTOINCREMENT,
-                    cluster_id INTEGER NOT NULL,
-                    core_id    INTEGER NOT NULL,
-                    warp       INTEGER NOT NULL,
-                    pc         INTEGER NOT NULL,
-                    lane_mask  INTEGER NOT NULL,
-                    has_rs1    INTEGER NOT NULL,
-                    rs1_id     INTEGER NOT NULL,
-                    rs1_data   TEXT NOT NULL,
-                    has_rs2    INTEGER NOT NULL,
-                    rs2_id     INTEGER NOT NULL,
-                    rs2_data   TEXT NOT NULL
-                )",
-        (),
-    )
-    .expect("failed to create inst table");
-
-    conn.execute(
-        "CREATE TABLE dmem (
-                    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-                    cluster_id INTEGER NOT NULL,
-                    core_id    INTEGER NOT NULL,
-                    lane_id    INTEGER NOT NULL,
-                    store      INTEGER NOT NULL CHECK (store IN (0,1)),
-                    address    INTEGER NOT NULL,
-                    size       INTEGER NOT NULL,
-                    data       INTEGER NOT NULL
-                )",
-        (),
-    )
-    .expect("failed to create dmem table");
-
-    conn.execute(
-        "CREATE TABLE smem (
-                    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-                    cluster_id INTEGER NOT NULL,
-                    core_id    INTEGER NOT NULL,
-                    lane_id    INTEGER NOT NULL,
-                    store      INTEGER NOT NULL CHECK (store IN (0,1)),
-                    address    INTEGER NOT NULL,
-                    size       INTEGER NOT NULL,
-                    data       INTEGER NOT NULL
-                )",
-        (),
-    )
-    .expect("failed to create smem table");
-
-    conn
 }
 
 #[no_mangle]
