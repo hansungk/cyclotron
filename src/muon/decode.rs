@@ -8,6 +8,14 @@ use crate::utils::*;
 use std::fmt::{Debug, Display, Formatter};
 use std::sync::Arc;
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct HasRegs {
+    pub rs1: bool,
+    pub rs2: bool,
+    pub rs3: bool,
+    pub rs4: bool,
+}
+
 #[derive(Debug, Default, Copy, Clone)]
 pub struct DecodedInst {
     pub opcode: u8,
@@ -47,6 +55,101 @@ pub struct IssuedInst {
     pub csr_imm: u8,
     pub pc: u32,
     pub raw: u64,
+}
+
+impl DecodedInst {
+    pub fn has_regs(&self) -> HasRegs {
+        match self.opcode {
+            Opcode::LOAD
+            | Opcode::LOAD_FP
+            | Opcode::OP_IMM
+            | Opcode::STORE
+            | Opcode::STORE_FP
+            | Opcode::OP
+            | Opcode::OP_FP
+            | Opcode::MADD
+            | Opcode::MSUB
+            | Opcode::NM_SUB
+            | Opcode::NM_ADD
+            | Opcode::BRANCH
+            | Opcode::JALR => HasRegs {
+                rs1: true,
+                rs2: matches!(
+                    self.opcode,
+                    Opcode::STORE
+                        | Opcode::STORE_FP
+                        | Opcode::OP
+                        | Opcode::OP_FP
+                        | Opcode::MADD
+                        | Opcode::MSUB
+                        | Opcode::NM_SUB
+                        | Opcode::NM_ADD
+                        | Opcode::BRANCH
+                ),
+                rs3: matches!(
+                    self.opcode,
+                    Opcode::MADD | Opcode::MSUB | Opcode::NM_SUB | Opcode::NM_ADD
+                ),
+                rs4: false,
+            },
+            Opcode::SYSTEM => HasRegs {
+                rs1: matches!(self.f3, 1 | 2 | 3),
+                rs2: false,
+                rs3: false,
+                rs4: false,
+            },
+            Opcode::CUSTOM0 => HasRegs {
+                rs1: matches!(
+                    self.sfu_key(),
+                    0b000_0000000
+                        | 0b001_0000000
+                        | 0b010_0000000
+                        | 0b100_0000000
+                        | 0b101_0000000
+                ),
+                rs2: matches!(self.sfu_key(), 0b001_0000000 | 0b100_0000000 | 0b101_0000000),
+                rs3: false,
+                rs4: false,
+            },
+            Opcode::CUSTOM2 => HasRegs {
+                rs1: matches!(self.extended_opcode(), Opcode::NU_INVOKE | Opcode::NU_PAYLOAD),
+                rs2: self.extended_opcode() == Opcode::NU_INVOKE && self.rs2_addr != 0,
+                rs3: false,
+                rs4: false,
+            },
+            _ => HasRegs::default(),
+        }
+    }
+
+    fn extended_opcode(&self) -> u16 {
+        self.opcode as u16 | ((self.opext as u16) << 7)
+    }
+
+    fn sfu_key(&self) -> u16 {
+        ((self.f3 as u16) << 7) | self.f7 as u16
+    }
+}
+
+impl IssuedInst {
+    pub fn has_regs(&self) -> HasRegs {
+        DecodedInst {
+            opcode: self.opcode,
+            opext: self.opext,
+            rd_addr: self.rd_addr,
+            f3: self.f3,
+            rs1_addr: self.rs1_addr,
+            rs2_addr: self.rs2_addr,
+            rs3_addr: self.rs3_addr,
+            rs4_addr: self.rs4_addr,
+            f7: self.f7,
+            imm32: self.imm32,
+            imm24: self.imm24,
+            csr_imm: self.csr_imm,
+            pc: self.pc,
+            raw: self.raw,
+        }
+        .has_regs()
+    }
 }
 
 impl Display for IssuedInst {

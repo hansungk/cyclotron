@@ -1,4 +1,4 @@
-use crate::muon::execute::Opcode;
+use crate::muon::decode::DecodedInst;
 use crate::sim::trace::Line;
 use rusqlite::Connection;
 use std::path::{Path, PathBuf};
@@ -17,6 +17,7 @@ impl TraceDb {
     pub fn record_inst_line(&self, cluster_id: u32, core_id: u32, line: &Line) {
         let rs1_string = encode_lane_data(&line.rs1_data);
         let rs2_string = encode_lane_data(&line.rs2_data);
+        let has_regs = decoded_inst(line).has_regs();
         self.conn
             .execute(
                 "INSERT INTO inst (cluster_id, core_id, warp, pc, lane_mask, has_rs1, rs1_id, rs1_data, has_rs2, rs2_id, rs2_data)
@@ -27,10 +28,10 @@ impl TraceDb {
                     line.warp_id,
                     line.pc,
                     line.tmask,
-                    inst_uses_rs1(line),
+                    has_regs.rs1,
                     line.rs1_addr,
                     &rs1_string,
-                    inst_uses_rs2(line),
+                    has_regs.rs2,
                     line.rs2_addr,
                     &rs2_string,
                 ),
@@ -124,49 +125,21 @@ fn encode_lane_data(data: &[Option<u32>]) -> String {
         .join(",")
 }
 
-fn inst_uses_rs1(line: &Line) -> bool {
-    match line.opcode {
-        Opcode::LOAD
-        | Opcode::LOAD_FP
-        | Opcode::OP_IMM
-        | Opcode::STORE
-        | Opcode::STORE_FP
-        | Opcode::OP
-        | Opcode::OP_FP
-        | Opcode::MADD
-        | Opcode::MSUB
-        | Opcode::NM_SUB
-        | Opcode::NM_ADD
-        | Opcode::BRANCH
-        | Opcode::JALR => true,
-        Opcode::SYSTEM => matches!(line.f3, 1 | 2 | 3),
-        Opcode::CUSTOM0 => matches!(sfu_key(line), 0b000_0000000 | 0b001_0000000 | 0b010_0000000 | 0b100_0000000 | 0b101_0000000),
-        Opcode::CUSTOM2 => matches!(extended_opcode(line), Opcode::NU_INVOKE | Opcode::NU_PAYLOAD),
-        _ => false,
+fn decoded_inst(line: &Line) -> DecodedInst {
+    DecodedInst {
+        opcode: line.opcode,
+        opext: line.opext,
+        rd_addr: line.rd_addr,
+        f3: line.f3,
+        rs1_addr: line.rs1_addr,
+        rs2_addr: line.rs2_addr,
+        rs3_addr: line.rs3_addr,
+        rs4_addr: line.rs4_addr,
+        f7: line.f7,
+        imm32: line.imm32,
+        imm24: line.imm24,
+        csr_imm: line.csr_imm,
+        pc: line.pc,
+        raw: line.raw,
     }
-}
-
-fn inst_uses_rs2(line: &Line) -> bool {
-    match line.opcode {
-        Opcode::STORE
-        | Opcode::STORE_FP
-        | Opcode::OP
-        | Opcode::OP_FP
-        | Opcode::MADD
-        | Opcode::MSUB
-        | Opcode::NM_SUB
-        | Opcode::NM_ADD
-        | Opcode::BRANCH => true,
-        Opcode::CUSTOM0 => matches!(sfu_key(line), 0b001_0000000 | 0b100_0000000 | 0b101_0000000),
-        Opcode::CUSTOM2 => extended_opcode(line) == Opcode::NU_INVOKE && line.rs2_addr != 0,
-        _ => false,
-    }
-}
-
-fn extended_opcode(line: &Line) -> u16 {
-    line.opcode as u16 | ((line.opext as u16) << 7)
-}
-
-fn sfu_key(line: &Line) -> u16 {
-    ((line.f3 as u16) << 7) | line.f7 as u16
 }
