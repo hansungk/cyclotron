@@ -9,7 +9,7 @@ use crate::neutrino::neutrino::Neutrino;
 use crate::sim::flat_mem::FlatMemory;
 use crate::sim::log::Logger;
 use crate::sim::perf_log::PerfLogSession;
-use crate::sim::trace::Tracer;
+use crate::sim::trace::{MemTracer, Tracer};
 use crate::timeflow::{ClusterGmemGraph, CoreGraphConfig};
 use crate::timeq::module_now;
 use std::iter::zip;
@@ -26,6 +26,7 @@ pub struct MuonCore {
 
     logger: Arc<Logger>,
     tracer: Arc<Tracer>,
+    mem_tracer: Arc<MemTracer>,
     timing_mode: TimingMode,
 }
 
@@ -67,6 +68,7 @@ impl MuonCore {
             shared_mem: FlatMemory::new_with_size(config.smem_size, None),
             logger: logger.clone(),
             tracer: Arc::new(Tracer::new(&config)),
+            mem_tracer: Arc::new(MemTracer::new()),
             timing_mode,
         };
 
@@ -197,6 +199,7 @@ impl MuonCore {
     pub fn backend(&mut self, ibuf: &InstBuf, neutrino: &mut Neutrino) -> Result<(), ExecErr> {
         let now = module_now(&self.scheduler);
         let mut writebacks: Vec<Option<Writeback>> = Vec::with_capacity(self.warps.len());
+        let mut mem_trace_lines = Vec::new();
 
         match &mut self.timing_mode {
             TimingMode::Enabled(timing_model) => {
@@ -237,6 +240,10 @@ impl MuonCore {
                         }
                         None => None,
                     };
+                    if let Some((_, warp_mem_trace_lines)) = &wb_opt {
+                        mem_trace_lines.extend(warp_mem_trace_lines.iter().cloned());
+                    }
+                    let wb_opt = wb_opt.map(|(wb, _)| wb);
                     writebacks.push(wb_opt);
                 }
             }
@@ -254,6 +261,10 @@ impl MuonCore {
                         )?),
                         None => None,
                     };
+                    if let Some((_, warp_mem_trace_lines)) = &wb_opt {
+                        mem_trace_lines.extend(warp_mem_trace_lines.iter().cloned());
+                    }
+                    let wb_opt = wb_opt.map(|(wb, _)| wb);
                     writebacks.push(wb_opt);
                 }
             }
@@ -261,6 +272,8 @@ impl MuonCore {
 
         let tracer = Arc::get_mut(&mut self.tracer).expect("failed to get tracer");
         tracer.record(&writebacks);
+        let mem_tracer = Arc::get_mut(&mut self.mem_tracer).expect("failed to get mem tracer");
+        mem_tracer.record(&mem_trace_lines);
 
         self.scheduler.tick_one();
         self.warps.iter_mut().for_each(Warp::tick_one);
@@ -276,7 +289,7 @@ impl MuonCore {
         tmask: u32,
         neutrino: &mut Neutrino,
     ) -> Writeback {
-        let writeback = self.warps[warp_id].execute(
+        let (writeback, _) = self.warps[warp_id].execute(
             issued,
             tmask,
             &mut self.scheduler,
@@ -308,6 +321,14 @@ impl MuonCore {
 
     pub fn get_tracer(&self) -> &Tracer {
         &self.tracer
+    }
+
+    pub fn get_mem_tracer_mut(&mut self) -> &mut MemTracer {
+        Arc::get_mut(&mut self.mem_tracer).expect("failed to get mem tracer")
+    }
+
+    pub fn get_mem_tracer(&self) -> &MemTracer {
+        &self.mem_tracer
     }
 
     pub fn timing_summary(&self) -> CorePerfSummary {

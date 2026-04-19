@@ -13,6 +13,10 @@ pub struct Tracer {
     rr: usize,
 }
 
+pub struct MemTracer {
+    buf: VecDeque<MemTraceLine>,
+}
+
 #[derive(Default, Clone, Debug)]
 pub struct Line {
     pub warp_id: u32,
@@ -36,6 +40,17 @@ pub struct Line {
     pub csr_imm: u8,
     pub tmask: u32,
     pub raw: u64,
+}
+
+#[derive(Clone, Debug)]
+pub struct MemTraceLine {
+    pub warp_id: u32,
+    pub lane_id: u32,
+    pub is_smem: bool,
+    pub store: bool,
+    pub address: u32,
+    pub size: u32,
+    pub data: u32,
 }
 
 impl fmt::Display for Line {
@@ -120,5 +135,25 @@ impl Tracer {
 
     pub fn all_empty(&self) -> bool {
         self.bufs.iter().all(|buf| buf.len() == 0)
+    }
+}
+
+impl MemTracer {
+    pub fn new() -> Self {
+        Self {
+            buf: VecDeque::new(),
+        }
+    }
+
+    pub fn record(&mut self, lines: &[MemTraceLine]) {
+        self.buf.extend(lines.iter().cloned());
+    }
+
+    pub fn consume(&mut self) -> Option<MemTraceLine> {
+        self.buf.pop_front()
+    }
+
+    pub fn all_empty(&self) -> bool {
+        self.buf.is_empty()
     }
 }

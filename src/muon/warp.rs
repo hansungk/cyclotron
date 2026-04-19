@@ -11,6 +11,7 @@ use crate::muon::scheduler::{Schedule, Scheduler, SchedulerWriteback};
 use crate::neutrino::neutrino::Neutrino;
 use crate::sim::flat_mem::FlatMemory;
 use crate::sim::log::Logger;
+use crate::sim::trace::MemTraceLine;
 use crate::timeflow::{GmemRequest, SmemRequest};
 use crate::timeq::Cycle;
 use crate::utils::BitSlice;
@@ -201,7 +202,7 @@ impl Warp {
         scheduler: &mut Scheduler,
         neutrino: &mut Neutrino,
         smem: &mut FlatMemory,
-    ) -> Result<Writeback, ExecErr> {
+    ) -> Result<(Writeback, Vec<MemTraceLine>), ExecErr> {
         let pc = uop.inst.pc;
         let tmask = uop.tmask;
 
@@ -222,7 +223,7 @@ impl Warp {
 
         // writeback
         match writeback {
-            Ok(writeback) => {
+            Ok((writeback, mem_trace_lines)) => {
                 self.writeback(&writeback);
 
                 info!(
@@ -235,7 +236,7 @@ impl Warp {
                     writeback.num_rd_data()
                 );
 
-                Ok(writeback)
+                Ok((writeback, mem_trace_lines))
             }
             Err(payload) => {
                 let message = payload.downcast::<String>().ok().map(|s| *s);
@@ -256,7 +257,7 @@ impl Warp {
         smem: &mut FlatMemory,
         timing_model: &mut CoreTimingModel,
         now: Cycle,
-    ) -> Result<Option<Writeback>, ExecErr> {
+    ) -> Result<Option<(Writeback, Vec<MemTraceLine>)>, ExecErr> {
         let decoded = uop.inst;
         let pc = decoded.pc;
         let tmask = uop.tmask;
@@ -325,7 +326,7 @@ impl Warp {
         }));
 
         match writeback {
-            Ok(writeback) => {
+            Ok((writeback, mem_trace_lines)) => {
                 self.writeback(&writeback);
 
                 info!(
@@ -338,7 +339,7 @@ impl Warp {
                     writeback.num_rd_data()
                 );
 
-                Ok(Some(writeback))
+                Ok(Some((writeback, mem_trace_lines)))
             }
             Err(payload) => {
                 let message = payload.downcast::<String>().ok().map(|s| *s);
@@ -403,7 +404,7 @@ impl Warp {
         scheduler: &mut Scheduler,
         neutrino: &mut Neutrino,
         smem: &mut FlatMemory,
-    ) -> Writeback {
+    ) -> (Writeback, Vec<MemTraceLine>) {
         let ex_wb = self.execute_nomem(issued, tmask, scheduler, neutrino);
         self.mem(&ex_wb, smem, None)
     }
@@ -437,8 +438,45 @@ impl Warp {
         ex_writeback: &ExWriteback,
         smem: &mut FlatMemory,
         external_mem_resp: Option<&Vec<Option<MemResponse>>>,
-    ) -> Writeback {
+    ) -> (Writeback, Vec<MemTraceLine>) {
         let external_mem = external_mem_resp.is_some();
+        let mem_responses = ex_writeback
+            .mem_req
+            .iter()
+            .enumerate()
+            .map(|(lane_id, oreq)| {
+                oreq.as_ref().map(|req| {
+                    if external_mem {
+                        external_mem_resp.unwrap()[lane_id]
+                            .as_ref()
+                            .expect("missing mem response for a lane")
+                            .clone()
+                    } else {
+                        self.mem_response(req, smem)
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        let mem_trace_lines = ex_writeback
+            .mem_req
+            .iter()
+            .enumerate()
+            .filter_map(|(lane_id, oreq)| {
+                let req = oreq.as_ref()?;
+                let resp = mem_responses[lane_id]
+                    .as_ref()
+                    .expect("missing memory response for a lane");
+                Some(MemTraceLine {
+                    warp_id: self.wid as u32,
+                    lane_id: lane_id as u32,
+                    is_smem: req.is_smem,
+                    store: req.is_store,
+                    address: req.addr,
+                    size: req.size,
+                    data: trace_mem_data(req, resp),
+                })
+            })
+            .collect::<Vec<_>>();
 
         let rd_mem = ex_writeback
             .mem_req
@@ -446,13 +484,9 @@ impl Warp {
             .enumerate()
             .map(|(i, oreq)| match oreq {
                 Some(req) => {
-                    let resp = if external_mem {
-                        external_mem_resp.unwrap()[i]
-                            .as_ref()
-                            .expect("missing mem response for a lane")
-                    } else {
-                        &self.mem_response(req, smem)
-                    };
+                    let resp = mem_responses[i]
+                        .as_ref()
+                        .expect("missing memory response for a lane");
                     ExecuteUnit::mem_writeback(req, resp)
                 }
                 None => None,
@@ -469,13 +503,16 @@ impl Warp {
             })
             .collect::<Vec<_>>();
 
-        Writeback {
-            inst: ex_writeback.inst.clone(),
-            tmask: ex_writeback.tmask,
-            rd_addr: ex_writeback.rd_addr,
-            rd_data: rd_merged,
-            sched_wb: ex_writeback.sched_wb,
-        }
+        (
+            Writeback {
+                inst: ex_writeback.inst.clone(),
+                tmask: ex_writeback.tmask,
+                rd_addr: ex_writeback.rd_addr,
+                rd_data: rd_merged,
+                sched_wb: ex_writeback.sched_wb,
+            },
+            mem_trace_lines,
+        )
     }
 
     /// Handle a per-lane memory request and generate a MemResponse.
@@ -647,5 +684,26 @@ impl Warp {
             .issue_smem_request(now, self.wid, request, scheduler)
             .map(|_| ())
             .map_err(|_| ())
+    }
+}
+
+fn trace_mem_data(mem_req: &MemRequest, mem_resp: &MemResponse) -> u32 {
+    if mem_req.is_store {
+        let store_data = mem_req.data.expect("store req missing a data field");
+        mask_mem_data(store_data, mem_req.size)
+    } else {
+        let raw_load = u32::from_le_bytes(mem_resp.data.expect("load response missing data"));
+        let bit_offset = ((mem_req.addr & 3) * 8) as usize;
+        let shifted = raw_load >> bit_offset;
+        mask_mem_data(shifted, mem_req.size)
+    }
+}
+
+fn mask_mem_data(data: u32, size: u32) -> u32 {
+    match size {
+        1 => data & 0xff,
+        2 => data & 0xffff,
+        4 => data,
+        _ => panic!("unimplemented mem trace size"),
     }
 }

@@ -38,6 +38,9 @@ impl Sim {
                         trace_db.record_inst_line(cluster_id as u32, core_id as u32, &line);
                     }
                 }
+                while let Some(line) = core.get_mem_tracer_mut().consume() {
+                    trace_db.record_mem_line(cluster_id as u32, core_id as u32, &line);
+                }
             }
         }
     }

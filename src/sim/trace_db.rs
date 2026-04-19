@@ -1,5 +1,5 @@
 use crate::muon::decode::DecodedInst;
-use crate::sim::trace::Line;
+use crate::sim::trace::{Line, MemTraceLine};
 use rusqlite::Connection;
 use std::path::{Path, PathBuf};
 
@@ -37,6 +37,27 @@ impl TraceDb {
                 ),
             )
             .expect("failed to insert into inst");
+    }
+
+    pub fn record_mem_line(&self, cluster_id: u32, core_id: u32, line: &MemTraceLine) {
+        let table = if line.is_smem { "smem" } else { "dmem" };
+        self.conn
+            .execute(
+                &format!(
+                    "INSERT INTO {table} (cluster_id, core_id, lane_id, store, address, size, data)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"
+                ),
+                (
+                    cluster_id,
+                    core_id,
+                    line.lane_id,
+                    line.store,
+                    line.address,
+                    line.size,
+                    line.data,
+                ),
+            )
+            .expect("failed to insert into memory trace table");
     }
 }
 

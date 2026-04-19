@@ -641,7 +641,7 @@ pub unsafe fn cyclotron_backend_rs(
     debug!("issue warp id is {}", issue_warp_id);
     debug!("{}", decoded);
 
-    let writeback = core.warps[issue_warp_id as usize]
+    let (writeback, _) = core.warps[issue_warp_id as usize]
         .backend(
             MicroOp {
                 inst: decoded,
