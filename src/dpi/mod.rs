@@ -737,8 +737,8 @@ pub unsafe extern "C" fn cyclotron_trace_rs(
     let num_lanes = context.sim_isa.top.clusters[0].cores[0].conf().num_lanes;
     let global_core_id = cluster_id as usize * CORES_PER_CLUSTER + core_id as usize;
 
-    let _inst_rs1_data = unsafe { from_raw_parts(inst_rs1_data_vec, num_lanes) };
-    let _inst_rs2_data = unsafe { from_raw_parts(inst_rs2_data_vec, num_lanes) };
+    let inst_rs1_data = unsafe { from_raw_parts(inst_rs1_data_vec, num_lanes) };
+    let inst_rs2_data = unsafe { from_raw_parts(inst_rs2_data_vec, num_lanes) };
     let _inst_rs3_data = unsafe { from_raw_parts(inst_rs3_data_vec, num_lanes) };
 
     let dmem_req_valid = unsafe { from_raw_parts(dmem_req_valid_vec, num_lanes) };
@@ -786,12 +786,12 @@ pub unsafe extern "C" fn cyclotron_trace_rs(
             *conn_opt = Some(create_new_db_overwrite(&context.trace_db_path));
         }
 
-        let rs1_string = _inst_rs1_data
+        let rs1_string = inst_rs1_data
             .iter()
             .map(u32::to_string)
             .collect::<Vec<_>>()
             .join(",");
-        let rs2_string = _inst_rs2_data
+        let rs2_string = inst_rs2_data
             .iter()
             .map(u32::to_string)
             .collect::<Vec<_>>()

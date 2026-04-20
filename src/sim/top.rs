@@ -210,6 +210,7 @@ impl CyclotronTop {
 
         let gmem = Arc::new(RwLock::new(gmem));
 
+        // TODO: parameterize
         let num_clusters = 1;
         let cores_per_cluster = cluster_config.muon_config.num_cores.max(1);
         if config.timing_enabled {
