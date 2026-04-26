@@ -6,6 +6,7 @@ pub mod dpi;
 pub mod memfuzz;
 pub mod muon;
 pub mod neutrino;
+pub mod primitives;
 pub mod sim;
 pub mod timeflow;
 pub mod timeq;

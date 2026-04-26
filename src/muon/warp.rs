@@ -101,6 +101,7 @@ struct TimedMemIssue {
     active_lanes: u32,
     bytes_per_lane: u32,
     lane_addrs: Vec<u64>,
+    lane_ids: Vec<usize>,
 }
 
 impl Writeback {
@@ -556,7 +557,8 @@ impl Warp {
         }
 
         let bytes_per_lane = 1u32 << (decoded.f3 & 3);
-        let lane_addrs = self.collect_lane_addrs(decoded.rs1_addr, decoded.imm32, tmask);
+        let (lane_ids, lane_addrs) =
+            self.collect_lane_targets(decoded.rs1_addr, decoded.imm32, tmask);
 
         Some(TimedMemIssue {
             opcode: decoded.opcode,
@@ -566,6 +568,7 @@ impl Warp {
             active_lanes,
             bytes_per_lane,
             lane_addrs,
+            lane_ids,
         })
     }
 
@@ -604,16 +607,18 @@ impl Warp {
         (decoded.opcode == Opcode::LOAD || decoded.opcode == Opcode::STORE) && decoded.opext == 1
     }
 
-    fn collect_lane_addrs(&self, rs1_addr: u8, imm32: u32, tmask: u32) -> Vec<u64> {
+    fn collect_lane_targets(&self, rs1_addr: u8, imm32: u32, tmask: u32) -> (Vec<usize>, Vec<u64>) {
+        let mut lane_ids = Vec::new();
         let mut addrs = Vec::new();
         for (lane, lrf) in self.base.state.reg_file.iter().enumerate() {
             if !tmask.bit(lane) {
                 continue;
             }
             let addr = lrf.read_gpr(rs1_addr).wrapping_add(imm32) as u64;
+            lane_ids.push(lane);
             addrs.push(addr);
         }
-        addrs
+        (lane_ids, addrs)
     }
 
     fn issue_smem_request(
@@ -642,6 +647,7 @@ impl Warp {
         );
         request.addr = issue.lane_addrs.iter().copied().min().unwrap_or(0);
         request.lane_addrs = Some(issue.lane_addrs.clone());
+        request.lane_ids = Some(issue.lane_ids.clone());
 
         timing_model
             .issue_smem_request(now, self.wid, request, scheduler)

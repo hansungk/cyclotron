@@ -2,10 +2,12 @@ use serde_json::json;
 
 use crate::base::behavior::ModuleBehaviors;
 use crate::muon::core::MuonCore;
+use crate::timeflow::smem::SmemPatternRun;
 use crate::timeq::Cycle;
 use crate::traffic::config::TrafficConfig;
 use crate::traffic::logging::{PatternCheckpoint, TrafficLogger};
 use crate::traffic::patterns::PatternEngine;
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone)]
 struct CoreState {
@@ -65,7 +67,6 @@ impl SmemTrafficDriver {
         self.ensure_core_state(core_id);
 
         let num_lanes = self.config.num_lanes;
-        let reqs_per_pattern = self.config.reqs_per_pattern;
         let print_lines = self.config.logging.print_traffic_lines;
         let total_patterns = self.pattern_engine.len();
 
@@ -76,81 +77,100 @@ impl SmemTrafficDriver {
             return;
         }
 
-        // Process one pattern per tick_core call
-        let pattern_idx = state.current_pattern_idx;
-        if pattern_idx >= total_patterns {
-            state.done = true;
-            if !state.done_logged {
-                state.done_logged = true;
-                if print_lines {
-                    TrafficLogger::log_core_done(core_id);
-                }
+        let mut suite_order: Vec<String> = Vec::new();
+        let mut grouped: BTreeMap<String, Vec<SmemPatternRun>> = BTreeMap::new();
+        for pattern_idx in 0..total_patterns {
+            let pattern = self
+                .pattern_engine
+                .pattern(pattern_idx)
+                .expect("pattern index out of range");
+            if !grouped.contains_key(&pattern.suite) {
+                suite_order.push(pattern.suite.clone());
             }
-            core.scheduler.tick_one();
-            self.check_all_done();
-            return;
+            let active_lanes = pattern.active_lanes.max(1).min(num_lanes.max(1));
+            let addrs: Vec<Vec<u64>> = (0..pattern.reqs_per_pattern)
+                .map(|wave_t| {
+                    (0..active_lanes)
+                        .map(|lane| {
+                            self.pattern_engine
+                                .lane_addr(pattern_idx, wave_t, lane)
+                                .expect("missing lane address")
+                        })
+                        .collect()
+                })
+                .collect();
+            grouped
+                .entry(pattern.suite.clone())
+                .or_default()
+                .push(SmemPatternRun {
+                    stream_id: 0,
+                    pattern_idx,
+                    suite: pattern.suite.clone(),
+                    pattern_name: self
+                        .pattern_engine
+                        .pattern_name(pattern_idx)
+                        .unwrap_or("unknown")
+                        .to_string(),
+                    addrs,
+                    is_read: !pattern.op.is_store(),
+                    req_bytes: pattern.req_bytes.max(1),
+                    active_lanes,
+                    max_inflight_per_lane: pattern.max_inflight_per_lane.max(1),
+                    issue_gap: pattern.issue_gap,
+                    working_set_bytes: self.config.address.smem_size_bytes,
+                });
         }
 
-        let pattern = self
-            .pattern_engine
-            .pattern(pattern_idx)
-            .expect("pattern index out of range");
-        let is_store = pattern.op.is_store();
-        let is_read = !is_store;
-        let pattern_name = self
-            .pattern_engine
-            .pattern_name(pattern_idx)
-            .unwrap_or("unknown")
-            .to_string();
+        let mut streams: Vec<Vec<SmemPatternRun>> = Vec::new();
+        for (stream_id, suite) in suite_order.iter().enumerate() {
+            if let Some(mut stream) = grouped.remove(suite) {
+                for run in &mut stream {
+                    run.stream_id = stream_id;
+                }
+                streams.push(stream);
+            }
+        }
 
-        // Pre-generate all lane addresses for all waves
-        let addrs: Vec<Vec<u64>> = (0..reqs_per_pattern)
-            .map(|wave_t| {
-                (0..num_lanes)
-                    .map(|lane| {
-                        self.pattern_engine
-                            .lane_addr(pattern_idx, wave_t, lane)
-                            .expect("missing lane address")
-                    })
-                    .collect()
-            })
-            .collect();
+        let model_present = core
+            .with_timing_model(|timing, _scheduler, _now| timing.simulate_smem_patterns(streams));
 
-        // Simulate the pattern via the timing model
-        let model_present = core.with_timing_model(|timing, _scheduler, _now| {
-            timing.simulate_smem_pattern(&addrs, is_read)
-        });
-
-        let duration = match model_present {
-            Some(d) => d,
+        let results = match model_present {
+            Some(results) => results,
             None => panic!("frontend_mode=traffic_smem requires sim.timing=true"),
         };
 
-        let finished_cycle = state.current_cycle + duration;
-        state.current_cycle = finished_cycle;
-
-        let cp = PatternCheckpoint {
-            core_id: state.core_id,
-            pattern_idx,
-            pattern_name: pattern_name.clone(),
-            finished_cycle,
-            duration_cycles: duration,
-        };
-        state.checkpoints.push(cp);
-
-        if print_lines {
-            TrafficLogger::log_pattern_checkpoint(core_id, &pattern_name, finished_cycle);
+        for result in results {
+            state.current_cycle = state.current_cycle.max(result.finished_cycle);
+            state.checkpoints.push(PatternCheckpoint {
+                core_id: state.core_id,
+                pattern_idx: result.pattern_idx,
+                pattern_name: result.pattern_name.clone(),
+                finished_cycle: result.finished_cycle,
+                duration_cycles: result.duration_cycles,
+            });
+            if print_lines {
+                TrafficLogger::log_pattern_checkpoint_with_metadata(
+                    "smem",
+                    &result.suite,
+                    core_id,
+                    &result.pattern_name,
+                    result.finished_cycle,
+                    result.duration_cycles,
+                    result.reqs_per_lane,
+                    result.active_lanes,
+                    result.issue_gap,
+                    result.max_outstanding,
+                    result.working_set_bytes,
+                );
+            }
         }
 
-        // Advance to next pattern
-        state.current_pattern_idx += 1;
-        if state.current_pattern_idx >= total_patterns {
-            state.done = true;
-            if !state.done_logged {
-                state.done_logged = true;
-                if print_lines {
-                    TrafficLogger::log_core_done(core_id);
-                }
+        state.current_pattern_idx = total_patterns;
+        state.done = true;
+        if !state.done_logged {
+            state.done_logged = true;
+            if print_lines {
+                TrafficLogger::log_core_done("smem", core_id, state.current_cycle);
             }
         }
 

@@ -43,6 +43,11 @@ pub struct GmemTrafficDriver {
 
 impl GmemTrafficDriver {
     pub fn new(config: &TrafficConfig) -> Self {
+        if matches!(config.gmem_entry_mode, GmemEntryMode::FullPath) && config.enabled {
+            eprintln!(
+                "WARNING: traffic_gmem full_path uses the current frontend latency-stub coalescer; results are validation-only until the real address-based coalescer is implemented"
+            );
+        }
         Self {
             config: config.clone(),
             done: !config.enabled,
@@ -88,7 +93,7 @@ impl GmemTrafficDriver {
             if !state.done_logged {
                 state.done_logged = true;
                 if print_lines {
-                    TrafficLogger::log_core_done(core_id);
+                    TrafficLogger::log_core_done("gmem", core_id, state.current_cycle);
                 }
             }
             core.scheduler.tick_one();
@@ -154,7 +159,13 @@ impl GmemTrafficDriver {
         });
 
         if print_lines {
-            TrafficLogger::log_pattern_checkpoint(core_id, &pattern_name, finished_cycle);
+            TrafficLogger::log_pattern_checkpoint(
+                "gmem",
+                core_id,
+                &pattern_name,
+                finished_cycle,
+                duration,
+            );
         }
 
         state.current_pattern_idx += 1;
@@ -163,7 +174,7 @@ impl GmemTrafficDriver {
             if !state.done_logged {
                 state.done_logged = true;
                 if print_lines {
-                    TrafficLogger::log_core_done(core_id);
+                    TrafficLogger::log_core_done("gmem", core_id, state.current_cycle);
                 }
             }
         }
@@ -201,6 +212,13 @@ impl GmemTrafficDriver {
                 GmemEntryMode::HierarchyOnly => "hierarchy_only",
                 GmemEntryMode::FullPath => "full_path",
             },
+            "entry_mode_note": match self.config.gmem_entry_mode {
+                GmemEntryMode::HierarchyOnly =>
+                    "injects 32B lines directly at the hierarchy and intentionally excludes L0 fragmentation",
+                GmemEntryMode::FullPath =>
+                    "includes frontend/L0 path but still uses the current latency-stub coalescer",
+            },
+            "validation_only": matches!(self.config.gmem_entry_mode, GmemEntryMode::FullPath),
             "num_lanes": self.config.num_lanes,
             "reqs_per_pattern": self.config.reqs_per_pattern,
             "pattern_count": self.pattern_engine.len(),

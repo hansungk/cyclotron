@@ -257,7 +257,9 @@ fn l0_miss_fragments_into_two_l1_children() {
     let cycle = 0;
 
     let req = make_line_load(0x8000, 0, 64);
-    let issue = cluster.issue(0, cycle, req).expect("fragmented request accepts");
+    let issue = cluster
+        .issue(0, cycle, req)
+        .expect("fragmented request accepts");
     let comp = assert_completes!(&mut cluster, 0, cycle, MAX_CYCLES);
 
     assert_eq!(comp.request.bytes, 64);
@@ -265,7 +267,11 @@ fn l0_miss_fragments_into_two_l1_children() {
 
     let (l0_stats, l1_stats, _l2_stats) = cluster.hierarchy_stats_per_level();
     assert_eq!(l0_stats.accesses(), 1, "one L0 access for the parent line");
-    assert_eq!(l1_stats.accesses(), 2, "two 32B child accesses should hit L1");
+    assert_eq!(
+        l1_stats.accesses(),
+        2,
+        "two 32B child accesses should hit L1"
+    );
 }
 
 #[test]
@@ -276,8 +282,12 @@ fn fragmented_l0_miss_merges_at_parent_line() {
 
     let req0 = make_line_load(0x9000, 0, 64);
     let req1 = make_line_load(0x9000, 0, 64);
-    let issue0 = cluster.issue(0, cycle, req0).expect("first fragmented request");
-    let issue1 = cluster.issue(0, cycle, req1).expect("second request should merge at L0");
+    let issue0 = cluster
+        .issue(0, cycle, req0)
+        .expect("first fragmented request");
+    let issue1 = cluster
+        .issue(0, cycle, req1)
+        .expect("second request should merge at L0");
     assert_eq!(issue0.ticket.ready_at(), issue1.ticket.ready_at());
 
     let comp0 = assert_completes!(&mut cluster, 0, cycle, MAX_CYCLES);
@@ -285,5 +295,9 @@ fn fragmented_l0_miss_merges_at_parent_line() {
     assert_eq!(comp0.completed_at, comp1.completed_at);
 
     let (_l0_stats, l1_stats, _l2_stats) = cluster.hierarchy_stats_per_level();
-    assert_eq!(l1_stats.accesses(), 2, "parent-line merge should avoid duplicate child traffic");
+    assert_eq!(
+        l1_stats.accesses(),
+        2,
+        "parent-line merge should avoid duplicate child traffic"
+    );
 }

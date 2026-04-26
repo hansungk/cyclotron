@@ -229,8 +229,28 @@ impl CoreGraph {
         self.subgraphs[self.smem_index].clear_stats();
     }
 
-    pub fn simulate_smem_pattern(&self, addrs: &[Vec<u64>], is_read: bool) -> u64 {
-        self.smem_ref().simulate_pattern(addrs, is_read)
+    pub fn simulate_smem_pattern(
+        &self,
+        addrs: &[Vec<u64>],
+        is_read: bool,
+        req_bytes: u32,
+        max_inflight_per_lane: usize,
+        issue_gap: u64,
+    ) -> u64 {
+        self.smem_ref().simulate_pattern_timed(
+            addrs,
+            is_read,
+            req_bytes,
+            max_inflight_per_lane,
+            issue_gap,
+        )
+    }
+
+    pub fn simulate_smem_patterns(
+        &self,
+        streams: Vec<Vec<crate::timeflow::smem::SmemPatternRun>>,
+    ) -> Vec<crate::timeflow::smem::SmemPatternResult> {
+        self.smem_ref().simulate_patterns_timed(streams)
     }
 
     pub fn operand_fetch_try_issue(
@@ -613,7 +633,7 @@ impl Subgraph for SmemSubgraph {
     }
 
     fn clear_stats(&mut self) {
-        self.stats = SmemStats::default();
+        SmemSubgraph::clear_stats(self);
     }
 }
 

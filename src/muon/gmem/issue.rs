@@ -176,7 +176,6 @@ impl CoreTimingModel {
             self.next_smem_id = request.id.saturating_add(1);
         }
         let request_id = request.id;
-        let split_count = self.split_smem_request(&request).len().max(1);
         let conflict_sample = self.compute_smem_conflict(&request);
         let issue_bytes = request.bytes;
         if let Err(reject) = self.graph.operand_fetch_try_issue(now, request.bytes) {
@@ -190,7 +189,7 @@ impl CoreTimingModel {
             Ok(LsuIssue { ticket }) => {
                 let ready_at = ticket.ready_at();
                 self.smem_issue_cycle.entry(request_id).or_insert(now);
-                self.add_smem_pending(warp, request_id, ready_at, scheduler, split_count);
+                self.add_smem_pending(warp, request_id, ready_at, scheduler, 1);
                 if let Some(sample) = conflict_sample {
                     self.record_smem_conflict(now, warp, request_id, sample);
                 }
@@ -360,7 +359,6 @@ impl CoreTimingModel {
             self.next_smem_id = request.id.saturating_add(1);
         }
         let request_id = request.id;
-        let split_count = self.split_smem_request(&request).len().max(1);
         let conflict_sample = self.compute_smem_conflict(&request);
         let issue_bytes = request.bytes;
         if let Err(reject) = self.graph.operand_fetch_try_issue(now, request.bytes) {
@@ -372,7 +370,7 @@ impl CoreTimingModel {
             Ok(LsuIssue { ticket }) => {
                 let ready_at = ticket.ready_at();
                 self.smem_issue_cycle.entry(request_id).or_insert(now);
-                self.add_smem_pending_frontend(warp, request_id, ready_at, split_count);
+                self.add_smem_pending_frontend(warp, request_id, ready_at, 1);
                 if let Some(sample) = conflict_sample {
                     self.record_smem_conflict(now, warp, request_id, sample);
                 }

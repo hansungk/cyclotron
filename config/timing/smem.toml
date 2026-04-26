@@ -5,6 +5,8 @@ num_subbanks = 16        # contention domain (= numWords in strideByWord mode)
 word_bytes = 4
 stride_by_word = true
 prealign_buf_depth = 2
+prealign_latency = 0
+prealign_bytes_per_cycle = 1
 
 # mem_type: 
 #   - "two_port" = 1R+1W per subbank
@@ -14,13 +16,26 @@ mem_type = "two_port"
 # "core_serialized" | "fully_serialized" | "not_serialized"
 serialization = "core_serialized"
 
+# "rtl_contiguous_banks" | "subbank_then_bank" | "bank_then_subbank"
+address_map = "rtl_contiguous_banks"
+
 num_lanes = 16
 
 # Tunable latency knobs
 # base_overhead is additive overhead cycles per pattern
-base_overhead = 5
+base_overhead = 0
 # read_extra is extra cycles for read vs write operations
-read_extra = 1
+read_extra = 0
+crossbar_latency = 0
+crossbar_bytes_per_cycle = 4
+port_latency_read = 0
+port_latency_write = 0
+bank_read_bytes_per_cycle = 4
+bank_write_bytes_per_cycle = 4
+tail_bytes_per_cycle = 1
+port_queue_depth = 64
+completion_queue_depth = 64
 
-# ELF-mode issue/complete capacity
-max_outstanding = 16
+# Fabric-level safety cap. RTL stimulus limits are per client/lane, so this
+# should not bind traffic replay unless a test explicitly lowers it.
+max_outstanding = 512

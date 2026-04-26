@@ -1,4 +1,5 @@
 use super::{CoreTimingModel, SmemConflictSample};
+use crate::timeflow::smem::decode_smem_bank_subbank;
 use crate::timeflow::{GmemRequest, SmemRequest};
 
 impl CoreTimingModel {
@@ -33,9 +34,6 @@ impl CoreTimingModel {
     }
 
     pub(super) fn split_smem_request(&self, request: &SmemRequest) -> Vec<SmemRequest> {
-        let num_banks = self.smem_config.num_banks.max(1) as u64;
-        let num_subbanks = self.smem_config.num_subbanks.max(1) as u64;
-        let word_bytes = self.smem_config.word_bytes.max(1) as u64;
         let active = request.active_lanes.max(1);
         let bytes_per_lane = request.bytes.saturating_div(active).max(1);
 
@@ -43,9 +41,7 @@ impl CoreTimingModel {
             let mut groups: std::collections::HashMap<(usize, usize), (u32, u64)> =
                 std::collections::HashMap::new();
             for &addr in lane_addrs {
-                let word = addr / word_bytes;
-                let bank = (word % num_banks) as usize;
-                let subbank = ((word / num_banks) % num_subbanks) as usize;
+                let (bank, subbank) = decode_smem_bank_subbank(&self.smem_config, addr);
                 let entry = groups.entry((bank, subbank)).or_insert((0, addr));
                 entry.0 = entry.0.saturating_add(1);
             }
@@ -62,18 +58,18 @@ impl CoreTimingModel {
                     child.active_lanes = lanes;
                     child.bytes = bytes_per_lane.saturating_mul(lanes).max(1);
                     child.lane_addrs = None;
+                    child.lane_ids = None;
                     child
                 })
                 .collect();
         }
 
-        let word = request.addr / word_bytes;
-        let bank = (word % num_banks) as usize;
-        let subbank = ((word / num_banks) % num_subbanks) as usize;
+        let (bank, subbank) = decode_smem_bank_subbank(&self.smem_config, request.addr);
         let mut child = request.clone();
         child.bank = bank;
         child.subbank = subbank;
         child.lane_addrs = None;
+        child.lane_ids = None;
         vec![child]
     }
 
@@ -82,23 +78,20 @@ impl CoreTimingModel {
         request: &SmemRequest,
     ) -> Option<SmemConflictSample> {
         let active = request.active_lanes.max(1);
-        let num_banks = self.smem_config.num_banks.max(1) as u64;
-        let num_subbanks = self.smem_config.num_subbanks.max(1) as u64;
-        let word_bytes = self.smem_config.word_bytes.max(1) as u64;
+        let num_banks = self.smem_config.num_banks.max(1);
+        let num_subbanks = self.smem_config.active_subbanks().max(1);
 
         if let Some(lane_addrs) = request.lane_addrs.as_ref() {
             if lane_addrs.is_empty() {
                 return None;
             }
-            let nb = num_banks as usize;
-            let ns = num_subbanks as usize;
+            let nb = num_banks;
+            let ns = num_subbanks;
             if nb <= 64 && ns <= 64 {
                 let mut bank_mask: u64 = 0;
                 let mut subbank_masks: Vec<u64> = vec![0u64; nb];
                 for &addr in lane_addrs {
-                    let word = addr / word_bytes;
-                    let bank = (word % num_banks) as usize;
-                    let subbank = ((word / num_banks) % num_subbanks) as usize;
+                    let (bank, subbank) = decode_smem_bank_subbank(&self.smem_config, addr);
                     bank_mask |= 1u64 << bank;
                     subbank_masks[bank] |= 1u64 << subbank;
                 }
@@ -115,9 +108,7 @@ impl CoreTimingModel {
                 let mut banks = std::collections::HashSet::new();
                 let mut subbanks = std::collections::HashSet::new();
                 for &addr in lane_addrs {
-                    let word = addr / word_bytes;
-                    let bank = (word % num_banks) as usize;
-                    let subbank = ((word / num_banks) % num_subbanks) as usize;
+                    let (bank, subbank) = decode_smem_bank_subbank(&self.smem_config, addr);
                     banks.insert(bank);
                     subbanks.insert((bank, subbank));
                 }

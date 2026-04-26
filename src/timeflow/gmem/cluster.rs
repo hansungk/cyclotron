@@ -411,6 +411,10 @@ impl ClusterGmemGraph {
             }
 
             if self.hierarchy.l0[core_id].has_entry(0, lines.l0_line) {
+                if track_stats {
+                    self.hierarchy.l0[core_id].banks[0].stats.record_merge();
+                    self.cores[core_id].stats.record_merge();
+                }
                 let ready_at = self.hierarchy.l0[core_id]
                     .merge_request(0, lines.l0_line, request.clone())
                     .unwrap_or(now.saturating_add(1));
@@ -425,35 +429,32 @@ impl ClusterGmemGraph {
             }
 
             if !self.hierarchy.l0[core_id].can_allocate(0, lines.l0_line) {
-                return self.rollback_and_reject_queue_full(
-                    now,
-                    request,
-                    core_id,
-                    Some(QueueFullBankTarget::L0 { core_id, bank: 0 }),
-                    None,
-                )
-                .map(|_| unreachable!());
+                return self
+                    .rollback_and_reject_queue_full(
+                        now,
+                        request,
+                        core_id,
+                        Some(QueueFullBankTarget::L0 { core_id, bank: 0 }),
+                        None,
+                    )
+                    .map(|_| unreachable!());
             }
 
-            let l0_new = match self.hierarchy.l0[core_id]
-                .ensure_entry(0, lines.l0_line, MissMetadata::from_request(&request))
-            {
+            let l0_new = match self.hierarchy.l0[core_id].ensure_entry(
+                0,
+                lines.l0_line,
+                MissMetadata::from_request(&request),
+            ) {
                 Ok(new_entry) => new_entry,
                 Err(_) => {
-                    return self.rollback_and_reject_queue_full(now, request, core_id, None, None)
+                    return self
+                        .rollback_and_reject_queue_full(now, request, core_id, None, None)
                         .map(|_| unreachable!());
                 }
             };
 
-            return self.issue_fragmented_parent(
-                core_id,
-                now,
-                request,
-                &lines,
-                l0_new,
-                false,
-                false,
-            );
+            return self
+                .issue_fragmented_parent(core_id, now, request, &lines, l0_new, false, false);
         }
         let miss_level =
             self.record_cache_accesses(core_id, cluster_id, &mut request, &lines, track_stats);
@@ -590,6 +591,18 @@ impl ClusterGmemGraph {
             // Push/record original completions
             for (request, ticket) in drained.iter() {
                 let ticket_ready_at = ticket.ready_at();
+                if request.kind.is_mem()
+                    && !request.l1_hit
+                    && !request.l2_hit
+                    && self.stats_enabled_for(request.addr)
+                {
+                    if request.l2_bank < self.hierarchy.l2.bank_count() {
+                        self.hierarchy.l2.banks[request.l2_bank]
+                            .stats
+                            .record_outer_response();
+                    }
+                    self.cores[request.core_id].stats.record_outer_response();
+                }
                 self.handle_ready_completion(request.clone(), ticket_ready_at, now);
             }
 
@@ -601,7 +614,12 @@ impl ClusterGmemGraph {
         }
     }
 
-    fn handle_ready_completion(&mut self, request: GmemRequest, ticket_ready_at: Cycle, now: Cycle) {
+    fn handle_ready_completion(
+        &mut self,
+        request: GmemRequest,
+        ticket_ready_at: Cycle,
+        now: Cycle,
+    ) {
         if request.fragment_parent_id.is_some() {
             self.apply_completion_effects(&request);
             self.record_fragment_child_completion(request, ticket_ready_at, now);
@@ -655,16 +673,23 @@ impl ClusterGmemGraph {
         retry_at: Cycle,
         request: GmemRequest,
     ) {
-        self.pending_fragment_issues.push_back(PendingFragmentIssue {
-            core_id,
-            parent_id,
-            l0_line,
-            retry_at,
-            request,
-        });
+        self.pending_fragment_issues
+            .push_back(PendingFragmentIssue {
+                core_id,
+                parent_id,
+                l0_line,
+                retry_at,
+                request,
+            });
     }
 
-    fn update_fragment_ready_at(&mut self, parent_id: u64, core_id: usize, l0_line: u64, ready_at: Cycle) {
+    fn update_fragment_ready_at(
+        &mut self,
+        parent_id: u64,
+        core_id: usize,
+        l0_line: u64,
+        ready_at: Cycle,
+    ) {
         if let Some(state) = self.fragment_gathers.get_mut(&parent_id) {
             state.ticket_ready_at = state.ticket_ready_at.max(ready_at);
             if self.policy.l0_enabled && core_id < self.hierarchy.l0.len() {
@@ -724,7 +749,12 @@ impl ClusterGmemGraph {
 
         let child_count = (self.policy.l0_line_bytes.max(self.policy.l1_line_bytes)
             / self.policy.l1_line_bytes.max(1))
-            .max(1) as usize;
+        .max(1) as usize;
+        if self.stats_enabled_for(request.addr) {
+            self.cores[core_id]
+                .stats
+                .record_fragment_children(child_count);
+        }
 
         request.fill_l0_only = true;
         self.fragment_gathers.insert(
@@ -744,7 +774,12 @@ impl ClusterGmemGraph {
         for child in children {
             match self.issue(core_id, now, child) {
                 Ok(issue) => {
-                    self.update_fragment_ready_at(parent_id, core_id, lines.l0_line, issue.ticket.ready_at());
+                    self.update_fragment_ready_at(
+                        parent_id,
+                        core_id,
+                        lines.l0_line,
+                        issue.ticket.ready_at(),
+                    );
                 }
                 Err(err) => {
                     self.queue_fragment_child(
@@ -997,6 +1032,10 @@ impl ClusterGmemGraph {
                     });
                 }
                 if self.hierarchy.l0[core_id].has_entry(0, l0_line) {
+                    if self.stats_enabled_for(request.addr) {
+                        self.hierarchy.l0[core_id].banks[0].stats.record_merge();
+                        self.cores[core_id].stats.record_merge();
+                    }
                     let bytes = request.bytes;
                     let ready_at = self.hierarchy.l0[core_id]
                         .merge_request(0, l0_line, request)
@@ -1043,6 +1082,14 @@ impl ClusterGmemGraph {
                 }
 
                 if self.hierarchy.l1[cluster_id].has_entry(l1_bank, l1_line) {
+                    if self.stats_enabled_for(request.addr)
+                        && l1_bank < self.hierarchy.l1[cluster_id].bank_count()
+                    {
+                        self.hierarchy.l1[cluster_id].banks[l1_bank]
+                            .stats
+                            .record_merge();
+                        self.cores[core_id].stats.record_merge();
+                    }
                     let bytes = request.bytes;
                     let bypass_l0 = request.bypass_l0;
                     let ready_at = self.hierarchy.l1[cluster_id]
@@ -1153,6 +1200,12 @@ impl ClusterGmemGraph {
                 }
 
                 if self.hierarchy.l2.has_entry(l2_bank, l2_line) {
+                    if self.stats_enabled_for(request.addr)
+                        && l2_bank < self.hierarchy.l2.bank_count()
+                    {
+                        self.hierarchy.l2.banks[l2_bank].stats.record_merge();
+                        self.cores[core_id].stats.record_merge();
+                    }
                     let bytes = request.bytes;
                     let bypass_l0 = request.bypass_l0;
                     let ready_at = self
@@ -1211,6 +1264,15 @@ impl ClusterGmemGraph {
                         );
                     }
                 };
+
+                if self.stats_enabled_for(request.addr) && l2_new {
+                    if l2_bank < self.hierarchy.l2.bank_count() {
+                        self.hierarchy.l2.banks[l2_bank]
+                            .stats
+                            .record_outer_request();
+                    }
+                    self.cores[core_id].stats.record_outer_request();
+                }
 
                 Ok(AllocationResult::Continue {
                     l0_new,

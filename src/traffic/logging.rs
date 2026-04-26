@@ -16,15 +16,81 @@ pub struct PatternCheckpoint {
 pub struct TrafficLogger;
 
 impl TrafficLogger {
-    pub fn log_pattern_checkpoint(core_id: usize, pattern_name: &str, cycle: u64) {
-        println!(
-            "[TRAFFIC] core {} {} finished at time {:>10}",
-            core_id, pattern_name, cycle
+    fn sanitize_token(s: &str) -> String {
+        s.replace(' ', "_")
+    }
+
+    fn op_from_pattern(pattern_name: &str) -> &'static str {
+        if pattern_name.ends_with("_w") {
+            "w"
+        } else if pattern_name.ends_with("_r") {
+            "r"
+        } else {
+            "na"
+        }
+    }
+
+    pub fn log_pattern_checkpoint(
+        domain: &str,
+        core_id: usize,
+        pattern_name: &str,
+        cycle: u64,
+        duration: u64,
+    ) {
+        Self::log_pattern_checkpoint_with_metadata(
+            domain,
+            "traffic_frontend",
+            core_id,
+            pattern_name,
+            cycle,
+            duration,
+            0,
+            0,
+            0,
+            0,
+            0,
         );
     }
 
-    pub fn log_core_done(core_id: usize) {
-        println!("[TRAFFIC] core {} all done!", core_id);
+    #[allow(clippy::too_many_arguments)]
+    pub fn log_pattern_checkpoint_with_metadata(
+        domain: &str,
+        suite: &str,
+        core_id: usize,
+        pattern_name: &str,
+        cycle: u64,
+        duration: u64,
+        reqs_per_lane: u32,
+        active_lanes: usize,
+        issue_gap: u64,
+        max_outstanding: usize,
+        working_set: u64,
+    ) {
+        let pattern = Self::sanitize_token(pattern_name);
+        let op = Self::op_from_pattern(pattern_name);
+        let suite = Self::sanitize_token(suite);
+        println!(
+            "[STIM] domain={} suite={} phase=traffic pattern={} op={} cycle={} duration={} reqs_per_lane={} active_lanes={} issue_gap={} max_outstanding={} working_set={} wait_cycles=0 note=core_{}",
+            domain,
+            suite,
+            pattern,
+            op,
+            cycle,
+            duration,
+            reqs_per_lane,
+            active_lanes,
+            issue_gap,
+            max_outstanding,
+            working_set,
+            core_id
+        );
+    }
+
+    pub fn log_core_done(domain: &str, core_id: usize, cycle: u64) {
+        println!(
+            "[STIM] domain={} suite=traffic_frontend phase=report pattern=none op=na cycle={} duration=0 reqs_per_lane=0 active_lanes=0 issue_gap=0 max_outstanding=0 working_set=0 wait_cycles=0 note=core_{}_done",
+            domain, cycle, core_id
+        );
     }
 
     pub fn write_json(

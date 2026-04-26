@@ -108,10 +108,16 @@ impl Default for TrafficLoggingConfig {
 #[derive(Debug, Deserialize, Clone)]
 #[serde(default)]
 pub struct TrafficPatternSpec {
+    pub suite: String,
     pub name: String,
     pub kind: String,
     pub req_bytes: u32,
     pub op: String,
+    pub reqs_per_pattern: Option<u32>,
+    pub active_lanes: Option<usize>,
+    pub max_inflight_per_lane: Option<usize>,
+    pub issue_gap: u64,
+    pub base_offset_bytes: u32,
     pub warp_stride: u32,
     pub lane_stride: u32,
     pub tile_m: u32,
@@ -127,10 +133,16 @@ pub struct TrafficPatternSpec {
 impl Default for TrafficPatternSpec {
     fn default() -> Self {
         Self {
+            suite: "traffic_frontend".to_string(),
             name: String::new(),
             kind: String::new(),
             req_bytes: 4,
             op: "read".to_string(),
+            reqs_per_pattern: None,
+            active_lanes: None,
+            max_inflight_per_lane: None,
+            issue_gap: 0,
+            base_offset_bytes: 0,
             warp_stride: 1,
             lane_stride: 1,
             tile_m: 16,

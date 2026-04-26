@@ -1,45 +1,49 @@
 #!/usr/bin/env python3
-"""Run Cyclotron SMEM traffic frontend and compare checkpoints to an RTL .out file.
+"""Compare Cyclotron SMEM traffic frontend output against RTL stimulus logs.
 
-Usage:
-  python3 tuning_scripts/compare_smem_run.py /path/to/smem_rtl_output1.out
+By default this scans ../tuning_files/smem, ignores stale/non-tuning logs such
+as smem_gemmini_synth.out, and prints one comparison table per RTL .out file.
 """
 
 from __future__ import annotations
 
 import argparse
 import math
-import re
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-
-TRAFFIC_RE = re.compile(r"\[TRAFFIC\]\s+core\s+\d+\s+(.+)\s+finished at time\s+(\d+)")
-
-
-@dataclass
-class Checkpoint:
-    pattern: str
-    cycle: int
-
-
-def parse_checkpoints_from_text(text: str) -> list[Checkpoint]:
-    checkpoints: list[Checkpoint] = []
-    for line in text.splitlines():
-        match = TRAFFIC_RE.search(line)
-        if not match:
-            continue
-        checkpoints.append(Checkpoint(pattern=match.group(1), cycle=int(match.group(2))))
-    return checkpoints
+from tune_smem_primitives import (
+    USEFUL_LOGS,
+    StimRow,
+    align,
+    discover_logs,
+    parse_out,
+    score_rows,
+    write_traffic_config,
+)
 
 
-def parse_rtl_out(path: Path) -> list[Checkpoint]:
-    return parse_checkpoints_from_text(path.read_text())
+@dataclass(frozen=True)
+class FileComparison:
+    source: Path
+    rows: list[tuple[StimRow, StimRow, int]]
 
 
-def run_cyclotron(cyclotron_root: Path, sim_config: Path, traffic_config: Path) -> list[Checkpoint]:
+def parse_cyclotron_rows(text: str, source: str) -> list[StimRow]:
+    from tune_smem_primitives import parse_rows
+
+    return parse_rows(text, source)
+
+
+def run_cyclotron(
+    cyclotron_root: Path,
+    sim_config: Path,
+    traffic_config: Path,
+    run_timeout_seconds: int,
+) -> list[StimRow]:
     cmd = [
         "cargo",
         "run",
@@ -52,128 +56,174 @@ def run_cyclotron(cyclotron_root: Path, sim_config: Path, traffic_config: Path) 
         "--traffic-config",
         str(traffic_config),
     ]
-
     proc = subprocess.run(
         cmd,
         cwd=cyclotron_root,
         capture_output=True,
         text=True,
+        timeout=run_timeout_seconds,
     )
-
-    combined_output = f"{proc.stdout}\n{proc.stderr}"
-    checkpoints = parse_checkpoints_from_text(combined_output)
-
+    output = f"{proc.stdout}\n{proc.stderr}"
+    rows = parse_cyclotron_rows(output, traffic_config.name)
     if proc.returncode != 0:
-        print(combined_output)
-        raise RuntimeError(f"Cyclotron run failed with exit code {proc.returncode}")
-
-    if not checkpoints:
-        print(combined_output)
-        raise RuntimeError("Cyclotron run completed but no [TRAFFIC] checkpoints were found")
-
-    return checkpoints
-
-
-def align_checkpoints(
-    rtl: list[Checkpoint], cyclotron: list[Checkpoint]
-) -> list[tuple[str, int, int, int, int]]:
-    if len(rtl) != len(cyclotron):
-        raise RuntimeError(
-            f"Checkpoint count mismatch: RTL={len(rtl)}, Cyclotron={len(cyclotron)}"
-        )
-
-    rows: list[tuple[str, int, int, int, int]] = []
-    accumulated_abs_diff = 0
-    prev_rtl_cycle = 0
-    prev_cyclotron_cycle = 0
-
-    for idx, (rt, cy) in enumerate(zip(rtl, cyclotron)):
-        if rt.pattern != cy.pattern:
-            raise RuntimeError(
-                "Pattern mismatch at index "
-                f"{idx}: RTL='{rt.pattern}', Cyclotron='{cy.pattern}'"
-            )
-
-        rtl_pattern_cycles = rt.cycle - prev_rtl_cycle
-        cyclotron_pattern_cycles = cy.cycle - prev_cyclotron_cycle
-        diff = cyclotron_pattern_cycles - rtl_pattern_cycles
-        accumulated_abs_diff += abs(diff)
-
-        rows.append((rt.pattern, rt.cycle, cy.cycle, diff, accumulated_abs_diff))
-        prev_rtl_cycle = rt.cycle
-        prev_cyclotron_cycle = cy.cycle
+        print(output)
+        raise RuntimeError(f"Cyclotron failed with exit code {proc.returncode}")
+    if not rows:
+        print(output)
+        raise RuntimeError("Cyclotron emitted no SMEM [STIM] traffic rows")
     return rows
 
 
-def print_table(rows: list[tuple[str, int, int, int, int]]) -> None:
-    pattern_w = max(len("pattern"), *(len(r[0]) for r in rows))
+def pct_diff(diff: int, rtl_duration: int) -> float:
+    if rtl_duration == 0:
+        return math.nan
+    return 100.0 * diff / rtl_duration
 
-    print(
-        f"{'pattern':<{pattern_w}}  "
-        f"{'rtl_cycle':>12}  "
-        f"{'cyclotron_cycle':>15}  "
-        f"{'diff':>10}  "
-        f"{'accumulated_abs_diff':>20}"
+
+def format_pct(value: float) -> str:
+    if math.isnan(value):
+        return "na"
+    return f"{value:.2f}%"
+
+
+def compare_file(
+    cyclotron_root: Path,
+    sim_config: Path,
+    rtl_out: Path,
+    tmpdir: Path,
+    run_timeout_seconds: int,
+) -> FileComparison:
+    rtl_rows = parse_out(rtl_out)
+    traffic_config = tmpdir / f"{rtl_out.stem}.traffic.toml"
+    write_traffic_config(traffic_config, rtl_rows)
+    cyclotron_rows = run_cyclotron(
+        cyclotron_root,
+        sim_config,
+        traffic_config,
+        run_timeout_seconds,
     )
-    print("-" * (pattern_w + 2 + 12 + 2 + 15 + 2 + 10 + 2 + 20))
+    return FileComparison(rtl_out, align(rtl_rows, cyclotron_rows))
 
-    for pattern, rtl_cycle, cyclotron_cycle, diff, accumulated_abs_diff in rows:
+
+def print_file_table(comparison: FileComparison) -> None:
+    rows = comparison.rows
+    score = score_rows(rows)
+    suite_w = max(len("suite"), *(len(rtl.suite) for rtl, _cyc, _diff in rows))
+    pattern_w = max(len("pattern"), *(len(rtl.pattern) for rtl, _cyc, _diff in rows))
+
+    print("")
+    print(f"file: {comparison.source.name}")
+    print(
+        f"summary: count={score.count} mae={score.mae:.3f} "
+        f"rmse={score.rmse:.3f} max_abs={score.max_abs} total_abs={score.total_abs}"
+    )
+    print(
+        f"{'suite':<{suite_w}}  "
+        f"{'pattern':<{pattern_w}}  "
+        f"{'op':>2}  "
+        f"{'rtl_cycle':>10}  "
+        f"{'cyc_cycle':>10}  "
+        f"{'rtl_dur':>9}  "
+        f"{'cyc_dur':>9}  "
+        f"{'diff':>9}  "
+        f"{'%diff':>9}"
+    )
+    print(
+        "-"
+        * (
+            suite_w
+            + pattern_w
+            + 2
+            + 10
+            + 10
+            + 9
+            + 9
+            + 9
+            + 9
+            + 18
+        )
+    )
+    for rtl, cyc, diff in rows:
         print(
-            f"{pattern:<{pattern_w}}  "
-            f"{rtl_cycle:>12}  "
-            f"{cyclotron_cycle:>15}  "
-            f"{diff:>10}  "
-            f"{accumulated_abs_diff:>20}"
+            f"{rtl.suite:<{suite_w}}  "
+            f"{rtl.pattern:<{pattern_w}}  "
+            f"{rtl.op:>2}  "
+            f"{rtl.cycle:>10}  "
+            f"{cyc.cycle:>10}  "
+            f"{rtl.duration:>9}  "
+            f"{cyc.duration:>9}  "
+            f"{diff:>9}  "
+            f"{format_pct(pct_diff(diff, rtl.duration)):>9}"
         )
 
 
-def print_overall_error(rows: list[tuple[str, int, int, int, int]]) -> None:
-    diffs = [r[3] for r in rows]
-    abs_diffs = [abs(d) for d in diffs]
-
-    mae = sum(abs_diffs) / len(abs_diffs)
-    rmse = math.sqrt(sum(d * d for d in diffs) / len(diffs))
-    max_abs = max(abs_diffs)
-    total_abs = sum(abs_diffs)
-
-    print("\noverall_error")
-    print(f"{'mae':<16}{mae:>12.3f}")
-    print(f"{'rmse':<16}{rmse:>12.3f}")
-    print(f"{'max_abs_diff':<16}{max_abs:>12}")
-    print(f"{'total_abs_diff':<16}{total_abs:>12}")
+def print_overall(comparisons: list[FileComparison]) -> None:
+    all_rows = [row for comparison in comparisons for row in comparison.rows]
+    score = score_rows(all_rows)
+    print("")
+    print("overall")
+    print(f"{'files':<16}{len(comparisons):>12}")
+    print(f"{'rows':<16}{score.count:>12}")
+    print(f"{'mae':<16}{score.mae:>12.3f}")
+    print(f"{'rmse':<16}{score.rmse:>12.3f}")
+    print(f"{'max_abs_diff':<16}{score.max_abs:>12}")
+    print(f"{'total_abs_diff':<16}{score.total_abs:>12}")
 
 
 def main() -> int:
     script_dir = Path(__file__).resolve().parent
     cyclotron_root = script_dir.parent
+    default_logs = cyclotron_root.parent / "tuning_files" / "smem"
 
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("rtl_out", type=Path, help="Path to RTL .out file")
+    parser.add_argument(
+        "rtl",
+        nargs="?",
+        type=Path,
+        default=default_logs,
+        help="RTL .out file or directory. Default: ../tuning_files/smem",
+    )
     parser.add_argument(
         "--sim-config",
         type=Path,
         default=cyclotron_root / "config.toml",
-        help="Cyclotron sim config path (default: config.toml)",
+        help="Cyclotron sim config path",
     )
     parser.add_argument(
-        "--traffic-config",
-        type=Path,
-        default=cyclotron_root / "config/traffic/smem_radiance.toml",
-        help="Traffic config path (default: config/traffic/smem_radiance.toml)",
+        "--run-timeout-seconds",
+        type=int,
+        default=120,
+        help="timeout for each Cyclotron run",
     )
     args = parser.parse_args()
 
-    rtl_out = args.rtl_out.resolve()
-    if not rtl_out.exists():
-        print(f"RTL .out file not found: {rtl_out}", file=sys.stderr)
+    rtl_path = args.rtl.resolve()
+    if not rtl_path.exists():
+        print(f"RTL path not found: {rtl_path}", file=sys.stderr)
         return 1
 
-    rtl = parse_rtl_out(rtl_out)
-    cyclotron = run_cyclotron(cyclotron_root, args.sim_config, args.traffic_config)
-    rows = align_checkpoints(rtl, cyclotron)
+    log_paths = discover_logs(rtl_path)
+    if rtl_path.is_dir():
+        log_paths = [path for path in log_paths if path.name in USEFUL_LOGS]
+    if not log_paths:
+        print(f"no useful SMEM RTL logs found under {rtl_path}", file=sys.stderr)
+        return 1
 
-    print_table(rows)
-    print_overall_error(rows)
+    comparisons: list[FileComparison] = []
+    with tempfile.TemporaryDirectory(prefix="cyclotron_smem_compare_") as td:
+        tmpdir = Path(td)
+        for rtl_out in log_paths:
+            comparison = compare_file(
+                cyclotron_root,
+                args.sim_config.resolve(),
+                rtl_out,
+                tmpdir,
+                args.run_timeout_seconds,
+            )
+            comparisons.append(comparison)
+            print_file_table(comparison)
+
+    print_overall(comparisons)
     return 0
 
 

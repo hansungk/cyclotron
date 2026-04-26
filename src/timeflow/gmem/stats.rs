@@ -16,6 +16,10 @@ pub struct GmemStats {
     inflight: u64,
     max_inflight: u64,
     max_completion_queue: u64,
+    merges: u64,
+    fragment_children_issued: u64,
+    outer_requests: u64,
+    outer_responses: u64,
     last_completion_cycle: Option<Cycle>,
 }
 
@@ -68,6 +72,22 @@ impl GmemStats {
         self.max_completion_queue
     }
 
+    pub fn merges(&self) -> u64 {
+        self.merges
+    }
+
+    pub fn fragment_children_issued(&self) -> u64 {
+        self.fragment_children_issued
+    }
+
+    pub fn outer_requests(&self) -> u64 {
+        self.outer_requests
+    }
+
+    pub fn outer_responses(&self) -> u64 {
+        self.outer_responses
+    }
+
     pub fn last_completion_cycle(&self) -> Option<Cycle> {
         self.last_completion_cycle
     }
@@ -107,6 +127,22 @@ impl GmemStats {
         self.max_completion_queue = self.max_completion_queue.max(completion_len as u64);
     }
 
+    pub fn record_merge(&mut self) {
+        self.merges = self.merges.saturating_add(1);
+    }
+
+    pub fn record_fragment_children(&mut self, count: usize) {
+        self.fragment_children_issued = self.fragment_children_issued.saturating_add(count as u64);
+    }
+
+    pub fn record_outer_request(&mut self) {
+        self.outer_requests = self.outer_requests.saturating_add(1);
+    }
+
+    pub fn record_outer_response(&mut self) {
+        self.outer_responses = self.outer_responses.saturating_add(1);
+    }
+
     pub fn accumulate_from(&mut self, other: &GmemStats) {
         *self += other;
     }
@@ -127,6 +163,12 @@ impl AddAssign<&GmemStats> for GmemStats {
         self.bytes_completed = self.bytes_completed.saturating_add(other.bytes_completed);
         self.max_inflight = self.max_inflight.max(other.max_inflight);
         self.max_completion_queue = self.max_completion_queue.max(other.max_completion_queue);
+        self.merges = self.merges.saturating_add(other.merges);
+        self.fragment_children_issued = self
+            .fragment_children_issued
+            .saturating_add(other.fragment_children_issued);
+        self.outer_requests = self.outer_requests.saturating_add(other.outer_requests);
+        self.outer_responses = self.outer_responses.saturating_add(other.outer_responses);
         self.last_completion_cycle = match (self.last_completion_cycle, other.last_completion_cycle)
         {
             (Some(a), Some(b)) => Some(a.max(b)),

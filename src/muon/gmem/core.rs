@@ -304,8 +304,28 @@ impl CoreTimingModel {
         self.smem_completion_events.drain(..).collect()
     }
 
-    pub fn simulate_smem_pattern(&self, addrs: &[Vec<u64>], is_read: bool) -> u64 {
-        self.graph.simulate_smem_pattern(addrs, is_read)
+    pub fn simulate_smem_pattern(
+        &self,
+        addrs: &[Vec<u64>],
+        is_read: bool,
+        req_bytes: u32,
+        max_inflight_per_lane: usize,
+        issue_gap: u64,
+    ) -> u64 {
+        self.graph.simulate_smem_pattern(
+            addrs,
+            is_read,
+            req_bytes,
+            max_inflight_per_lane,
+            issue_gap,
+        )
+    }
+
+    pub fn simulate_smem_patterns(
+        &self,
+        streams: Vec<Vec<crate::timeflow::smem::SmemPatternRun>>,
+    ) -> Vec<crate::timeflow::smem::SmemPatternResult> {
+        self.graph.simulate_smem_patterns(streams)
     }
 
     pub fn simulate_gmem_pattern_hierarchy(
@@ -325,7 +345,8 @@ impl CoreTimingModel {
                 .map(|addr| (addr / l1_line_bytes) * l1_line_bytes)
                 .collect();
             for line in unique_lines {
-                let mut request = crate::timeflow::GmemRequest::new(0, req_bytes.max(1), 1, is_load);
+                let mut request =
+                    crate::timeflow::GmemRequest::new(0, req_bytes.max(1), 1, is_load);
                 request.addr = line;
                 request.cluster_id = cluster_id;
                 request.stall_on_completion = false;
@@ -352,7 +373,10 @@ impl CoreTimingModel {
                     break;
                 };
                 request.core_id = self.core_id;
-                match self.graph.cluster_gmem_issue(self.core_id, now, request.clone()) {
+                match self
+                    .graph
+                    .cluster_gmem_issue(self.core_id, now, request.clone())
+                {
                     Ok(_) => inflight += 1,
                     Err(reject) => {
                         request = reject.payload;
@@ -406,7 +430,8 @@ impl CoreTimingModel {
                     self.next_gmem_id
                 };
 
-                let mut request = crate::timeflow::GmemRequest::new(0, total_bytes, active_lanes, is_load);
+                let mut request =
+                    crate::timeflow::GmemRequest::new(0, total_bytes, active_lanes, is_load);
                 request.id = request_id;
                 request.addr = wave.iter().copied().min().unwrap_or(0);
                 request.cluster_id = cluster_id;

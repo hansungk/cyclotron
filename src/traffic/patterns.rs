@@ -93,9 +93,15 @@ struct RandomStreamKey {
 
 #[derive(Debug, Clone)]
 pub struct CompiledPattern {
+    pub suite: String,
     pub name: String,
     pub op: PatternOp,
     pub req_bytes: u32,
+    pub reqs_per_pattern: u32,
+    pub active_lanes: usize,
+    pub max_inflight_per_lane: usize,
+    pub issue_gap: u64,
+    base_offset_bytes: u64,
     within_bytes: u64,
     kind: PatternKind,
 }
@@ -185,7 +191,6 @@ impl CompiledPattern {
 pub struct PatternEngine {
     patterns: Vec<CompiledPattern>,
     lanes: usize,
-    reqs_per_pattern: usize,
     default_base: u64,
     random_tables: Vec<Option<Vec<u64>>>, // flattened [lane * reqs_per_pattern + t]
 }
@@ -194,18 +199,16 @@ impl PatternEngine {
     pub fn new(config: &TrafficConfig) -> Self {
         let lanes = config.num_lanes.max(1);
         let default_base = config.address.smem_base;
-        let reqs_per_pattern = config.reqs_per_pattern.max(1) as usize;
         let patterns: Vec<CompiledPattern> = config
             .patterns
             .iter()
             .enumerate()
             .map(|(idx, spec)| compile_pattern(spec, idx, config))
             .collect();
-        let random_tables = precompute_random_tables(&patterns, lanes, reqs_per_pattern);
+        let random_tables = precompute_random_tables(&patterns, lanes);
         Self {
             patterns,
             lanes,
-            reqs_per_pattern,
             default_base,
             random_tables,
         }
@@ -243,7 +246,10 @@ impl PatternEngine {
             .random_offset(pattern_idx, req_idx, lane_idx)
             .unwrap_or_else(|| pattern.offset_bytes(req_idx, lane_idx, self.lanes));
         let within = pattern.within_bytes.max(pattern.req_bytes.max(1) as u64);
-        Some(base.saturating_add(offset % within))
+        Some(
+            base.saturating_add(pattern.base_offset_bytes)
+                .saturating_add(offset % within),
+        )
     }
 
     fn random_offset(&self, pattern_idx: usize, req_idx: u32, lane_idx: usize) -> Option<u64> {
@@ -251,20 +257,18 @@ impl PatternEngine {
         if lane_idx >= self.lanes {
             return None;
         }
+        let pattern = self.patterns.get(pattern_idx)?;
+        let reqs_per_pattern = pattern.reqs_per_pattern.max(1) as usize;
         let idx = lane_idx
-            .checked_mul(self.reqs_per_pattern)?
+            .checked_mul(reqs_per_pattern)?
             .checked_add(req_idx as usize)?;
         table.get(idx).copied()
     }
 }
 
-fn precompute_random_tables(
-    patterns: &[CompiledPattern],
-    lanes: usize,
-    reqs_per_pattern: usize,
-) -> Vec<Option<Vec<u64>>> {
+fn precompute_random_tables(patterns: &[CompiledPattern], lanes: usize) -> Vec<Option<Vec<u64>>> {
     let mut tables: Vec<Option<Vec<u64>>> = vec![None; patterns.len()];
-    if patterns.is_empty() || lanes == 0 || reqs_per_pattern == 0 {
+    if patterns.is_empty() || lanes == 0 {
         return tables;
     }
 
@@ -277,6 +281,7 @@ fn precompute_random_tables(
             let stream = streams
                 .entry(key)
                 .or_insert_with(|| JavaRandom::new(key.seed as i64));
+            let reqs_per_pattern = pattern.reqs_per_pattern.max(1) as usize;
             let slot = tables[pattern_idx]
                 .get_or_insert_with(|| vec![0; lanes.saturating_mul(reqs_per_pattern)]);
             let row_base = lane.saturating_mul(reqs_per_pattern);
@@ -301,6 +306,19 @@ fn compile_pattern(
 ) -> CompiledPattern {
     let kind_key = spec.kind.trim().to_ascii_lowercase();
     let req_bytes = spec.req_bytes.max(1);
+    let reqs_per_pattern = spec
+        .reqs_per_pattern
+        .unwrap_or(config.reqs_per_pattern)
+        .max(1);
+    let active_lanes = spec
+        .active_lanes
+        .unwrap_or(config.num_lanes)
+        .max(1)
+        .min(config.num_lanes.max(1));
+    let max_inflight_per_lane = spec
+        .max_inflight_per_lane
+        .unwrap_or(config.issue.max_inflight_per_lane)
+        .max(1);
     let op = parse_op(&spec.op);
     let within_default = config.address.smem_size_bytes.max(req_bytes as u64);
     let within_bytes = spec
@@ -348,9 +366,19 @@ fn compile_pattern(
     };
 
     CompiledPattern {
+        suite: if spec.suite.is_empty() {
+            "traffic_frontend".to_string()
+        } else {
+            spec.suite.clone()
+        },
         name,
         op,
         req_bytes,
+        reqs_per_pattern,
+        active_lanes,
+        max_inflight_per_lane,
+        issue_gap: spec.issue_gap,
+        base_offset_bytes: spec.base_offset_bytes as u64,
         within_bytes,
         kind,
     }
@@ -488,5 +516,21 @@ mod tests {
                 assert!((0x4000_0000..0x4000_0000 + 64).contains(&a1));
             }
         }
+    }
+
+    #[test]
+    fn pattern_issue_overrides_use_per_pattern_values() {
+        let mut p = spec("strided", "read");
+        p.reqs_per_pattern = Some(7);
+        p.max_inflight_per_lane = Some(3);
+        p.issue_gap = 2;
+
+        let cfg = base_cfg(vec![p], 16, 4096);
+        let engine = PatternEngine::new(&cfg);
+        let pattern = engine.pattern(0).unwrap();
+
+        assert_eq!(pattern.reqs_per_pattern, 7);
+        assert_eq!(pattern.max_inflight_per_lane, 3);
+        assert_eq!(pattern.issue_gap, 2);
     }
 }

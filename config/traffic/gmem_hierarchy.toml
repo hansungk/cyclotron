@@ -20,7 +20,7 @@ results_json = "logs/traffic/gmem_hierarchy_results.json"
 results_csv = "logs/traffic/gmem_hierarchy_results.csv"
 
 [[traffic.patterns]]
-name = "hot_line_r"
+name = "hot_line@4_r"
 kind = "strided"
 req_bytes = 4
 op = "read"
@@ -29,7 +29,16 @@ lane_stride = 0
 within_bytes = 64
 
 [[traffic.patterns]]
-name = "cold_stream_r"
+name = "hot_line@4_w"
+kind = "strided"
+req_bytes = 4
+op = "write"
+warp_stride = 0
+lane_stride = 0
+within_bytes = 64
+
+[[traffic.patterns]]
+name = "cold_stream(1)@4_r"
 kind = "strided"
 req_bytes = 4
 op = "read"
@@ -38,16 +47,16 @@ lane_stride = 8
 within_bytes = 1048576
 
 [[traffic.patterns]]
-name = "same_line_merge_r"
+name = "cold_stream(1)@4_w"
 kind = "strided"
 req_bytes = 4
-op = "read"
-warp_stride = 0
-lane_stride = 1
-within_bytes = 32
+op = "write"
+warp_stride = 1
+lane_stride = 8
+within_bytes = 1048576
 
 [[traffic.patterns]]
-name = "split_64_to_32_r"
+name = "split_64_to_32@4_r"
 kind = "strided"
 req_bytes = 4
 op = "read"
@@ -56,10 +65,68 @@ lane_stride = 8
 within_bytes = 64
 
 [[traffic.patterns]]
-name = "bank_hostile_r"
+name = "split_64_to_32@4_w"
+kind = "strided"
+req_bytes = 4
+op = "write"
+warp_stride = 0
+lane_stride = 8
+within_bytes = 64
+
+[[traffic.patterns]]
+name = "cross_32b_boundary@4_r"
 kind = "strided"
 req_bytes = 4
 op = "read"
+base_offset_bytes = 28
 warp_stride = 1
-lane_stride = 256
-within_bytes = 1048576
+lane_stride = 1
+within_bytes = 8
+
+[[traffic.patterns]]
+name = "cross_32b_boundary@4_w"
+kind = "strided"
+req_bytes = 4
+op = "write"
+base_offset_bytes = 28
+warp_stride = 1
+lane_stride = 1
+within_bytes = 8
+
+[[traffic.patterns]]
+name = "cross_64b_boundary@4_r"
+kind = "strided"
+req_bytes = 4
+op = "read"
+base_offset_bytes = 60
+warp_stride = 1
+lane_stride = 1
+within_bytes = 8
+
+[[traffic.patterns]]
+name = "cross_64b_boundary@4_w"
+kind = "strided"
+req_bytes = 4
+op = "write"
+base_offset_bytes = 60
+warp_stride = 1
+lane_stride = 1
+within_bytes = 8
+
+[[traffic.patterns]]
+name = "same_line_merge@4_r"
+kind = "strided"
+req_bytes = 4
+op = "read"
+warp_stride = 0
+lane_stride = 1
+within_bytes = 32
+
+[[traffic.patterns]]
+name = "same_line_merge@4_w"
+kind = "strided"
+req_bytes = 4
+op = "write"
+warp_stride = 0
+lane_stride = 1
+within_bytes = 32
