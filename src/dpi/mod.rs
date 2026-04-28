@@ -78,6 +78,8 @@ struct MemQueueLine {
     cluster_id: u32,
     core_id: u32,
     lane_id: u32,
+    req_cycle: u64,
+    resp_cycle: Option<u64>,
     store: bool,
     address: u32,
     size: u8,
@@ -696,6 +698,7 @@ pub unsafe fn cyclotron_backend_rs(
 pub unsafe extern "C" fn cyclotron_trace_rs(
     cluster_id: u32,
     core_id: u32,
+    cycle: u64,
     inst_valid: u8,
     inst_pc: u32,
     inst_warp_id: u32,
@@ -802,11 +805,12 @@ pub unsafe extern "C" fn cyclotron_trace_rs(
                 .as_ref()
                 .expect("trace connection not initialized")
                 .execute(
-                    "INSERT INTO inst (cluster_id, core_id, warp, pc, lane_mask, has_rs1, rs1_id, rs1_data, has_rs2, rs2_id, rs2_data)
-                                    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                    "INSERT INTO inst (cluster_id, core_id, cycle, warp, pc, lane_mask, has_rs1, rs1_id, rs1_data, has_rs2, rs2_id, rs2_data)
+                                    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
                     (
                         cluster_id,
                         core_id,
+                        cycle_to_sql(cycle),
                         inst_warp_id,
                         inst_pc,
                         _inst_tmask,
@@ -836,6 +840,7 @@ pub unsafe extern "C" fn cyclotron_trace_rs(
             dmem_resp_valid,
             dmem_resp_bits_tag,
             dmem_resp_bits_data,
+            cycle,
             false,
         );
 
@@ -854,6 +859,7 @@ pub unsafe extern "C" fn cyclotron_trace_rs(
             smem_resp_valid,
             smem_resp_bits_tag,
             smem_resp_bits_data,
+            cycle,
             true,
         );
     });
@@ -875,6 +881,11 @@ fn shift_data_to_lsb(data: u32, address: u32, size: u8) -> u32 {
     data_shifted & mask
 }
 
+fn cycle_to_sql(cycle: u64) -> i64 {
+    assert!(cycle <= i64::MAX as u64, "trace cycle exceeds SQLite INTEGER range");
+    cycle as i64
+}
+
 fn record_mem_bundle(
     conn: &Connection,
     queue: &mut MemQueue,
@@ -889,6 +900,7 @@ fn record_mem_bundle(
     resp_valid: &[u8],
     resp_tag: &[u32],
     resp_data: &[u32],
+    cycle: u64,
     is_smem: bool,
 ) {
     // request
@@ -908,6 +920,8 @@ fn record_mem_bundle(
                 cluster_id,
                 core_id,
                 lane_id: i as u32,
+                req_cycle: cycle,
+                resp_cycle: None,
                 store,
                 address,
                 size,
@@ -928,7 +942,7 @@ fn record_mem_bundle(
         let tag = resp_tag[i];
         let lane = i as u32;
         let data = resp_data[i];
-        match_response_in_mem_queue(queue, tag, lane, data);
+        match_response_in_mem_queue(queue, tag, lane, data, cycle);
     }
 
     if any_valid_response {
@@ -948,6 +962,7 @@ fn match_response_in_mem_queue(
     resp_tag: u32,
     resp_lane: u32,
     resp_data: u32,
+    resp_cycle: u64,
 ) {
     // iter_mut() equals the enqueue order
     let mut one_or_more_match = false;
@@ -966,6 +981,7 @@ fn match_response_in_mem_queue(
         }
 
         line.checked = true;
+        line.resp_cycle = Some(resp_cycle);
         one_or_more_match = true;
         break;
     }
@@ -1001,13 +1017,17 @@ fn record_mem_req_to_db(conn: &Connection, line: &MemQueueLine, is_smem: bool) {
     conn.execute(
         &format!(
             "INSERT INTO {mem}
-                    (cluster_id, core_id, lane_id, store, address, size, data)
-                    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"
+                    (cluster_id, core_id, lane_id, req_cycle, resp_cycle, store, address, size, data)
+                    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)"
         ),
         (
             line.cluster_id,
             line.core_id,
             line.lane_id,
+            cycle_to_sql(line.req_cycle),
+            line.resp_cycle
+                .map(cycle_to_sql)
+                .expect("memory trace line missing response cycle"),
             line.store,
             line.address,
             line.size,
