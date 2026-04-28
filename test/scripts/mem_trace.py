@@ -63,6 +63,7 @@ def parse_args():
 def query_rows(
     conn: sqlite3.Connection, table: str, address_range: tuple[int, int] | None, kind: str
 ):
+    table_cols = table_columns(conn, table)
     if kind == "read":
         kind_clause = "store = 0"
     elif kind == "write":
@@ -77,8 +78,20 @@ def query_rows(
         where_clauses.append("address >= ? AND address < ?")
         params.extend([start, end])
 
+    req_cycle_expr = "req_cycle" if "req_cycle" in table_cols else "0 AS req_cycle"
+    resp_cycle_expr = "resp_cycle" if "resp_cycle" in table_cols else "0 AS resp_cycle"
     sql = f"""
-        SELECT id, cluster_id, core_id, lane_id, store, address, size, data
+        SELECT
+            id,
+            {req_cycle_expr},
+            {resp_cycle_expr},
+            cluster_id,
+            core_id,
+            lane_id,
+            store,
+            address,
+            size,
+            data
         FROM {table}
         WHERE {" AND ".join(where_clauses)}
         ORDER BY id
@@ -86,25 +99,42 @@ def query_rows(
     return conn.execute(sql, params).fetchall()
 
 
+def table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    return {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+
+
 def fmt_hex(value: int, nbytes: int) -> str:
     return f"0x{value:0{nbytes * 2}x}"
 
 
 def print_table(rows):
-    headers = ["id", "cluster", "core", "lane", "op", "address", "size", "data"]
+    headers = [
+        "id",
+        "req_cycle",
+        "resp_cycle",
+        "cluster",
+        "core",
+        "lane",
+        "op",
+        "address",
+        "size",
+        "data",
+    ]
     str_rows = []
     for row in rows:
-        op = "W" if row[4] else "R"
+        op = "W" if row[6] else "R"
         str_rows.append(
             [
                 str(row[0]),
                 str(row[1]),
                 str(row[2]),
                 str(row[3]),
+                str(row[4]),
+                str(row[5]),
                 op,
-                fmt_hex(row[5], 4),
-                str(row[6]),
-                fmt_hex(row[7], max(1, row[6])),
+                fmt_hex(row[7], 4),
+                str(row[8]),
+                fmt_hex(row[9], max(1, row[8])),
             ]
         )
 
@@ -123,9 +153,9 @@ def print_table(rows):
 
 
 def clipped_payload(row, start: int, end: int) -> bytes:
-    address = row[5]
-    size = int(row[6])
-    data = int(row[7])
+    address = row[7]
+    size = int(row[8])
+    data = int(row[9])
     # trace DB stores request/load data already shifted to the LSB
     size = max(1, size)
     mask = (1 << (size * 8)) - 1
@@ -146,7 +176,7 @@ def dump_image(rows, start: int, end: int) -> bytes:
     size = max(0, end - start)
     image = bytearray(size)
     for row in rows:
-        address = row[5]
+        address = row[7]
         payload = clipped_payload(row, start, end)
         if not payload:
             continue
@@ -158,8 +188,8 @@ def dump_image(rows, start: int, end: int) -> bytes:
 def infer_range_from_rows(rows) -> tuple[int, int]:
     if not rows:
         return (0, 0)
-    start = min(int(row[5]) for row in rows)
-    end = max(int(row[5]) + max(1, int(row[6])) for row in rows)
+    start = min(int(row[7]) for row in rows)
+    end = max(int(row[7]) + max(1, int(row[8])) for row in rows)
     return (start, end)
 
 
