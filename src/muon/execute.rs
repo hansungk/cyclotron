@@ -620,6 +620,30 @@ impl ExecuteUnit {
         )
     }
 
+    pub fn custom3(issued_inst: &IssuedInst, lane: usize) -> Option<u32> {
+        let insts = phf_map! {
+            0b111_0101110u16 => InstImp("fexp.h", |[a]| {
+                let result = bf16::from_f32(bf16::from_bits((a & 0xffff) as u16).to_f32().exp())
+                    .to_bits();
+                if [0xffc0, 0x7fff, 0xffff].contains(&result) {
+                    0x7fc0
+                } else {
+                    sign_ext::<16>(result as u32) as u32
+                }
+            }),
+        };
+
+        insts
+            .get(&(f3_f7_mask!(issued_inst.f3, issued_inst.f7)))
+            .and_then(|imp| {
+                Some(print_and_execute!(
+                    imp,
+                    [issued_inst.rs1_data[lane].unwrap()]
+                ))
+            })
+            .or_else(|| panic!("unimplemented custom3 instruction"))
+    }
+
     /// Collect source operand values from the regfile.
     pub fn collect(ibuf: &MicroOp, rf: &[RegFile]) -> IssuedInst {
         let decoded = ibuf.inst;
@@ -797,6 +821,11 @@ impl ExecuteUnit {
                 neutrino.execute(&issued, cid, wid, tmask, &mut rf[first_lid]);
                 (empty, empty_mem, empty_swb)
             }
+            Opcode::CUSTOM3 => (
+                Self::collect_lanes(|lane| ExecuteUnit::custom3(&issued, lane), tmask, rf),
+                empty_mem,
+                empty_swb,
+            ),
             _ => {
                 panic!("unimplemented opcode 0x{:x}", issued.opcode);
             }

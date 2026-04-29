@@ -117,6 +117,12 @@ impl DecodedInst {
                 rs3: false,
                 rs4: false,
             },
+            Opcode::CUSTOM3 => HasRegs {
+                rs1: true,
+                rs2: false,
+                rs3: false,
+                rs4: false,
+            },
             _ => HasRegs::default(),
         }
     }
