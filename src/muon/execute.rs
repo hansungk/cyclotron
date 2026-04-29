@@ -328,6 +328,8 @@ impl ExecuteUnit {
             0b010_0010000u16 => InstImp("fsgnjx.s", |[a, b]| { fp32_fsgn_op(a, b, |x, y| { if y.bit(31) { -1.0 * x } else { x } }) }),
             0b000_0010100u16 => InstImp("fmin.s",   |[a, b]| { fp32_op(a, b, |x, y| { fp32_fminmax(x, y, true) }) }),
             0b001_0010100u16 => InstImp("fmax.s",   |[a, b]| { fp32_op(a, b, |x, y| { fp32_fminmax(x, y, false) }) }),
+            0b000_0010110u16 => InstImp("fmin.h",   |[a, b]| { bf16_op(a, b, |x, y| { if x.to_f32() < y.to_f32() { x } else { y } }) }),
+            0b001_0010110u16 => InstImp("fmax.h",   |[a, b]| { bf16_op(a, b, |x, y| { if x.to_f32() > y.to_f32() { x } else { y } }) }),
             0b010_1010000u16 => InstImp("feq.s",    |[a, b]| { fp32_cmp_op(a, b, |x, y| { x == y }) }),
             0b001_1010000u16 => InstImp("flt.s",    |[a, b]| { fp32_cmp_op(a, b, |x, y| { x < y }) }),
             0b000_1010000u16 => InstImp("fle.s",    |[a, b]| { fp32_cmp_op(a, b, |x, y| { x <= y }) }),
