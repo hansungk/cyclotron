@@ -750,6 +750,7 @@ impl ExecuteUnit {
                 let imp = match issued.f3 {
                     0 => InstDef("fence", 0),
                     1 => InstDef("fence.i", 1),
+                    2 => InstDef("fence.s", 2),
                     _ => panic!("unimplemented"),
                 };
                 print_and_unwrap!(imp);
