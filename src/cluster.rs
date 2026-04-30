@@ -23,6 +23,10 @@ impl Cluster {
         gmem: Arc<RwLock<FlatMemory>>,
     ) -> Self {
         let mut cores = Vec::new();
+        let shared_mem = Arc::new(RwLock::new(FlatMemory::new_with_size(
+            config.muon_config.smem_size,
+            None,
+        )));
         for cid in 0..config.muon_config.num_cores {
             cores.push(MuonCore::new(
                 Arc::new(config.muon_config),
@@ -30,6 +34,7 @@ impl Cluster {
                 cid, // cluster-local
                 logger,
                 gmem.clone(),
+                shared_mem.clone(),
             ));
         }
         Cluster {
@@ -49,6 +54,10 @@ impl Cluster {
         perf_log_session: Option<Arc<PerfLogSession>>,
     ) -> Self {
         let mut cores = Vec::new();
+        let shared_mem = Arc::new(RwLock::new(FlatMemory::new_with_size(
+            config.muon_config.smem_size,
+            None,
+        )));
         for cid in 0..config.muon_config.num_cores {
             let timing_core_id = id * config.muon_config.num_cores + cid;
             cores.push(MuonCore::new_timed(
@@ -57,6 +66,7 @@ impl Cluster {
                 cid,
                 logger,
                 gmem.clone(),
+                shared_mem.clone(),
                 config.timing_config.clone(),
                 timing_core_id,
                 id,

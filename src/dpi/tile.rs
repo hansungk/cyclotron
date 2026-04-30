@@ -221,7 +221,11 @@ pub unsafe extern "C" fn cyclotron_tile_tick_rs(
             let mem_resps = &pipe_context.staged_mem_resps;
 
             // MEM
-            let (writeback, _) = warp.mem(ex_wb, &mut core.shared_mem, Some(mem_resps));
+            let mut shared_mem = core
+                .shared_mem
+                .write()
+                .expect("shared memory lock poisoned");
+            let (writeback, _) = warp.mem(ex_wb, &mut *shared_mem, Some(mem_resps));
 
             // WB
             warp.writeback(&writeback);

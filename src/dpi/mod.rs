@@ -643,6 +643,10 @@ pub unsafe fn cyclotron_backend_rs(
     debug!("issue warp id is {}", issue_warp_id);
     debug!("{}", decoded);
 
+    let mut shared_mem = core
+        .shared_mem
+        .write()
+        .expect("shared memory lock poisoned");
     let (writeback, _) = core.warps[issue_warp_id as usize]
         .backend(
             MicroOp {
@@ -651,7 +655,7 @@ pub unsafe fn cyclotron_backend_rs(
             },
             &mut core.scheduler,
             neutrino,
-            &mut core.shared_mem,
+            &mut *shared_mem,
         )
         .expect("uh");
     // let writeback = core.execute(issue_warp_id.into(), issued, issue_tmask, neutrino);
