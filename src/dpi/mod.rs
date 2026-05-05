@@ -708,13 +708,13 @@ pub unsafe extern "C" fn cyclotron_trace_rs(
     inst_warp_id: u32,
     _inst_tmask: u32,
     _inst_rs1_enable: u8,
-    _inst_rs1_address: u8,
+    _inst_rs1_address: u32,
     inst_rs1_data_vec: *const u32,
     _inst_rs2_enable: u8,
-    _inst_rs2_address: u8,
+    _inst_rs2_address: u32,
     inst_rs2_data_vec: *const u32,
     _inst_rs3_enable: u8,
-    _inst_rs3_address: u8,
+    _inst_rs3_address: u32,
     inst_rs3_data_vec: *const u32,
     dmem_req_valid_vec: *const u8,
     dmem_req_bits_store_vec: *const u8,
@@ -1053,13 +1053,13 @@ pub unsafe extern "C" fn cyclotron_difftest_reg_rs(
     warp_id: u32,
     tmask: u32,
     rs1_enable: u8,
-    rs1_address: u8,
+    rs1_address: u32,
     rs1_data_vec: *const u32,
     rs2_enable: u8,
-    rs2_address: u8,
+    rs2_address: u32,
     rs2_data_vec: *const u32,
     rs3_enable: u8,
-    rs3_address: u8,
+    rs3_address: u32,
     rs3_data_vec: *const u32,
 ) {
     let mut context_guard = CELL.write().unwrap();
@@ -1120,7 +1120,7 @@ pub unsafe extern "C" fn cyclotron_difftest_reg_rs(
             panic!("DIFFTEST fail");
         }
 
-        let compare_reg_addr_and_exit = |_rtl: u8, _model: u8, _name: &str| {
+        let compare_reg_addr_and_exit = |_rtl: u32, _model: u8, _name: &str| {
             // register address check is disabled due to physical register renaming not being
             // implemented in cyclotron.  How registers are renamed is not specified in the ISA,
             // making hardening this in cyclotron awkward
