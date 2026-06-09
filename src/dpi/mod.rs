@@ -1255,6 +1255,7 @@ pub unsafe extern "C" fn profile_perf_counters_rs(
     cycles_dispatched: u64,
     cycles_eligible: u64,
     cycles_issued: u64,
+    acc_rs_occupancy: u64,
     per_warp_cycles_decoded_ptr: *const u64,
     per_warp_cycles_dispatched_ptr: *const u64,
     per_warp_cycles_eligible_ptr: *const u64,
@@ -1311,6 +1312,7 @@ pub unsafe extern "C" fn profile_perf_counters_rs(
     let avg_decoded_warps = all_warp_cycles_decoded as f32 / cycles as f32;
     let avg_dispatched_warps = all_warp_cycles_dispatched as f32 / cycles as f32;
     let avg_eligible_warps = all_warp_cycles_eligible as f32 / cycles as f32;
+    let avg_inst_window = acc_rs_occupancy as f32 / cycles as f32;
 
     let ipc = inst_retired as f32 / cycles as f32;
     let frac = |cycle: u64| cycle as f32 / cycles as f32;
@@ -1337,6 +1339,7 @@ pub unsafe extern "C" fn profile_perf_counters_rs(
     println!(" Decoded warp occupancy in IBUF: {:.2}", avg_decoded_warps);
     println!(" Active warp occupancy in RS: {:.2}", avg_dispatched_warps);
     println!(" Eligible warp occupancy in RS: {:.2}", avg_eligible_warps);
+    println!(" Average instruction window in RS: {:.2}", avg_inst_window);
     println!(" Per-warp stall cycles:");
     // println!(" ├─ with decoded insts [warp 0]: {}", per_warp_cycles_decoded[0]);
     // println!(" ├─ with dispatched insts [warp 0]: {}", per_warp_cycles_dispatched[0]);
