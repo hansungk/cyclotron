@@ -1326,6 +1326,8 @@ pub unsafe extern "C" fn profile_perf_counters_rs(
     println!("╒═══════════════════════════╕");
     println!("│  Muon Performance Report  │");
     println!("├───────────────────────────┤");
+    println!("│     Cluster {}, Core {}     │", cluster_id, core_id);
+    println!("├───────────────────────────┤");
     println!(" Instructions: {}", inst_retired);
     println!(" Cycles: {}", cycles);
     println!(" ├─ with decoded insts: {} ({:.2}%)", cycles_decoded, percent(cycles_decoded));
