@@ -1,6 +1,7 @@
 // #![allow(dead_code, unreachable_code)]
 use crate::base::behavior::*;
 use crate::base::module::IsModule;
+use crate::dpi::lsu::CyclotronLsuModel;
 use crate::dpi::tile::PipelineContext;
 use crate::muon::core::MuonCore;
 use crate::muon::decode::{DecodedInst, MicroOp};
@@ -40,6 +41,7 @@ struct Context {
     trace_memory_queue_dmem: Vec<MemQueue>,
     trace_memory_queue_smem: Vec<MemQueue>,
     pipeline_context: PipelineContext,
+    lsu_models: Vec<Option<CyclotronLsuModel>>,
     cycles_after_cyclotron_finished: usize,
     prev_rtl_finished: Vec<bool>,
     executed_insts: Vec<usize>,
@@ -133,7 +135,9 @@ pub extern "C" fn cyclotron_init_rs(c_elfname: *const c_char, c_trace_db_path: *
         if c_trace_db_path.is_null() {
             String::new()
         } else {
-            CStr::from_ptr(c_trace_db_path).to_string_lossy().into_owned()
+            CStr::from_ptr(c_trace_db_path)
+                .to_string_lossy()
+                .into_owned()
         }
     };
     let mut cyclotron_args = CyclotronArgs::default();
@@ -141,9 +145,12 @@ pub extern "C" fn cyclotron_init_rs(c_elfname: *const c_char, c_trace_db_path: *
         cyclotron_args.binary_path = Some(PathBuf::from(&elfname));
     }
     let trace_db_path = default_trace_db_path(
-        (!trace_db_path_arg.is_empty()).then(|| PathBuf::from(&trace_db_path_arg))
+        (!trace_db_path_arg.is_empty())
+            .then(|| PathBuf::from(&trace_db_path_arg))
             .as_deref(),
-        (!elfname.is_empty()).then(|| PathBuf::from(&elfname)).as_deref(),
+        (!elfname.is_empty())
+            .then(|| PathBuf::from(&elfname))
+            .as_deref(),
     );
 
     // make separate sim instances for the golden ISA model and the backend model to prevent
@@ -170,6 +177,9 @@ pub extern "C" fn cyclotron_init_rs(c_elfname: *const c_char, c_trace_db_path: *
         trace_memory_queue_dmem: Vec::new(),
         trace_memory_queue_smem: Vec::new(),
         pipeline_context: PipelineContext::new(config.num_lanes),
+        lsu_models: (0..NUM_CLUSTERS * CORES_PER_CLUSTER)
+            .map(|_| None)
+            .collect(),
         cycles_after_cyclotron_finished: 0,
         prev_rtl_finished: vec![false; NUM_CLUSTERS * CORES_PER_CLUSTER],
         executed_insts: vec![0; NUM_CLUSTERS * CORES_PER_CLUSTER],
@@ -886,7 +896,10 @@ fn shift_data_to_lsb(data: u32, address: u32, size: u8) -> u32 {
 }
 
 fn cycle_to_sql(cycle: u64) -> i64 {
-    assert!(cycle <= i64::MAX as u64, "trace cycle exceeds SQLite INTEGER range");
+    assert!(
+        cycle <= i64::MAX as u64,
+        "trace cycle exceeds SQLite INTEGER range"
+    );
     cycle as i64
 }
 
@@ -1355,5 +1368,6 @@ pub unsafe extern "C" fn profile_perf_counters_rs(
     println!("");
 }
 
+mod lsu;
 mod mem_model;
 mod tile;
