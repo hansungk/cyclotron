@@ -101,18 +101,20 @@ impl DecodedInst {
             Opcode::CUSTOM0 => HasRegs {
                 rs1: matches!(
                     self.sfu_key(),
-                    0b000_0000000
-                        | 0b001_0000000
-                        | 0b010_0000000
-                        | 0b100_0000000
-                        | 0b101_0000000
+                    0b000_0000000 | 0b001_0000000 | 0b010_0000000 | 0b100_0000000 | 0b101_0000000
                 ),
-                rs2: matches!(self.sfu_key(), 0b001_0000000 | 0b100_0000000 | 0b101_0000000),
+                rs2: matches!(
+                    self.sfu_key(),
+                    0b001_0000000 | 0b100_0000000 | 0b101_0000000
+                ),
                 rs3: false,
                 rs4: false,
             },
             Opcode::CUSTOM2 => HasRegs {
-                rs1: matches!(self.extended_opcode(), Opcode::NU_INVOKE | Opcode::NU_PAYLOAD),
+                rs1: matches!(
+                    self.extended_opcode(),
+                    Opcode::NU_INVOKE | Opcode::NU_PAYLOAD
+                ),
                 rs2: self.extended_opcode() == Opcode::NU_INVOKE && self.rs2_addr != 0,
                 rs3: false,
                 rs4: false,

@@ -1,13 +1,23 @@
 use std::os::raw::c_int;
 use std::slice;
 
+const ADDRESS_SPACE_GLOBAL_MEMORY: u32 = 0;
+const MEM_OP_LOAD_WORD: u32 = 4;
+const MEM_OP_STORE_WORD: u32 = 7;
+
 pub(super) struct CyclotronLsuModel {
+    arch_len: usize,
     num_warps: usize,
+    num_lsu_lanes: usize,
     token_bits: usize,
     address_space_bits: usize,
     mem_op_bits: usize,
     queue_index_bits: usize,
+    packet_bits: usize,
+    source_id_bits: usize,
+    per_lane_mask_bits: usize,
     reservation_counters: Vec<u32>,
+    global_inflight_count: usize,
     core_reservations_req_ready_words: usize,
     core_reservations_resp_valid_words: usize,
     core_reservations_resp_bits_token_words: usize,
@@ -41,11 +51,26 @@ impl CyclotronLsuModel {
         per_lane_mask_bits: c_int,
         debug_id_port_bits: c_int,
     ) -> Self {
+        let arch_len = arch_len as usize;
         let num_warps = num_warps as usize;
+        let num_lanes = num_lanes as usize;
+        let num_lsu_lanes = num_lsu_lanes as usize;
         let token_bits = token_bits as usize;
         let warp_id_bits = warp_id_bits as usize;
         let address_space_bits = address_space_bits as usize;
         let mem_op_bits = mem_op_bits as usize;
+        let packet_bits = packet_bits as usize;
+        let source_id_bits = source_id_bits as usize;
+        let per_lane_mask_bits = per_lane_mask_bits as usize;
+        assert_eq!(
+            num_lsu_lanes, num_lanes,
+            "cyclotron LSU model currently assumes num_lsu_lanes == num_lanes"
+        );
+        assert!(
+            arch_len <= 32,
+            "cyclotron LSU model currently supports arch_len <= 32, got {}",
+            arch_len
+        );
         let queue_index_bits = token_bits
             .checked_sub(warp_id_bits + address_space_bits + 1)
             .expect("cyclotron LSU token is too narrow for its fields");
@@ -63,14 +88,32 @@ impl CyclotronLsuModel {
             "cyclotron LSU queue index width {} exceeds Rust u32 counters",
             queue_index_bits
         );
+        assert!(
+            source_id_bits <= 64,
+            "cyclotron LSU source id width {} exceeds Rust u64 packing",
+            source_id_bits
+        );
+        assert!(
+            source_id_bits == token_bits + packet_bits,
+            "cyclotron LSU source id width {} does not match token_bits {} + packet_bits {}",
+            source_id_bits,
+            token_bits,
+            packet_bits
+        );
 
         Self {
+            arch_len,
             num_warps,
+            num_lsu_lanes,
             token_bits,
             address_space_bits,
             mem_op_bits,
             queue_index_bits,
+            packet_bits,
+            source_id_bits,
+            per_lane_mask_bits,
             reservation_counters: vec![0; num_warps * 4],
+            global_inflight_count: 0,
             core_reservations_req_ready_words: dpi_words(num_warps),
             core_reservations_resp_valid_words: dpi_words(num_warps),
             core_reservations_resp_bits_token_words: dpi_words(num_warps * token_bits),
@@ -91,6 +134,7 @@ impl CyclotronLsuModel {
 
     fn reset(&mut self) {
         self.reservation_counters.fill(0);
+        self.global_inflight_count = 0;
     }
 
     fn reservation_slot(&self, warp_id: usize, address_space: u32, op: u32) -> Option<usize> {
@@ -127,6 +171,39 @@ impl CyclotronLsuModel {
         if let Some(slot) = self.reservation_slot(warp_id, address_space, op) {
             self.reservation_counters[slot] = self.reservation_counters[slot].wrapping_add(1);
         }
+    }
+
+    fn token_address_space(&self, token: u64) -> u32 {
+        ((token >> (self.queue_index_bits + 1)) & bit_mask_u64(self.address_space_bits)) as u32
+    }
+
+    fn supports_global_word_request(&self, token: u64, op: u32) -> bool {
+        self.token_address_space(token) == ADDRESS_SPACE_GLOBAL_MEMORY
+            && matches!(op, MEM_OP_LOAD_WORD | MEM_OP_STORE_WORD)
+    }
+
+    fn mem_tag(&self, token: u64) -> u64 {
+        token << self.packet_bits
+    }
+
+    fn arch_mask(&self) -> u32 {
+        bit_mask(self.arch_len)
+    }
+
+    fn word_mask(&self) -> u64 {
+        bit_mask_u64(self.per_lane_mask_bits)
+    }
+
+    fn global_queues_empty(&self, pending_request: bool) -> bool {
+        self.global_inflight_count == 0 && !pending_request
+    }
+
+    fn commit_global_request(&mut self) {
+        self.global_inflight_count = self.global_inflight_count.saturating_add(1);
+    }
+
+    fn commit_global_response(&mut self) {
+        self.global_inflight_count = self.global_inflight_count.saturating_sub(1);
     }
 }
 
@@ -176,6 +253,16 @@ fn bit_mask(bits: usize) -> u32 {
     }
 }
 
+fn bit_mask_u64(bits: usize) -> u64 {
+    if bits == 0 {
+        0
+    } else if bits >= 64 {
+        u64::MAX
+    } else {
+        (1u64 << bits) - 1
+    }
+}
+
 fn is_load_op(op: u32) -> bool {
     op <= 4
 }
@@ -211,9 +298,32 @@ unsafe fn read_packed_field(value: *const u32, index: usize, width: usize) -> u3
     result
 }
 
+unsafe fn read_packed_field_u64(value: *const u32, index: usize, width: usize) -> u64 {
+    assert!(!value.is_null(), "cyclotron LSU bit vector pointer is null");
+    assert!(
+        width <= 64,
+        "cyclotron LSU packed field width {} exceeds u64",
+        width
+    );
+    let offset = index * width;
+    let mut result = 0u64;
+    for bit in 0..width {
+        if read_bit(value, offset + bit) {
+            result |= 1 << bit;
+        }
+    }
+    result
+}
+
 unsafe fn zero_bit(value: *mut u8) {
     if let Some(value) = value.as_mut() {
         *value = 0;
+    }
+}
+
+unsafe fn set_u8(value: *mut u8, new_value: u8) {
+    if let Some(value) = value.as_mut() {
+        *value = new_value;
     }
 }
 
@@ -305,16 +415,16 @@ pub unsafe extern "C" fn cyclotron_lsu_eval_rs(
     core_reservations_req_bits_address_space: *const u32,
     core_reservations_req_bits_op: *const u32,
     _core_reservations_req_bits_debug_id: *const u32,
-    _core_req_valid: u8,
-    _core_req_bits_token: *const u32,
-    _core_req_bits_op: *const u32,
-    _core_req_bits_tmask: *const u32,
-    _core_req_bits_address: *const u32,
-    _core_req_bits_imm: *const u32,
+    core_req_valid: u8,
+    core_req_bits_token: *const u32,
+    core_req_bits_op: *const u32,
+    core_req_bits_tmask: *const u32,
+    core_req_bits_address: *const u32,
+    core_req_bits_imm: *const u32,
     _core_req_bits_dest_reg: *const u32,
-    _core_req_bits_store_data: *const u32,
+    core_req_bits_store_data: *const u32,
     _core_resp_ready: u8,
-    _global_mem_req_ready: u8,
+    global_mem_req_ready: u8,
     _global_mem_resp_valid: u8,
     _global_mem_resp_bits_tag: *const u32,
     _global_mem_resp_bits_valid: *const u32,
@@ -398,7 +508,6 @@ pub unsafe extern "C" fn cyclotron_lsu_eval_rs(
         }
     }
 
-    // TODOs
     zero_bit(core_req_ready);
     zero_bit(core_resp_valid);
     zero_words(core_resp_bits_warp_id, model.core_resp_bits_warp_id_words);
@@ -429,16 +538,68 @@ pub unsafe extern "C" fn cyclotron_lsu_eval_rs(
     zero_words(shmem_req_bits_mask, model.mem_req_bits_mask_words);
     zero_words(shmem_req_bits_tmask, model.mem_req_bits_tmask_words);
     zero_bit(shmem_resp_ready);
+
+    let mut pending_global_request = false;
+    if core_req_valid != 0 {
+        let token = read_packed_field_u64(core_req_bits_token, 0, model.token_bits);
+        let op = read_packed_field(core_req_bits_op, 0, model.mem_op_bits);
+        if model.supports_global_word_request(token, op) {
+            pending_global_request = true;
+            set_u8(core_req_ready, u8::from(global_mem_req_ready != 0));
+            set_u8(global_mem_req_valid, 1);
+            set_packed_field(
+                global_mem_req_bits_tag,
+                0,
+                model.source_id_bits,
+                model.mem_tag(token),
+            );
+            set_packed_field(global_mem_req_bits_op, 0, model.mem_op_bits, op as u64);
+
+            let imm = read_packed_field(core_req_bits_imm, 0, model.arch_len);
+            let arch_mask = model.arch_mask();
+            for lane in 0..model.num_lsu_lanes {
+                let base_address = read_packed_field(core_req_bits_address, lane, model.arch_len);
+                let address = base_address.wrapping_add(imm) & arch_mask;
+                let store_data = read_packed_field(core_req_bits_store_data, lane, model.arch_len);
+                let shift = (address & (model.per_lane_mask_bits as u32 - 1)) * 8;
+                let shifted_store_data = store_data.wrapping_shl(shift) & arch_mask;
+
+                set_packed_field(
+                    global_mem_req_bits_address,
+                    lane,
+                    model.arch_len,
+                    address as u64,
+                );
+                set_packed_field(
+                    global_mem_req_bits_data,
+                    lane,
+                    model.arch_len,
+                    shifted_store_data as u64,
+                );
+                set_packed_field(
+                    global_mem_req_bits_mask,
+                    lane,
+                    model.per_lane_mask_bits,
+                    model.word_mask(),
+                );
+                if read_bit(core_req_bits_tmask, lane) {
+                    set_bit(global_mem_req_bits_tmask, lane);
+                }
+            }
+        }
+    }
+
     if let Some(value) = shared_queues_empty.as_mut() {
         *value = 1;
     }
     if let Some(value) = global_queues_empty.as_mut() {
-        *value = 1;
+        *value = u8::from(model.global_queues_empty(pending_global_request));
     }
 }
 
 #[no_mangle]
-/// Sequential logic.  Mutates Rust state and does not drive RTL.
+/// Sequential logic.  Updates Rust state such as inflight table; does not drive
+/// RTL.
 pub unsafe extern "C" fn cyclotron_lsu_commit_rs(
     cluster_id: *const u32,
     core_id: *const u32,
@@ -446,7 +607,7 @@ pub unsafe extern "C" fn cyclotron_lsu_commit_rs(
     core_reservations_req_bits_address_space: *const u32,
     core_reservations_req_bits_op: *const u32,
     _core_reservations_req_bits_debug_id: *const u32,
-    _core_req_valid: u8,
+    core_req_valid: u8,
     _core_req_bits_token: *const u32,
     _core_req_bits_op: *const u32,
     _core_req_bits_tmask: *const u32,
@@ -456,7 +617,7 @@ pub unsafe extern "C" fn cyclotron_lsu_commit_rs(
     _core_req_bits_store_data: *const u32,
     _core_resp_ready: u8,
     _global_mem_req_ready: u8,
-    _global_mem_resp_valid: u8,
+    global_mem_resp_valid: u8,
     _global_mem_resp_bits_tag: *const u32,
     _global_mem_resp_bits_valid: *const u32,
     _global_mem_resp_bits_data: *const u32,
@@ -468,7 +629,7 @@ pub unsafe extern "C" fn cyclotron_lsu_commit_rs(
     core_reservations_req_ready: *const u32,
     _core_reservations_resp_valid: *const u32,
     _core_reservations_resp_bits_token: *const u32,
-    _core_req_ready: u8,
+    core_req_ready: u8,
     _core_resp_valid: u8,
     _core_resp_bits_warp_id: *const u32,
     _core_resp_bits_packet: *const u32,
@@ -476,14 +637,14 @@ pub unsafe extern "C" fn cyclotron_lsu_commit_rs(
     _core_resp_bits_dest_reg: *const u32,
     _core_resp_bits_writeback_data: *const u32,
     _core_resp_bits_debug_id: *const u32,
-    _global_mem_req_valid: u8,
+    global_mem_req_valid: u8,
     _global_mem_req_bits_tag: *const u32,
     _global_mem_req_bits_op: *const u32,
     _global_mem_req_bits_address: *const u32,
     _global_mem_req_bits_data: *const u32,
     _global_mem_req_bits_mask: *const u32,
     _global_mem_req_bits_tmask: *const u32,
-    _global_mem_resp_ready: u8,
+    global_mem_resp_ready: u8,
     _shmem_req_valid: u8,
     _shmem_req_bits_tag: *const u32,
     _shmem_req_bits_op: *const u32,
@@ -516,5 +677,98 @@ pub unsafe extern "C" fn cyclotron_lsu_commit_rs(
         );
         let op = read_packed_field(core_reservations_req_bits_op, warp_id, model.mem_op_bits);
         model.commit_reservation(warp_id, address_space, op);
+    }
+
+    if core_req_valid != 0 && core_req_ready != 0 && global_mem_req_valid != 0 {
+        model.commit_global_request();
+    }
+    if global_mem_resp_valid != 0 && global_mem_resp_ready != 0 {
+        model.commit_global_response();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_model() -> CyclotronLsuModel {
+        CyclotronLsuModel::new(
+            32, // arch_len
+            8,  // num_warps
+            16, // num_lanes
+            16, // num_lsu_lanes
+            3,  // warp_id_bits
+            9,  // token_bits: warpId(3), addressSpace(1), ldq(1), index(4)
+            1,  // address_space_bits
+            4,  // mem_op_bits
+            8,  // preg_bits
+            1,  // packet_bits: Chisel uses a 1-bit zero packet field
+            10, // source_id_bits
+            4,  // per_lane_mask_bits
+            1,  // debug_id_port_bits
+        )
+    }
+
+    #[test]
+    fn packs_reservation_token_in_chisel_layout() {
+        let model = make_model();
+
+        let global_load_word = model.reservation_token(5, 0, MEM_OP_LOAD_WORD).unwrap();
+        assert_eq!(global_load_word, (5 << 6) | (1 << 4));
+
+        let shared_store_word = model.reservation_token(2, 1, MEM_OP_STORE_WORD).unwrap();
+        assert_eq!(shared_store_word, (2 << 6) | (1 << 5));
+    }
+
+    #[test]
+    fn advances_only_matching_reservation_counter() {
+        let mut model = make_model();
+
+        model.commit_reservation(0, 0, MEM_OP_LOAD_WORD);
+        assert_eq!(
+            model.reservation_token(0, 0, MEM_OP_LOAD_WORD).unwrap(),
+            (1 << 4) | 1
+        );
+        assert_eq!(model.reservation_token(0, 0, MEM_OP_STORE_WORD).unwrap(), 0);
+        assert_eq!(
+            model.reservation_token(0, 1, MEM_OP_LOAD_WORD).unwrap(),
+            (1 << 5) | (1 << 4)
+        );
+    }
+
+    #[test]
+    fn accepts_only_global_word_core_requests() {
+        let model = make_model();
+
+        let global_load_word = model.reservation_token(1, 0, MEM_OP_LOAD_WORD).unwrap();
+        let global_store_word = model.reservation_token(1, 0, MEM_OP_STORE_WORD).unwrap();
+        let shared_load_word = model.reservation_token(1, 1, MEM_OP_LOAD_WORD).unwrap();
+
+        assert!(model.supports_global_word_request(global_load_word, MEM_OP_LOAD_WORD));
+        assert!(model.supports_global_word_request(global_store_word, MEM_OP_STORE_WORD));
+        assert!(!model.supports_global_word_request(shared_load_word, MEM_OP_LOAD_WORD));
+        assert!(!model.supports_global_word_request(global_load_word, 0));
+    }
+
+    #[test]
+    fn packs_memory_tag_as_token_then_packet_zero() {
+        let model = make_model();
+        let token = model.reservation_token(2, 0, MEM_OP_LOAD_WORD).unwrap();
+
+        assert_eq!(model.mem_tag(token), token << 1);
+    }
+
+    #[test]
+    fn tracks_global_queue_empty_with_inflight_request() {
+        let mut model = make_model();
+
+        assert!(model.global_queues_empty(false));
+        assert!(!model.global_queues_empty(true));
+
+        model.commit_global_request();
+        assert!(!model.global_queues_empty(false));
+
+        model.commit_global_response();
+        assert!(model.global_queues_empty(false));
     }
 }
