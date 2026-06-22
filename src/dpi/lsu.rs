@@ -3,6 +3,7 @@ use std::os::raw::c_int;
 use std::slice;
 
 const ADDRESS_SPACE_GLOBAL_MEMORY: u32 = 0;
+const ADDRESS_SPACE_SHARED_MEMORY: u32 = 1;
 const MEM_OP_LOAD_BYTE: u32 = 0;
 const MEM_OP_LOAD_BYTE_UNSIGNED: u32 = 1;
 const MEM_OP_LOAD_HALF: u32 = 2;
@@ -12,8 +13,31 @@ const MEM_OP_STORE_BYTE: u32 = 5;
 const MEM_OP_STORE_HALF: u32 = 6;
 const MEM_OP_STORE_WORD: u32 = 7;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MemSpace {
+    Global,
+    Shared,
+}
+
+impl MemSpace {
+    fn from_address_space(address_space: u32) -> Option<Self> {
+        match address_space {
+            ADDRESS_SPACE_GLOBAL_MEMORY => Some(Self::Global),
+            ADDRESS_SPACE_SHARED_MEMORY => Some(Self::Shared),
+            _ => None,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Global => "global",
+            Self::Shared => "shared",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct GlobalInflight {
+struct MemInflight {
     token: u64,
     op: u32,
     warp_id: u32,
@@ -23,10 +47,51 @@ struct GlobalInflight {
     debug_id: u32,
 }
 
-impl GlobalInflight {
+impl MemInflight {
     fn is_load(&self) -> bool {
         is_load_op(self.op)
     }
+}
+
+#[derive(Default)]
+struct MemPortState {
+    inflight: HashMap<u64, MemInflight>,
+    store_inflight: HashMap<u64, ()>,
+    retired_tags: HashMap<u64, ()>,
+}
+
+impl MemPortState {
+    fn reset(&mut self) {
+        self.inflight.clear();
+        self.store_inflight.clear();
+        self.retired_tags.clear();
+    }
+
+    fn queues_empty(&self, pending_request: bool) -> bool {
+        self.inflight.is_empty() && self.store_inflight.is_empty() && !pending_request
+    }
+
+    fn source_busy(&self, tag: u64) -> bool {
+        self.inflight.contains_key(&tag) || self.store_inflight.contains_key(&tag)
+    }
+}
+
+struct MemRequestOutputs {
+    valid: *mut u8,
+    tag: *mut u32,
+    op: *mut u32,
+    address: *mut u32,
+    data: *mut u32,
+    mask: *mut u32,
+    tmask: *mut u32,
+}
+
+struct MemResponseInputs {
+    valid: u8,
+    tag: *const u32,
+    lane_valid: *const u32,
+    data: *const u32,
+    ready: *mut u8,
 }
 
 pub(super) struct CyclotronLsuModel {
@@ -45,9 +110,8 @@ pub(super) struct CyclotronLsuModel {
     debug_id_port_bits: usize,
     reservation_counters: Vec<u32>,
     reservation_debug_ids: HashMap<u64, u32>,
-    global_inflight: HashMap<u64, GlobalInflight>,
-    global_store_inflight: HashMap<u64, ()>,
-    global_retired_tags: HashMap<u64, ()>,
+    global: MemPortState,
+    shared: MemPortState,
     core_reservations_req_ready_words: usize,
     core_reservations_resp_valid_words: usize,
     core_reservations_resp_bits_token_words: usize,
@@ -156,9 +220,8 @@ impl CyclotronLsuModel {
             debug_id_port_bits: debug_id_port_bits as usize,
             reservation_counters: vec![0; num_warps * 4],
             reservation_debug_ids: HashMap::new(),
-            global_inflight: HashMap::new(),
-            global_store_inflight: HashMap::new(),
-            global_retired_tags: HashMap::new(),
+            global: MemPortState::default(),
+            shared: MemPortState::default(),
             core_reservations_req_ready_words: dpi_words(num_warps),
             core_reservations_resp_valid_words: dpi_words(num_warps),
             core_reservations_resp_bits_token_words: dpi_words(num_warps * token_bits),
@@ -180,9 +243,8 @@ impl CyclotronLsuModel {
     fn reset(&mut self) {
         self.reservation_counters.fill(0);
         self.reservation_debug_ids.clear();
-        self.global_inflight.clear();
-        self.global_store_inflight.clear();
-        self.global_retired_tags.clear();
+        self.global.reset();
+        self.shared.reset();
     }
 
     fn reservation_slot(&self, warp_id: usize, address_space: u32, op: u32) -> Option<usize> {
@@ -233,19 +295,12 @@ impl CyclotronLsuModel {
         ((token >> (self.queue_index_bits + 1)) & bit_mask_u64(self.address_space_bits)) as u32
     }
 
-    fn supports_global_request(&self, token: u64, op: u32) -> bool {
-        self.token_address_space(token) == ADDRESS_SPACE_GLOBAL_MEMORY
-            && matches!(
-                op,
-                MEM_OP_LOAD_BYTE
-                    | MEM_OP_LOAD_BYTE_UNSIGNED
-                    | MEM_OP_LOAD_HALF
-                    | MEM_OP_LOAD_HALF_UNSIGNED
-                    | MEM_OP_LOAD_WORD
-                    | MEM_OP_STORE_BYTE
-                    | MEM_OP_STORE_HALF
-                    | MEM_OP_STORE_WORD
-            )
+    fn request_space(&self, token: u64, op: u32) -> Option<MemSpace> {
+        if !is_supported_memory_op(op) {
+            return None;
+        }
+
+        MemSpace::from_address_space(self.token_address_space(token))
     }
 
     fn mem_tag(&self, token: u64) -> u64 {
@@ -254,6 +309,18 @@ impl CyclotronLsuModel {
 
     fn packet_from_mem_tag(&self, tag: u64) -> u64 {
         tag & bit_mask_u64(self.packet_bits)
+    }
+
+    fn token_from_mem_tag(&self, tag: u64) -> u64 {
+        tag >> self.packet_bits
+    }
+
+    fn base_mem_tag(&self, tag: u64) -> u64 {
+        self.mem_tag(self.token_from_mem_tag(tag))
+    }
+
+    fn response_space(&self, tag: u64) -> Option<MemSpace> {
+        MemSpace::from_address_space(self.token_address_space(self.token_from_mem_tag(tag)))
     }
 
     fn arch_mask(&self) -> u32 {
@@ -304,16 +371,31 @@ impl CyclotronLsuModel {
         result & self.arch_mask()
     }
 
-    fn global_queues_empty(&self, pending_request: bool) -> bool {
-        self.global_inflight.is_empty() && self.global_store_inflight.is_empty() && !pending_request
+    fn port(&self, space: MemSpace) -> &MemPortState {
+        match space {
+            MemSpace::Global => &self.global,
+            MemSpace::Shared => &self.shared,
+        }
     }
 
-    fn global_source_busy(&self, tag: u64) -> bool {
-        self.global_inflight.contains_key(&tag) || self.global_store_inflight.contains_key(&tag)
+    fn port_mut(&mut self, space: MemSpace) -> &mut MemPortState {
+        match space {
+            MemSpace::Global => &mut self.global,
+            MemSpace::Shared => &mut self.shared,
+        }
     }
 
-    fn commit_global_request(
+    fn queues_empty(&self, space: MemSpace, pending_request: bool) -> bool {
+        self.port(space).queues_empty(pending_request)
+    }
+
+    fn source_busy(&self, space: MemSpace, tag: u64) -> bool {
+        self.port(space).source_busy(tag)
+    }
+
+    fn commit_mem_request(
         &mut self,
+        space: MemSpace,
         token: u64,
         op: u32,
         dest_reg: u32,
@@ -322,24 +404,31 @@ impl CyclotronLsuModel {
     ) {
         let tag = self.mem_tag(token);
         assert!(
-            !self.global_source_busy(tag),
-            "cyclotron LSU global tag 0x{tag:x} reused before previous response retired"
+            !self.source_busy(space, tag),
+            "cyclotron LSU {} tag 0x{tag:x} reused before previous response retired",
+            space.name()
         );
-        self.global_retired_tags.remove(&tag);
+        let warp_id = self.token_warp_id(token);
+        let debug_id = if is_load_op(op) {
+            self.reservation_debug_ids.remove(&token).unwrap_or(0)
+        } else {
+            self.reservation_debug_ids.remove(&token);
+            0
+        };
+        let port = self.port_mut(space);
+        port.retired_tags.remove(&tag);
 
         if !is_load_op(op) {
-            self.reservation_debug_ids.remove(&token);
-            self.global_store_inflight.insert(tag, ());
+            port.store_inflight.insert(tag, ());
             return;
         }
 
-        let debug_id = self.reservation_debug_ids.remove(&token).unwrap_or(0);
-        let previous = self.global_inflight.insert(
+        let previous = port.inflight.insert(
             tag,
-            GlobalInflight {
+            MemInflight {
                 token,
                 op,
-                warp_id: self.token_warp_id(token),
+                warp_id,
                 dest_reg,
                 tmask,
                 byte_offsets,
@@ -348,25 +437,29 @@ impl CyclotronLsuModel {
         );
         assert!(
             previous.is_none(),
-            "cyclotron LSU global tag 0x{tag:x} reused before previous response retired"
+            "cyclotron LSU {} tag 0x{tag:x} reused before previous response retired",
+            space.name()
         );
     }
 
-    fn commit_global_response(&mut self, tag: u64) {
-        if self.global_inflight.remove(&tag).is_none() {
-            if self.global_store_inflight.remove(&tag).is_some() {
-                self.global_retired_tags.insert(tag, ());
+    fn commit_mem_response(&mut self, space: MemSpace, tag: u64) {
+        let tag = self.base_mem_tag(tag);
+        let port = self.port_mut(space);
+        if port.inflight.remove(&tag).is_none() {
+            if port.store_inflight.remove(&tag).is_some() {
+                port.retired_tags.insert(tag, ());
                 return;
             }
-            if self.global_retired_tags.contains_key(&tag) {
+            if port.retired_tags.contains_key(&tag) {
                 return;
             }
             assert!(
-                self.global_inflight.is_empty() && self.global_store_inflight.is_empty(),
-                "cyclotron LSU received unknown global response tag 0x{tag:x}"
+                port.inflight.is_empty() && port.store_inflight.is_empty(),
+                "cyclotron LSU received unknown {} response tag 0x{tag:x}",
+                space.name()
             );
         } else {
-            self.global_retired_tags.insert(tag, ());
+            port.retired_tags.insert(tag, ());
         }
     }
 }
@@ -445,6 +538,20 @@ fn sign_extend(value: u32, from_bits: usize, to_bits: usize) -> u32 {
 
 fn is_load_op(op: u32) -> bool {
     op <= 4
+}
+
+fn is_supported_memory_op(op: u32) -> bool {
+    matches!(
+        op,
+        MEM_OP_LOAD_BYTE
+            | MEM_OP_LOAD_BYTE_UNSIGNED
+            | MEM_OP_LOAD_HALF
+            | MEM_OP_LOAD_HALF_UNSIGNED
+            | MEM_OP_LOAD_WORD
+            | MEM_OP_STORE_BYTE
+            | MEM_OP_STORE_HALF
+            | MEM_OP_STORE_WORD
+    )
 }
 
 fn is_store_like_op(op: u32) -> bool {
@@ -552,6 +659,226 @@ unsafe fn set_bit_mask(value: *mut u32, bits: usize, mask: u64) {
     }
 }
 
+unsafe fn zero_mem_request(model: &CyclotronLsuModel, req: &MemRequestOutputs) {
+    zero_bit(req.valid);
+    zero_words(req.tag, model.mem_req_bits_tag_words);
+    zero_words(req.op, model.mem_req_bits_op_words);
+    zero_words(req.address, model.mem_req_bits_address_words);
+    zero_words(req.data, model.mem_req_bits_data_words);
+    zero_words(req.mask, model.mem_req_bits_mask_words);
+    zero_words(req.tmask, model.mem_req_bits_tmask_words);
+}
+
+unsafe fn drive_mem_request(
+    model: &CyclotronLsuModel,
+    req: &MemRequestOutputs,
+    token: u64,
+    op: u32,
+    core_req_bits_tmask: *const u32,
+    core_req_bits_address: *const u32,
+    core_req_bits_imm: *const u32,
+    core_req_bits_store_data: *const u32,
+) {
+    let tag = model.mem_tag(token);
+    set_u8(req.valid, 1);
+    set_packed_field(req.tag, 0, model.source_id_bits, tag);
+    set_packed_field(req.op, 0, model.mem_op_bits, op as u64);
+
+    let imm = read_packed_field(core_req_bits_imm, 0, model.arch_len);
+    for lane in 0..model.num_lsu_lanes {
+        let base_address = read_packed_field(core_req_bits_address, lane, model.arch_len);
+        let address = model.lane_address(base_address, imm);
+        let store_data = read_packed_field(core_req_bits_store_data, lane, model.arch_len);
+        let shifted_store_data = model.shifted_store_data(store_data, address);
+
+        set_packed_field(req.address, lane, model.arch_len, address as u64);
+        set_packed_field(req.data, lane, model.arch_len, shifted_store_data as u64);
+        set_packed_field(
+            req.mask,
+            lane,
+            model.per_lane_mask_bits,
+            model.request_mask(op, address),
+        );
+        if read_bit(core_req_bits_tmask, lane) {
+            set_bit(req.tmask, lane);
+        }
+    }
+}
+
+unsafe fn mem_request_fired(
+    model: &CyclotronLsuModel,
+    core_req_valid: u8,
+    core_req_bits_token: *const u32,
+    core_req_bits_op: *const u32,
+    core_req_bits_tmask: *const u32,
+    core_req_bits_address: *const u32,
+    core_req_bits_imm: *const u32,
+    core_req_bits_dest_reg: *const u32,
+    global_mem_req_ready: u8,
+    shmem_req_ready: u8,
+) -> Option<(MemSpace, u64, u32, u32, u64, Vec<u8>)> {
+    if core_req_valid == 0 {
+        return None;
+    }
+
+    let token = read_packed_field_u64(core_req_bits_token, 0, model.token_bits);
+    let op = read_packed_field(core_req_bits_op, 0, model.mem_op_bits);
+    let space = model.request_space(token, op)?;
+    let port_ready = match space {
+        MemSpace::Global => global_mem_req_ready,
+        MemSpace::Shared => shmem_req_ready,
+    };
+    if model.source_busy(space, model.mem_tag(token)) || port_ready == 0 {
+        return None;
+    }
+
+    let dest_reg = read_packed_field(core_req_bits_dest_reg, 0, model.preg_bits);
+    let tmask = read_bit_mask(core_req_bits_tmask, model.num_lsu_lanes);
+    let imm = read_packed_field(core_req_bits_imm, 0, model.arch_len);
+    let byte_offsets = (0..model.num_lsu_lanes)
+        .map(|lane| {
+            let base_address = read_packed_field(core_req_bits_address, lane, model.arch_len);
+            model.byte_offset(model.lane_address(base_address, imm))
+        })
+        .collect();
+
+    Some((space, token, op, dest_reg, tmask, byte_offsets))
+}
+
+unsafe fn drive_mem_response(
+    model: &CyclotronLsuModel,
+    resp: &MemResponseInputs,
+    core_resp_ready: u8,
+    core_resp_valid: *mut u8,
+    core_resp_bits_warp_id: *mut u32,
+    core_resp_bits_packet: *mut u32,
+    core_resp_bits_tmask: *mut u32,
+    core_resp_bits_dest_reg: *mut u32,
+    core_resp_bits_writeback_data: *mut u32,
+    core_resp_bits_debug_id: *mut u32,
+) -> bool {
+    if resp.valid == 0 {
+        return false;
+    }
+
+    let tag = read_packed_field_u64(resp.tag, 0, model.source_id_bits);
+    let base_tag = model.base_mem_tag(tag);
+    let space = model
+        .response_space(tag)
+        .expect("cyclotron LSU response tag has invalid address space");
+    let resp_valid_mask = read_bit_mask(resp.lane_valid, model.num_lsu_lanes);
+    let port = model.port(space);
+
+    if let Some(inflight) = port.inflight.get(&base_tag) {
+        let needed_valid_mask = inflight.tmask & bit_mask_u64(model.num_lsu_lanes);
+        let full_response = (resp_valid_mask & needed_valid_mask) == needed_valid_mask;
+
+        if full_response {
+            if inflight.is_load() {
+                set_u8(core_resp_valid, 1);
+                set_packed_field(
+                    core_resp_bits_warp_id,
+                    0,
+                    model.warp_id_bits,
+                    inflight.warp_id as u64,
+                );
+                set_packed_field(
+                    core_resp_bits_packet,
+                    0,
+                    model.packet_bits,
+                    model.packet_from_mem_tag(tag),
+                );
+                set_bit_mask(
+                    core_resp_bits_tmask,
+                    model.num_lsu_lanes,
+                    needed_valid_mask & resp_valid_mask,
+                );
+                set_packed_field(
+                    core_resp_bits_dest_reg,
+                    0,
+                    model.preg_bits,
+                    inflight.dest_reg as u64,
+                );
+                for lane in 0..model.num_lsu_lanes {
+                    let word = read_packed_field(resp.data, lane, model.arch_len);
+                    let byte_offset = inflight.byte_offsets.get(lane).copied().unwrap_or(0);
+                    let data = model.load_writeback_data(inflight.op, word, byte_offset);
+                    set_packed_field(
+                        core_resp_bits_writeback_data,
+                        lane,
+                        model.arch_len,
+                        data as u64,
+                    );
+                }
+                set_packed_field(
+                    core_resp_bits_debug_id,
+                    0,
+                    model.debug_id_port_bits,
+                    inflight.debug_id as u64,
+                );
+                set_u8(resp.ready, u8::from(core_resp_ready != 0));
+            } else {
+                set_u8(resp.ready, 1);
+            }
+        }
+    } else if port.retired_tags.contains_key(&base_tag)
+        || port.store_inflight.contains_key(&base_tag)
+        || (port.inflight.is_empty() && port.store_inflight.is_empty())
+    {
+        set_u8(resp.ready, 1);
+    } else {
+        // This is combinational DPI and may observe transient valid/tag
+        // combinations while upstream RTL settles. Leave ready low; commit
+        // validates only stable responses that actually fired.
+    }
+
+    true
+}
+
+unsafe fn mem_response_fired(
+    model: &CyclotronLsuModel,
+    resp_valid: u8,
+    resp_ready: u8,
+    resp_bits_tag: *const u32,
+    resp_bits_valid: *const u32,
+    core_resp_ready: u8,
+) -> (bool, Option<(MemSpace, u64)>) {
+    if resp_valid == 0 {
+        return (false, None);
+    }
+    if resp_ready == 0 {
+        return (true, None);
+    }
+
+    let tag = read_packed_field_u64(resp_bits_tag, 0, model.source_id_bits);
+    let base_tag = model.base_mem_tag(tag);
+    let space = model
+        .response_space(tag)
+        .expect("cyclotron LSU response tag has invalid address space");
+    let port = model.port(space);
+    if let Some(inflight) = port.inflight.get(&base_tag) {
+        let resp_valid_mask = read_bit_mask(resp_bits_valid, model.num_lsu_lanes);
+        let needed_valid_mask = inflight.tmask & bit_mask_u64(model.num_lsu_lanes);
+        let full_response = (resp_valid_mask & needed_valid_mask) == needed_valid_mask;
+        if full_response && (!inflight.is_load() || core_resp_ready != 0) {
+            (true, Some((space, tag)))
+        } else {
+            (true, None)
+        }
+    } else if port.retired_tags.contains_key(&base_tag) {
+        (true, None)
+    } else if port.store_inflight.contains_key(&base_tag)
+        || (port.inflight.is_empty() && port.store_inflight.is_empty())
+    {
+        (true, Some((space, tag)))
+    } else {
+        panic!(
+            "cyclotron LSU received unknown {} response tag 0x{tag:x}",
+            space.name()
+        );
+    }
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn cyclotron_lsu_init_rs(
     cluster_id: *const u32,
@@ -632,11 +959,11 @@ pub unsafe extern "C" fn cyclotron_lsu_eval_rs(
     global_mem_resp_bits_tag: *const u32,
     global_mem_resp_bits_valid: *const u32,
     global_mem_resp_bits_data: *const u32,
-    _shmem_req_ready: u8,
-    _shmem_resp_valid: u8,
-    _shmem_resp_bits_tag: *const u32,
-    _shmem_resp_bits_valid: *const u32,
-    _shmem_resp_bits_data: *const u32,
+    shmem_req_ready: u8,
+    shmem_resp_valid: u8,
+    shmem_resp_bits_tag: *const u32,
+    shmem_resp_bits_valid: *const u32,
+    shmem_resp_bits_data: *const u32,
     core_reservations_req_ready: *mut u32,
     core_reservations_resp_valid: *mut u32,
     core_reservations_resp_bits_token: *mut u32,
@@ -722,145 +1049,108 @@ pub unsafe extern "C" fn cyclotron_lsu_eval_rs(
         model.core_resp_bits_writeback_data_words,
     );
     zero_words(core_resp_bits_debug_id, model.core_resp_bits_debug_id_words);
-    zero_bit(global_mem_req_valid);
-    zero_words(global_mem_req_bits_tag, model.mem_req_bits_tag_words);
-    zero_words(global_mem_req_bits_op, model.mem_req_bits_op_words);
-    zero_words(
-        global_mem_req_bits_address,
-        model.mem_req_bits_address_words,
-    );
-    zero_words(global_mem_req_bits_data, model.mem_req_bits_data_words);
-    zero_words(global_mem_req_bits_mask, model.mem_req_bits_mask_words);
-    zero_words(global_mem_req_bits_tmask, model.mem_req_bits_tmask_words);
+    let global_mem_req = MemRequestOutputs {
+        valid: global_mem_req_valid,
+        tag: global_mem_req_bits_tag,
+        op: global_mem_req_bits_op,
+        address: global_mem_req_bits_address,
+        data: global_mem_req_bits_data,
+        mask: global_mem_req_bits_mask,
+        tmask: global_mem_req_bits_tmask,
+    };
+    let shmem_req = MemRequestOutputs {
+        valid: shmem_req_valid,
+        tag: shmem_req_bits_tag,
+        op: shmem_req_bits_op,
+        address: shmem_req_bits_address,
+        data: shmem_req_bits_data,
+        mask: shmem_req_bits_mask,
+        tmask: shmem_req_bits_tmask,
+    };
+
+    zero_mem_request(model, &global_mem_req);
     zero_bit(global_mem_resp_ready);
-    zero_bit(shmem_req_valid);
-    zero_words(shmem_req_bits_tag, model.mem_req_bits_tag_words);
-    zero_words(shmem_req_bits_op, model.mem_req_bits_op_words);
-    zero_words(shmem_req_bits_address, model.mem_req_bits_address_words);
-    zero_words(shmem_req_bits_data, model.mem_req_bits_data_words);
-    zero_words(shmem_req_bits_mask, model.mem_req_bits_mask_words);
-    zero_words(shmem_req_bits_tmask, model.mem_req_bits_tmask_words);
+    zero_mem_request(model, &shmem_req);
     zero_bit(shmem_resp_ready);
 
     let mut pending_global_request = false;
+    let mut pending_shared_request = false;
     if core_req_valid != 0 {
         let token = read_packed_field_u64(core_req_bits_token, 0, model.token_bits);
         let op = read_packed_field(core_req_bits_op, 0, model.mem_op_bits);
-        if model.supports_global_request(token, op) {
-            pending_global_request = true;
+        if let Some(space) = model.request_space(token, op) {
+            match space {
+                MemSpace::Global => pending_global_request = true,
+                MemSpace::Shared => pending_shared_request = true,
+            }
             let tag = model.mem_tag(token);
-            if !model.global_source_busy(tag) {
-                set_u8(core_req_ready, u8::from(global_mem_req_ready != 0));
-                set_u8(global_mem_req_valid, 1);
-                set_packed_field(global_mem_req_bits_tag, 0, model.source_id_bits, tag);
-                set_packed_field(global_mem_req_bits_op, 0, model.mem_op_bits, op as u64);
-
-                let imm = read_packed_field(core_req_bits_imm, 0, model.arch_len);
-                for lane in 0..model.num_lsu_lanes {
-                    let base_address =
-                        read_packed_field(core_req_bits_address, lane, model.arch_len);
-                    let address = model.lane_address(base_address, imm);
-                    let store_data =
-                        read_packed_field(core_req_bits_store_data, lane, model.arch_len);
-                    let shifted_store_data = model.shifted_store_data(store_data, address);
-
-                    set_packed_field(
-                        global_mem_req_bits_address,
-                        lane,
-                        model.arch_len,
-                        address as u64,
-                    );
-                    set_packed_field(
-                        global_mem_req_bits_data,
-                        lane,
-                        model.arch_len,
-                        shifted_store_data as u64,
-                    );
-                    set_packed_field(
-                        global_mem_req_bits_mask,
-                        lane,
-                        model.per_lane_mask_bits,
-                        model.request_mask(op, address),
-                    );
-                    if read_bit(core_req_bits_tmask, lane) {
-                        set_bit(global_mem_req_bits_tmask, lane);
-                    }
-                }
+            if !model.source_busy(space, tag) {
+                let (req_ready, req_outputs) = match space {
+                    MemSpace::Global => (global_mem_req_ready, &global_mem_req),
+                    MemSpace::Shared => (shmem_req_ready, &shmem_req),
+                };
+                set_u8(core_req_ready, u8::from(req_ready != 0));
+                drive_mem_request(
+                    model,
+                    req_outputs,
+                    token,
+                    op,
+                    core_req_bits_tmask,
+                    core_req_bits_address,
+                    core_req_bits_imm,
+                    core_req_bits_store_data,
+                );
             }
         }
     }
 
-    if global_mem_resp_valid != 0 {
-        let tag = read_packed_field_u64(global_mem_resp_bits_tag, 0, model.source_id_bits);
-        let resp_valid_mask = read_bit_mask(global_mem_resp_bits_valid, model.num_lsu_lanes);
-        if let Some(inflight) = model.global_inflight.get(&tag) {
-            let needed_valid_mask = inflight.tmask & bit_mask_u64(model.num_lsu_lanes);
-            let full_response = (resp_valid_mask & needed_valid_mask) == needed_valid_mask;
+    let global_mem_resp = MemResponseInputs {
+        valid: global_mem_resp_valid,
+        tag: global_mem_resp_bits_tag,
+        lane_valid: global_mem_resp_bits_valid,
+        data: global_mem_resp_bits_data,
+        ready: global_mem_resp_ready,
+    };
+    let shmem_resp = MemResponseInputs {
+        valid: shmem_resp_valid,
+        tag: shmem_resp_bits_tag,
+        lane_valid: shmem_resp_bits_valid,
+        data: shmem_resp_bits_data,
+        ready: shmem_resp_ready,
+    };
 
-            if full_response {
-                if inflight.is_load() {
-                    set_u8(core_resp_valid, 1);
-                    set_packed_field(
-                        core_resp_bits_warp_id,
-                        0,
-                        model.warp_id_bits,
-                        inflight.warp_id as u64,
-                    );
-                    set_packed_field(
-                        core_resp_bits_packet,
-                        0,
-                        model.packet_bits,
-                        model.packet_from_mem_tag(tag),
-                    );
-                    set_bit_mask(
-                        core_resp_bits_tmask,
-                        model.num_lsu_lanes,
-                        needed_valid_mask & resp_valid_mask,
-                    );
-                    set_packed_field(
-                        core_resp_bits_dest_reg,
-                        0,
-                        model.preg_bits,
-                        inflight.dest_reg as u64,
-                    );
-                    for lane in 0..model.num_lsu_lanes {
-                        let word =
-                            read_packed_field(global_mem_resp_bits_data, lane, model.arch_len);
-                        let byte_offset = inflight.byte_offsets.get(lane).copied().unwrap_or(0);
-                        let data = model.load_writeback_data(inflight.op, word, byte_offset);
-                        set_packed_field(
-                            core_resp_bits_writeback_data,
-                            lane,
-                            model.arch_len,
-                            data as u64,
-                        );
-                    }
-                    set_packed_field(
-                        core_resp_bits_debug_id,
-                        0,
-                        model.debug_id_port_bits,
-                        inflight.debug_id as u64,
-                    );
-                    set_u8(global_mem_resp_ready, u8::from(core_resp_ready != 0));
-                } else {
-                    set_u8(global_mem_resp_ready, 1);
-                }
-            }
-        } else if model.global_retired_tags.contains_key(&tag)
-            || model.global_store_inflight.contains_key(&tag)
-            || (model.global_inflight.is_empty() && model.global_store_inflight.is_empty())
-        {
-            set_u8(global_mem_resp_ready, 1);
-        } else {
-            panic!("cyclotron LSU received unknown global response tag 0x{tag:x}");
-        }
+    let global_response_selected = drive_mem_response(
+        model,
+        &global_mem_resp,
+        core_resp_ready,
+        core_resp_valid,
+        core_resp_bits_warp_id,
+        core_resp_bits_packet,
+        core_resp_bits_tmask,
+        core_resp_bits_dest_reg,
+        core_resp_bits_writeback_data,
+        core_resp_bits_debug_id,
+    );
+    if !global_response_selected {
+        drive_mem_response(
+            model,
+            &shmem_resp,
+            core_resp_ready,
+            core_resp_valid,
+            core_resp_bits_warp_id,
+            core_resp_bits_packet,
+            core_resp_bits_tmask,
+            core_resp_bits_dest_reg,
+            core_resp_bits_writeback_data,
+            core_resp_bits_debug_id,
+        );
     }
 
     if let Some(value) = shared_queues_empty.as_mut() {
-        *value = 1;
+        *value = u8::from(model.queues_empty(MemSpace::Shared, pending_shared_request));
     }
     if let Some(value) = global_queues_empty.as_mut() {
-        *value = u8::from(model.global_queues_empty(pending_global_request));
+        *value = u8::from(model.queues_empty(MemSpace::Global, pending_global_request));
     }
 }
 
@@ -888,10 +1178,10 @@ pub unsafe extern "C" fn cyclotron_lsu_commit_rs(
     global_mem_resp_bits_tag: *const u32,
     global_mem_resp_bits_valid: *const u32,
     _global_mem_resp_bits_data: *const u32,
-    _shmem_req_ready: u8,
-    _shmem_resp_valid: u8,
-    _shmem_resp_bits_tag: *const u32,
-    _shmem_resp_bits_valid: *const u32,
+    shmem_req_ready: u8,
+    shmem_resp_valid: u8,
+    shmem_resp_bits_tag: *const u32,
+    shmem_resp_bits_valid: *const u32,
     _shmem_resp_bits_data: *const u32,
     _core_reservations_req_ready: *const u32,
     _core_reservations_resp_valid: *const u32,
@@ -911,7 +1201,7 @@ pub unsafe extern "C" fn cyclotron_lsu_commit_rs(
     _global_mem_req_bits_data: *const u32,
     _global_mem_req_bits_mask: *const u32,
     _global_mem_req_bits_tmask: *const u32,
-    _global_mem_resp_ready: u8,
+    global_mem_resp_ready: u8,
     _shmem_req_valid: u8,
     _shmem_req_bits_tag: *const u32,
     _shmem_req_bits_op: *const u32,
@@ -919,7 +1209,7 @@ pub unsafe extern "C" fn cyclotron_lsu_commit_rs(
     _shmem_req_bits_data: *const u32,
     _shmem_req_bits_mask: *const u32,
     _shmem_req_bits_tmask: *const u32,
-    _shmem_resp_ready: u8,
+    shmem_resp_ready: u8,
     _shared_queues_empty: u8,
     _global_queues_empty: u8,
 ) {
@@ -930,62 +1220,40 @@ pub unsafe extern "C" fn cyclotron_lsu_commit_rs(
         .as_mut()
         .expect("DPI context not initialized!");
     let model = context.lsu_model_mut(cluster_id, core_id);
-    let visible_global_response_tag = if global_mem_resp_valid != 0 {
-        Some(read_packed_field_u64(
-            global_mem_resp_bits_tag,
-            0,
-            model.source_id_bits,
-        ))
-    } else {
-        None
-    };
 
-    let global_request_fired = if core_req_valid != 0 {
-        let token = read_packed_field_u64(core_req_bits_token, 0, model.token_bits);
-        let op = read_packed_field(core_req_bits_op, 0, model.mem_op_bits);
-        if model.supports_global_request(token, op)
-            && !model.global_source_busy(model.mem_tag(token))
-            && global_mem_req_ready != 0
-        {
-            let dest_reg = read_packed_field(core_req_bits_dest_reg, 0, model.preg_bits);
-            let tmask = read_bit_mask(core_req_bits_tmask, model.num_lsu_lanes);
-            let imm = read_packed_field(core_req_bits_imm, 0, model.arch_len);
-            let byte_offsets = (0..model.num_lsu_lanes)
-                .map(|lane| {
-                    let base_address =
-                        read_packed_field(core_req_bits_address, lane, model.arch_len);
-                    model.byte_offset(model.lane_address(base_address, imm))
-                })
-                .collect();
-            Some((token, op, dest_reg, tmask, byte_offsets))
-        } else {
-            None
-        }
-    } else {
-        None
-    };
+    let request_fired = mem_request_fired(
+        model,
+        core_req_valid,
+        core_req_bits_token,
+        core_req_bits_op,
+        core_req_bits_tmask,
+        core_req_bits_address,
+        core_req_bits_imm,
+        core_req_bits_dest_reg,
+        global_mem_req_ready,
+        shmem_req_ready,
+    );
 
-    let global_response_fired = if let Some(tag) = visible_global_response_tag {
-        if let Some(inflight) = model.global_inflight.get(&tag) {
-            let resp_valid_mask = read_bit_mask(global_mem_resp_bits_valid, model.num_lsu_lanes);
-            let needed_valid_mask = inflight.tmask & bit_mask_u64(model.num_lsu_lanes);
-            let full_response = (resp_valid_mask & needed_valid_mask) == needed_valid_mask;
-            if full_response && (!inflight.is_load() || core_resp_ready != 0) {
-                Some(tag)
-            } else {
-                None
-            }
-        } else if model.global_retired_tags.contains_key(&tag) {
-            None
-        } else if model.global_store_inflight.contains_key(&tag)
-            || (model.global_inflight.is_empty() && model.global_store_inflight.is_empty())
-        {
-            Some(tag)
-        } else {
-            panic!("cyclotron LSU received unknown global response tag 0x{tag:x}");
-        }
-    } else {
+    let (global_response_selected, global_response_fired) = mem_response_fired(
+        model,
+        global_mem_resp_valid,
+        global_mem_resp_ready,
+        global_mem_resp_bits_tag,
+        global_mem_resp_bits_valid,
+        core_resp_ready,
+    );
+    let shared_response_fired = if global_response_selected {
         None
+    } else {
+        let (_, fired) = mem_response_fired(
+            model,
+            shmem_resp_valid,
+            shmem_resp_ready,
+            shmem_resp_bits_tag,
+            shmem_resp_bits_valid,
+            core_resp_ready,
+        );
+        fired
     };
 
     for warp_id in 0..model.num_warps {
@@ -1012,11 +1280,14 @@ pub unsafe extern "C" fn cyclotron_lsu_commit_rs(
         }
     }
 
-    if let Some(tag) = global_response_fired {
-        model.commit_global_response(tag);
+    if let Some((space, tag)) = global_response_fired {
+        model.commit_mem_response(space, tag);
     }
-    if let Some((token, op, dest_reg, tmask, byte_offsets)) = global_request_fired {
-        model.commit_global_request(token, op, dest_reg, tmask, byte_offsets);
+    if let Some((space, tag)) = shared_response_fired {
+        model.commit_mem_response(space, tag);
+    }
+    if let Some((space, token, op, dest_reg, tmask, byte_offsets)) = request_fired {
+        model.commit_mem_request(space, token, op, dest_reg, tmask, byte_offsets);
     }
 }
 
@@ -1074,19 +1345,33 @@ mod tests {
     }
 
     #[test]
-    fn accepts_only_global_core_requests_before_shared_memory() {
+    fn accepts_global_and_shared_core_requests() {
         let model = make_model();
 
         let global_load_word = model.reservation_token(1, 0, MEM_OP_LOAD_WORD).unwrap();
         let global_store_word = model.reservation_token(1, 0, MEM_OP_STORE_WORD).unwrap();
         let shared_load_word = model.reservation_token(1, 1, MEM_OP_LOAD_WORD).unwrap();
+        let shared_store_word = model.reservation_token(1, 1, MEM_OP_STORE_WORD).unwrap();
 
         for op in MEM_OP_LOAD_BYTE..=MEM_OP_STORE_WORD {
-            assert!(model.supports_global_request(global_load_word, op));
+            assert_eq!(
+                model.request_space(global_load_word, op),
+                Some(MemSpace::Global)
+            );
+            assert_eq!(
+                model.request_space(shared_load_word, op),
+                Some(MemSpace::Shared)
+            );
         }
-        assert!(model.supports_global_request(global_store_word, MEM_OP_STORE_WORD));
-        assert!(!model.supports_global_request(shared_load_word, MEM_OP_LOAD_WORD));
-        assert!(!model.supports_global_request(global_load_word, 8));
+        assert_eq!(
+            model.request_space(global_store_word, MEM_OP_STORE_WORD),
+            Some(MemSpace::Global)
+        );
+        assert_eq!(
+            model.request_space(shared_store_word, MEM_OP_STORE_WORD),
+            Some(MemSpace::Shared)
+        );
+        assert_eq!(model.request_space(global_load_word, 8), None);
     }
 
     #[test]
@@ -1139,18 +1424,47 @@ mod tests {
     }
 
     #[test]
+    fn retires_response_with_nonzero_packet_bit_against_base_tag() {
+        let mut model = make_model();
+        let token = model.reservation_token(1, 0, MEM_OP_STORE_WORD).unwrap();
+        let base_tag = model.mem_tag(token);
+        let packet_one_tag = base_tag | 1;
+
+        model.commit_mem_request(
+            MemSpace::Global,
+            token,
+            MEM_OP_STORE_WORD,
+            0,
+            1,
+            zero_byte_offsets(),
+        );
+
+        model.commit_mem_response(MemSpace::Global, packet_one_tag);
+
+        assert!(!model.source_busy(MemSpace::Global, base_tag));
+        assert!(model.global.retired_tags.contains_key(&base_tag));
+    }
+
+    #[test]
     fn tracks_global_queue_empty_with_inflight_request() {
         let mut model = make_model();
 
-        assert!(model.global_queues_empty(false));
-        assert!(!model.global_queues_empty(true));
+        assert!(model.queues_empty(MemSpace::Global, false));
+        assert!(!model.queues_empty(MemSpace::Global, true));
 
         let token = model.reservation_token(0, 0, MEM_OP_LOAD_WORD).unwrap();
-        model.commit_global_request(token, MEM_OP_LOAD_WORD, 3, 0xffff, zero_byte_offsets());
-        assert!(!model.global_queues_empty(false));
+        model.commit_mem_request(
+            MemSpace::Global,
+            token,
+            MEM_OP_LOAD_WORD,
+            3,
+            0xffff,
+            zero_byte_offsets(),
+        );
+        assert!(!model.queues_empty(MemSpace::Global, false));
 
-        model.commit_global_response(model.mem_tag(token));
-        assert!(model.global_queues_empty(false));
+        model.commit_mem_response(MemSpace::Global, model.mem_tag(token));
+        assert!(model.queues_empty(MemSpace::Global, false));
     }
 
     #[test]
@@ -1159,13 +1473,43 @@ mod tests {
         let token = model.reservation_token(0, 0, MEM_OP_STORE_WORD).unwrap();
         let tag = model.mem_tag(token);
 
-        model.commit_global_request(token, MEM_OP_STORE_WORD, 0, 1, zero_byte_offsets());
-        assert!(model.global_source_busy(tag));
-        assert!(!model.global_queues_empty(false));
+        model.commit_mem_request(
+            MemSpace::Global,
+            token,
+            MEM_OP_STORE_WORD,
+            0,
+            1,
+            zero_byte_offsets(),
+        );
+        assert!(model.source_busy(MemSpace::Global, tag));
+        assert!(!model.queues_empty(MemSpace::Global, false));
 
-        model.commit_global_response(tag);
-        assert!(!model.global_source_busy(tag));
-        assert!(model.global_queues_empty(false));
+        model.commit_mem_response(MemSpace::Global, tag);
+        assert!(!model.source_busy(MemSpace::Global, tag));
+        assert!(model.queues_empty(MemSpace::Global, false));
+    }
+
+    #[test]
+    fn tracks_shared_queue_empty_with_inflight_request() {
+        let mut model = make_model();
+
+        assert!(model.queues_empty(MemSpace::Shared, false));
+        assert!(!model.queues_empty(MemSpace::Shared, true));
+
+        let token = model.reservation_token(0, 1, MEM_OP_LOAD_WORD).unwrap();
+        model.commit_mem_request(
+            MemSpace::Shared,
+            token,
+            MEM_OP_LOAD_WORD,
+            3,
+            0xffff,
+            zero_byte_offsets(),
+        );
+        assert!(!model.queues_empty(MemSpace::Shared, false));
+        assert!(model.queues_empty(MemSpace::Global, false));
+
+        model.commit_mem_response(MemSpace::Shared, model.mem_tag(token));
+        assert!(model.queues_empty(MemSpace::Shared, false));
     }
 
     #[test]
@@ -1174,12 +1518,19 @@ mod tests {
 
         let token = model.reservation_token(3, 0, MEM_OP_LOAD_WORD).unwrap();
         model.commit_reservation(3, 0, MEM_OP_LOAD_WORD, 1);
-        model.commit_global_request(token, MEM_OP_LOAD_WORD, 7, 0xaaaa, zero_byte_offsets());
+        model.commit_mem_request(
+            MemSpace::Global,
+            token,
+            MEM_OP_LOAD_WORD,
+            7,
+            0xaaaa,
+            zero_byte_offsets(),
+        );
 
-        let metadata = model.global_inflight.get(&model.mem_tag(token)).unwrap();
+        let metadata = model.global.inflight.get(&model.mem_tag(token)).unwrap();
         assert_eq!(
             metadata,
-            &GlobalInflight {
+            &MemInflight {
                 token,
                 op: MEM_OP_LOAD_WORD,
                 warp_id: 3,
@@ -1197,18 +1548,20 @@ mod tests {
 
         let retired_token = model.reservation_token(0, 0, MEM_OP_LOAD_WORD).unwrap();
         let retired_tag = model.mem_tag(retired_token);
-        model.commit_global_request(
+        model.commit_mem_request(
+            MemSpace::Global,
             retired_token,
             MEM_OP_LOAD_WORD,
             3,
             0xffff,
             zero_byte_offsets(),
         );
-        model.commit_global_response(retired_tag);
+        model.commit_mem_response(MemSpace::Global, retired_tag);
 
         let active_token = model.reservation_token(1, 0, MEM_OP_LOAD_WORD).unwrap();
         let active_tag = model.mem_tag(active_token);
-        model.commit_global_request(
+        model.commit_mem_request(
+            MemSpace::Global,
             active_token,
             MEM_OP_LOAD_WORD,
             4,
@@ -1216,7 +1569,7 @@ mod tests {
             zero_byte_offsets(),
         );
 
-        model.commit_global_response(retired_tag);
-        assert!(model.global_inflight.contains_key(&active_tag));
+        model.commit_mem_response(MemSpace::Global, retired_tag);
+        assert!(model.global.inflight.contains_key(&active_tag));
     }
 }
