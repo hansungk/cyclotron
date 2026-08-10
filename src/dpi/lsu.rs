@@ -12,6 +12,8 @@ const MEM_OP_LOAD_WORD: u32 = 4;
 const MEM_OP_STORE_BYTE: u32 = 5;
 const MEM_OP_STORE_HALF: u32 = 6;
 const MEM_OP_STORE_WORD: u32 = 7;
+// TapeoutSmemConfig.size - 1; mirrors RTL SMEM offset mask (radiance 878fd2236).
+const SMEM_REGION_MASK: u32 = 0x1_ffff;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum MemSpace {
@@ -685,9 +687,14 @@ unsafe fn drive_mem_request(
     set_packed_field(req.op, 0, model.mem_op_bits, op as u64);
 
     let imm = read_packed_field(core_req_bits_imm, 0, model.arch_len);
+    let is_shared = model.request_space(token, op) == Some(MemSpace::Shared);
     for lane in 0..model.num_lsu_lanes {
         let base_address = read_packed_field(core_req_bits_address, lane, model.arch_len);
-        let address = model.lane_address(base_address, imm);
+        let mut address = model.lane_address(base_address, imm);
+        // wrap OOB shared offsets in-range so every requested lane gets a response
+        if is_shared {
+            address &= SMEM_REGION_MASK;
+        }
         let store_data = read_packed_field(core_req_bits_store_data, lane, model.arch_len);
         let shifted_store_data = model.shifted_store_data(store_data, address);
 
